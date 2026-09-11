@@ -3,6 +3,8 @@ import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion } from '../monaco/completions'
 import { useTabs, type EditorTab } from '../composables/tabs'
+import { formatSql } from '../lib/sqlformat'
+import { setFormatHandler } from '../lib/formatbridge'
 
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
@@ -33,8 +35,21 @@ onMounted(() => {
       model && selection && !selection.isEmpty() ? model.getValueInRange(selection) : undefined
     run?.(selected)
   })
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, () => {
+    formatActive()
+  })
+  setFormatHandler(() => formatActive())
   applyTab(props.tab)
 })
+
+function formatActive() {
+  if (!editor || props.tab.readOnly) return
+  const model = editor.getModel()
+  if (!model) return
+  editor.executeEdits('pgdev-format', [
+    { range: model.getFullModelRange(), text: formatSql(model.getValue()) + '\n' },
+  ])
+}
 
 function modelFor(tab: EditorTab): monaco.editor.ITextModel {
   let model = models.get(tab.key)
@@ -73,6 +88,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  setFormatHandler(null)
   editor?.dispose()
   models.forEach((m) => m.dispose())
   models.clear()

@@ -72,10 +72,29 @@ export function useTabs() {
     }
   }
 
+  function closeAll() {
+    state.tabs = []
+    state.activeKey = ''
+  }
+
+  function closeOthers(key: string) {
+    const keep = state.tabs.find((t) => t.key === key)
+    if (!keep) return
+    state.tabs = [keep]
+    state.activeKey = key
+  }
+
+  function closeRight(key: string) {
+    const index = state.tabs.findIndex((t) => t.key === key)
+    if (index === -1) return
+    state.tabs = state.tabs.slice(0, index + 1)
+    if (!state.tabs.some((t) => t.key === state.activeKey)) state.activeKey = key
+  }
+
   function updateContent(key: string, content: string) {
     const tab = state.tabs.find((t) => t.key === key)
     if (tab) tab.content = content
   }
 
-  return { state, activate, newQuery, openDdl, openFile, close, updateContent }
+  return { state, activate, newQuery, openDdl, openFile, close, closeAll, closeOthers, closeRight, updateContent }
 }

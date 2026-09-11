@@ -25,9 +25,10 @@ export const api = {
     return fetch(`/api/connections/${id}/schema`).then((r) => unwrap<SchemaData>(r))
   },
 
-  ddl(id: string, type: string, schema: string, name: string, oid?: string): Promise<{ ddl: string }> {
+  ddl(id: string, type: string, schema: string, name: string, oid?: string, parent?: string): Promise<{ ddl: string }> {
     const params = new URLSearchParams({ type, schema, name })
     if (oid) params.set('oid', oid)
+    if (parent) params.set('parent', parent)
     return fetch(`/api/connections/${id}/ddl?${params}`).then((r) => unwrap<{ ddl: string }>(r))
   },
 

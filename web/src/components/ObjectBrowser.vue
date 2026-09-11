@@ -42,9 +42,39 @@ const toast = useToast()
 const open = reactive({ tables: false, views: false, functions: false })
 const expanded = reactive(new Set<string>())
 
+type SearchType = 'table' | 'view' | 'function' | 'column'
+
+const TYPE_WORDS: Record<string, SearchType> = {
+  table: 'table',
+  tables: 'table',
+  view: 'view',
+  views: 'view',
+  function: 'function',
+  functions: 'function',
+  func: 'function',
+  fn: 'function',
+  column: 'column',
+  columns: 'column',
+  col: 'column',
+}
+
 const filter = ref('')
-const query = computed(() => filter.value.trim().toLowerCase())
-const isFiltering = computed(() => query.value.length > 0)
+const parsed = computed(() => {
+  const q = filter.value.trim().toLowerCase()
+  if (!q) return { term: '', type: null as SearchType | null }
+  const tokens = q.split(/\s+/)
+  const last = tokens[tokens.length - 1]
+  if (tokens.length > 1 && TYPE_WORDS[last]) {
+    return { term: tokens.slice(0, -1).join(' '), type: TYPE_WORDS[last] }
+  }
+  if (TYPE_WORDS[tokens[0]]) {
+    return { term: tokens.slice(1).join(' '), type: TYPE_WORDS[tokens[0]] }
+  }
+  return { term: q, type: null }
+})
+const query = computed(() => parsed.value.term)
+const searchType = computed(() => parsed.value.type)
+const isFiltering = computed(() => filter.value.trim().length > 0)
 
 function nameMatched(name: string, schema: string): boolean {
   return name.toLowerCase().includes(query.value) || schema.toLowerCase().includes(query.value)
@@ -62,11 +92,43 @@ function autoExpandFunc(name: string, schema: string, typeSig: string): boolean 
   return isFiltering.value && !nameMatched(name, schema) && typeSig.toLowerCase().includes(query.value)
 }
 
+const showTables = computed(
+  () =>
+    !isFiltering.value ||
+    searchType.value === null ||
+    searchType.value === 'table' ||
+    searchType.value === 'column',
+)
+const showViews = computed(
+  () =>
+    !isFiltering.value ||
+    searchType.value === null ||
+    searchType.value === 'view' ||
+    searchType.value === 'column',
+)
+const showFunctions = computed(
+  () => !isFiltering.value || searchType.value === null || searchType.value === 'function',
+)
+
 const filteredTables = computed(() =>
-  tables.value.filter((t) => !isFiltering.value || nameMatched(t.name, t.schema) || colsMatched(t.columns)),
+  showTables.value
+    ? tables.value.filter((t) => {
+        if (!isFiltering.value) return true
+        if (searchType.value === 'column') return colsMatched(t.columns)
+        if (searchType.value === 'table') return nameMatched(t.name, t.schema)
+        return nameMatched(t.name, t.schema) || colsMatched(t.columns)
+      })
+    : [],
 )
 const filteredViews = computed(() =>
-  views.value.filter((v) => !isFiltering.value || nameMatched(v.name, v.schema) || colsMatched(v.columns)),
+  showViews.value
+    ? views.value.filter((v) => {
+        if (!isFiltering.value) return true
+        if (searchType.value === 'column') return colsMatched(v.columns)
+        if (searchType.value === 'view') return nameMatched(v.name, v.schema)
+        return nameMatched(v.name, v.schema) || colsMatched(v.columns)
+      })
+    : [],
 )
 const overloadCounts = computed(() => {
   const counts = new Map<string, number>()
@@ -74,12 +136,14 @@ const overloadCounts = computed(() => {
   return counts
 })
 const filteredFunctions = computed(() =>
-  functions.value.filter(
-    (f) =>
-      !isFiltering.value ||
-      nameMatched(f.name, f.schema) ||
-      f.typeSig.toLowerCase().includes(query.value),
-  ),
+  showFunctions.value
+    ? functions.value.filter(
+        (f) =>
+          !isFiltering.value ||
+          nameMatched(f.name, f.schema) ||
+          f.typeSig.toLowerCase().includes(query.value),
+      )
+    : [],
 )
 const totalMatches = computed(
   () => filteredTables.value.length + filteredViews.value.length + filteredFunctions.value.length,
@@ -226,15 +290,16 @@ function catOpen(t: TableInfo, cat: TableCategory): boolean {
 }
 
 async function openObject(
-  type: 'table' | 'view' | 'function',
+  type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger',
   schemaName: string,
   name: string,
   oid?: string,
   suffix = '',
+  parent?: string,
 ) {
   if (!conn.state.id) return
   try {
-    const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid)
+    const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
     tabs.openDdl(type, schemaName, name, ddl, suffix)
   } catch (e) {
     toast.show((e as Error).message)
@@ -254,7 +319,7 @@ async function refresh() {
 
     <template v-else>
       <div class="browser-search">
-        <input v-model="filter" placeholder="Search objects or columns…" />
+        <input v-model="filter" placeholder='Search… e.g. "unit table"' />
         <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
         <button
           class="icon"
@@ -268,7 +333,7 @@ async function refresh() {
       </div>
       <div v-if="schema.state.error" class="browser-error">{{ schema.state.error }}</div>
 
-      <section v-if="!isFiltering || filteredTables.length" class="group">
+      <section v-if="showTables" class="group">
         <h3 @click="open.tables = !open.tables">
           <component :is="open.tables || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Tables
@@ -340,8 +405,9 @@ async function refresh() {
                   v-for="ix in t.indexes"
                   :key="ix.name"
                   class="node cat-child"
-                  :title="`${ix.type} index · ${ix.method}`"
+                  :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
                   @click="copyName(null, ix.name)"
+                  @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
                 >
                   <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
                   <span class="obj-name" :class="{ tbd: isTbd(ix.name) }">{{ ix.name }}</span>
@@ -365,8 +431,9 @@ async function refresh() {
                   v-for="con in t.constraints"
                   :key="con.name"
                   class="node cat-child"
-                  :title="`${constraintMeta(con.type).label}: ${con.definition}`"
+                  :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
                   @click="copyName(null, con.name)"
+                  @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
                 >
                   <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
                   <span class="obj-name" :class="{ tbd: isTbd(con.name) }">{{ con.name }}</span>
@@ -389,11 +456,11 @@ async function refresh() {
                   v-for="trg in t.triggers"
                   :key="trg.name"
                   class="node cat-child"
-                  title="Click to copy name"
+                  title="Click to copy name · double-click to open DDL"
                   @click="copyName(null, trg.name)"
+                  @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
                 >
                   <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
-                  <span class="dim">{{ trg.definition }}</span>
                 </div>
                 <div v-if="!t.triggers.length" class="empty">None</div>
               </template>
@@ -403,7 +470,7 @@ async function refresh() {
         </template>
       </section>
 
-      <section v-if="!isFiltering || filteredViews.length" class="group">
+      <section v-if="showViews" class="group">
         <h3 @click="open.views = !open.views">
           <component :is="open.views || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Views
@@ -432,7 +499,7 @@ async function refresh() {
         </template>
       </section>
 
-      <section v-if="!isFiltering || filteredFunctions.length" class="group">
+      <section v-if="showFunctions" class="group">
         <h3 @click="open.functions = !open.functions">
           <component :is="open.functions || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Functions

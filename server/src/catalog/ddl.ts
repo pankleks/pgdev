@@ -114,3 +114,40 @@ export async function functionDdl(pool: Pool, oid: string, schema: string, name:
   const def = String(row.def).trim()
   return def.endsWith(';') ? def : def + ';'
 }
+
+export async function indexDdl(pool: Pool, schema: string, name: string): Promise<string> {
+  const res = await pool.query(
+    `SELECT pg_get_indexdef(ic.oid) AS def
+     FROM pg_class ic JOIN pg_namespace n ON n.oid = ic.relnamespace
+     WHERE n.nspname = $1 AND ic.relname = $2`,
+    [schema, name],
+  )
+  if (!res.rows[0]) notFound()
+  return String(res.rows[0].def).trim() + ';'
+}
+
+export async function constraintDdl(pool: Pool, schema: string, table: string, name: string): Promise<string> {
+  const res = await pool.query(
+    `SELECT pg_get_constraintdef(c.oid) AS def
+     FROM pg_constraint c
+     JOIN pg_class t ON t.oid = c.conrelid
+     JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = $1 AND t.relname = $2 AND c.conname = $3`,
+    [schema, table, name],
+  )
+  if (!res.rows[0]) notFound()
+  return `ALTER TABLE ${ident(schema)}.${ident(table)}\n  ADD CONSTRAINT ${ident(name)} ${String(res.rows[0].def).trim()};`
+}
+
+export async function triggerDdl(pool: Pool, schema: string, table: string, name: string): Promise<string> {
+  const res = await pool.query(
+    `SELECT pg_get_triggerdef(t.oid) AS def
+     FROM pg_trigger t
+     JOIN pg_class c ON c.oid = t.tgrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1 AND c.relname = $2 AND t.tgname = $3`,
+    [schema, table, name],
+  )
+  if (!res.rows[0]) notFound()
+  return String(res.rows[0].def).trim() + ';'
+}
