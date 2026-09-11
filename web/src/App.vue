@@ -103,7 +103,12 @@ provide('pgdev:run', runActive)
   <div class="app">
     <header class="topbar">
       <span class="logo"><Database :size="15" /> pgdev</span>
-      <span v-if="conn.state.id" class="conn-badge">{{ conn.state.label }}</span>
+      <button
+        v-if="conn.state.id"
+        class="conn-badge"
+        title="Switch connection"
+        @click="conn.state.dialog = true"
+      >{{ conn.state.label }}</button>
       <span v-else class="conn-badge off">not connected</span>
       <span class="spacer" />
       <button

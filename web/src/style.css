@@ -188,6 +188,11 @@ input:focus {
   border-color: var(--border);
 }
 
+button.conn-badge:hover {
+  border-color: var(--accent);
+  filter: brightness(1.25);
+}
+
 .spacer {
   flex: 1;
 }

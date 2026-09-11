@@ -66,7 +66,20 @@ export function useConnection() {
     state.connecting = true
     state.error = ''
     try {
+      const prevId = state.id
       const { id } = await api.connect(cfg)
+      if (prevId && prevId !== id) {
+        // Switching connections from the badge dialog: close the old pool
+        // and drop its per-tab results so stale data isn't shown.
+        await api.disconnect(prevId).catch(() => {})
+        try {
+          const { useResults } = await import('./results')
+          const res = useResults()
+          for (const key of Object.keys(res.state.byTab)) res.drop(key)
+        } catch {
+          // ignore cleanup errors
+        }
+      }
       state.id = id
       state.label = labelOf(cfg)
       state.dialog = false
