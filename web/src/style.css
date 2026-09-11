@@ -280,7 +280,7 @@ button.conn-badge:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 0 6px 10px;
+  padding: 6px 10px;
   position: sticky;
   top: 0;
   background: var(--panel);
