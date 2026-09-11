@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, provide, ref } from 'vue'
-import { Database } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
+import { Database, FilePlus2, FolderOpen, Wand2 } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
 import EditorTabs from './components/EditorTabs.vue'
@@ -9,12 +9,26 @@ import { useConnection } from './composables/connection'
 import { useTabs } from './composables/tabs'
 import { useResults } from './composables/results'
 import { useToast } from './composables/toast'
-import { getActiveSelection } from './lib/formatbridge'
+import { getActiveSelection, triggerFormat } from './lib/formatbridge'
 
 const conn = useConnection()
 const tabs = useTabs()
 const results = useResults()
 const toast = useToast()
+
+const activeTab = computed(() =>
+  tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
+)
+
+const fileInput = ref<HTMLInputElement | null>(null)
+
+async function onFilesChosen(e: Event) {
+  const input = e.target as HTMLInputElement
+  for (const file of [...(input.files ?? [])]) {
+    tabs.openFile(file.name, await file.text())
+  }
+  input.value = ''
+}
 
 const sideW = ref(336)
 const resultsH = ref(240)
@@ -32,9 +46,17 @@ function onMouseUp() {
   dragKind = null
 }
 
+function onKeyDown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyO') {
+    e.preventDefault()
+    fileInput.value?.click()
+  }
+}
+
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('keydown', onKeyDown)
   if (!tabs.state.tabs.length) tabs.newQuery()
   conn.autoConnect()
 })
@@ -42,6 +64,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('keydown', onKeyDown)
 })
 
 function runActive() {
@@ -67,9 +90,25 @@ provide('pgdev:run', runActive)
       <span v-if="conn.state.id" class="conn-badge">{{ conn.state.label }}</span>
       <span v-else class="conn-badge off">not connected</span>
       <span class="spacer" />
+      <button
+        class="icon"
+        title="Format SQL (Ctrl+Shift+F)"
+        :disabled="!activeTab || activeTab.readOnly"
+        @click="triggerFormat()"
+      ><Wand2 :size="15" /></button>
+      <button class="icon" title="Open .sql file (Ctrl+O)" @click="fileInput?.click()"><FolderOpen :size="15" /></button>
+      <button class="icon" title="New query tab" @click="tabs.newQuery()"><FilePlus2 :size="15" /></button>
       <button v-if="conn.state.id" @click="conn.disconnect()">Disconnect</button>
       <button v-else class="primary" @click="conn.state.dialog = true">Connect</button>
     </header>
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".sql,.txt,.ddl"
+      multiple
+      style="display: none"
+      @change="onFilesChosen"
+    />
 
     <div class="body">
       <aside class="sidebar" :style="{ width: sideW + 'px' }">
