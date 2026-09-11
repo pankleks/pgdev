@@ -1,0 +1,305 @@
+<script setup lang="ts">
+import { computed, reactive, ref } from 'vue'
+import {
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  ChevronDown,
+  ChevronRight,
+  CornerDownRight,
+  Ellipsis,
+  Eye,
+  LoaderCircle,
+  RotateCw,
+  SquareFunction,
+  Table2,
+  X,
+  type LucideIcon,
+} from 'lucide-vue-next'
+import { useConnection } from '../composables/connection'
+import { useSchema } from '../composables/schema'
+import { useTabs } from '../composables/tabs'
+import { useToast } from '../composables/toast'
+import { api } from '../api'
+import { copyText } from '../lib/gridio'
+
+const conn = useConnection()
+const schema = useSchema()
+const tabs = useTabs()
+const toast = useToast()
+
+const open = reactive({ tables: false, views: false, functions: false })
+const expanded = reactive(new Set<string>())
+
+const filter = ref('')
+const query = computed(() => filter.value.trim().toLowerCase())
+const isFiltering = computed(() => query.value.length > 0)
+
+function nameMatched(name: string, schema: string): boolean {
+  return name.toLowerCase().includes(query.value) || schema.toLowerCase().includes(query.value)
+}
+
+function colsMatched(cols: { name: string }[]): boolean {
+  return cols.some((c) => c.name.toLowerCase().includes(query.value))
+}
+
+function autoExpandRel(name: string, schema: string, cols: { name: string }[]): boolean {
+  return isFiltering.value && !nameMatched(name, schema) && colsMatched(cols)
+}
+
+function autoExpandFunc(name: string, schema: string, typeSig: string): boolean {
+  return isFiltering.value && !nameMatched(name, schema) && typeSig.toLowerCase().includes(query.value)
+}
+
+const filteredTables = computed(() =>
+  tables.value.filter((t) => !isFiltering.value || nameMatched(t.name, t.schema) || colsMatched(t.columns)),
+)
+const filteredViews = computed(() =>
+  views.value.filter((v) => !isFiltering.value || nameMatched(v.name, v.schema) || colsMatched(v.columns)),
+)
+const overloadCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const f of functions.value) counts.set(f.name, (counts.get(f.name) ?? 0) + 1)
+  return counts
+})
+const filteredFunctions = computed(() =>
+  functions.value.filter(
+    (f) =>
+      !isFiltering.value ||
+      nameMatched(f.name, f.schema) ||
+      f.typeSig.toLowerCase().includes(query.value),
+  ),
+)
+const totalMatches = computed(
+  () => filteredTables.value.length + filteredViews.value.length + filteredFunctions.value.length,
+)
+
+function toggleChildren(key: string) {
+  if (expanded.has(key)) expanded.delete(key)
+  else expanded.add(key)
+}
+
+const tables = computed(() => schema.state.data?.tables ?? [])
+const views = computed(() => schema.state.data?.views ?? [])
+const functions = computed(() => schema.state.data?.functions ?? [])
+
+function displayName(schemaName: string, name: string): string {
+  return schemaName === 'public' ? name : `${schemaName}.${name}`
+}
+
+function splitArgs(args: string): string[] {
+  const trimmed = args.trim()
+  if (!trimmed) return []
+  const parts: string[] = []
+  let depth = 0
+  let quote: string | null = null
+  let cur = ''
+  for (const ch of trimmed) {
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(cur.trim())
+      cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  if (cur.trim()) parts.push(cur.trim())
+  return parts
+}
+
+const PARAM_MODES = ['IN', 'OUT', 'INOUT', 'VARIADIC']
+
+type ParamKind = 'in' | 'out' | 'inout' | 'variadic' | 'returns'
+
+const PARAM_ICONS: Record<ParamKind, LucideIcon> = {
+  in: ArrowRight,
+  out: ArrowLeft,
+  inout: ArrowLeftRight,
+  variadic: Ellipsis,
+  returns: CornerDownRight,
+}
+
+interface ParamRow {
+  kind: ParamKind
+  name: string
+  rest: string
+}
+
+function paramRows(args: string, returns: string): ParamRow[] {
+  const rows = splitArgs(args).map((a): ParamRow => {
+    const words = a.split(/\s+/)
+    let kind: ParamKind = 'in'
+    let i = 0
+    const first = words[0]?.toUpperCase()
+    if (words.length > 1 && PARAM_MODES.includes(first)) {
+      kind = first === 'OUT' ? 'out' : first === 'INOUT' ? 'inout' : first === 'VARIADIC' ? 'variadic' : 'in'
+      i = 1
+    }
+    if (words.length > i + 1) {
+      return { kind, name: words.slice(i, i + 1).join(' '), rest: words.slice(i + 1).join(' ') }
+    }
+    return { kind, name: words.length > i ? words.slice(i).join(' ') : a, rest: '' }
+  })
+  rows.push({ kind: 'returns', name: 'returns', rest: returns })
+  return rows
+}
+
+async function copyName(schemaName: string, name: string) {
+  const ok = await copyText(displayName(schemaName, name))
+  toast.show(ok ? 'Object name copied.' : 'Copy failed')
+}
+
+async function openObject(
+  type: 'table' | 'view' | 'function',
+  schemaName: string,
+  name: string,
+  oid?: string,
+  suffix = '',
+) {
+  if (!conn.state.id) return
+  try {
+    const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid)
+    tabs.openDdl(type, schemaName, name, ddl, suffix)
+  } catch (e) {
+    toast.show((e as Error).message)
+  }
+}
+
+async function refresh() {
+  if (conn.state.id) await schema.load(conn.state.id)
+}
+</script>
+
+<template>
+  <div class="browser">
+    <div v-if="!conn.state.id" class="browser-empty">
+      Not connected.<br />Click “Connect” in the top bar.
+    </div>
+
+    <template v-else>
+      <div class="browser-search">
+        <input v-model="filter" placeholder="Search objects or columns…" />
+        <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
+        <button
+          class="icon"
+          :disabled="!conn.state.id || schema.state.loading"
+          title="Refresh schema"
+          @click="refresh()"
+        >
+          <LoaderCircle v-if="schema.state.loading" :size="14" class="spin" />
+          <RotateCw v-else :size="14" />
+        </button>
+      </div>
+      <div v-if="schema.state.error" class="browser-error">{{ schema.state.error }}</div>
+
+      <section v-if="!isFiltering || filteredTables.length" class="group">
+        <h3 @click="open.tables = !open.tables">
+          <component :is="open.tables || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
+          Tables
+          <span class="count">{{ isFiltering ? `${filteredTables.length}/${tables.length}` : tables.length }}</span>
+        </h3>
+        <template v-if="open.tables || isFiltering">
+          <div v-for="t in filteredTables" :key="'t-' + t.oid" class="tree">
+            <div class="node" title="Click to copy name · double-click to open DDL" @click="copyName(t.schema, t.name)" @dblclick="openObject('table', t.schema, t.name, t.oid)">
+              <span
+                class="caret"
+                :class="{ open: expanded.has('t-' + t.oid) || autoExpandRel(t.name, t.schema, t.columns) }"
+                title="Toggle columns"
+                @click.stop="toggleChildren('t-' + t.oid)"
+              >▸</span>
+              <span class="obj-icon"><Table2 :size="14" /></span>
+              <span class="obj-name">{{ displayName(t.schema, t.name) }}</span>
+            </div>
+            <template v-if="expanded.has('t-' + t.oid) || autoExpandRel(t.name, t.schema, t.columns)">
+              <div v-for="c in t.columns" :key="c.name" class="node child">
+                <span class="obj-name">{{ c.name }}</span>
+                <span class="dim">{{ c.type }}</span>
+              </div>
+            </template>
+          </div>
+          <div v-if="!filteredTables.length" class="empty">No tables</div>
+        </template>
+      </section>
+
+      <section v-if="!isFiltering || filteredViews.length" class="group">
+        <h3 @click="open.views = !open.views">
+          <component :is="open.views || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
+          Views
+          <span class="count">{{ isFiltering ? `${filteredViews.length}/${views.length}` : views.length }}</span>
+        </h3>
+        <template v-if="open.views || isFiltering">
+          <div v-for="v in filteredViews" :key="'v-' + v.oid" class="tree">
+            <div class="node" title="Click to copy name · double-click to open DDL" @click="copyName(v.schema, v.name)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
+              <span
+                class="caret"
+                :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
+                title="Toggle columns"
+                @click.stop="toggleChildren('v-' + v.oid)"
+              >▸</span>
+              <span class="obj-icon"><Eye :size="14" /></span>
+              <span class="obj-name">{{ displayName(v.schema, v.name) }}</span>
+            </div>
+            <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
+              <div v-for="c in v.columns" :key="c.name" class="node child">
+                <span class="obj-name">{{ c.name }}</span>
+                <span class="dim">{{ c.type }}</span>
+              </div>
+            </template>
+          </div>
+          <div v-if="!filteredViews.length" class="empty">No views</div>
+        </template>
+      </section>
+
+      <section v-if="!isFiltering || filteredFunctions.length" class="group">
+        <h3 @click="open.functions = !open.functions">
+          <component :is="open.functions || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
+          Functions
+          <span class="count">{{ isFiltering ? `${filteredFunctions.length}/${functions.length}` : functions.length }}</span>
+        </h3>
+        <template v-if="open.functions || isFiltering">
+          <div v-for="f in filteredFunctions" :key="'f-' + f.oid" class="tree">
+            <div
+              class="node"
+              title="Click to copy name · double-click to open DDL"
+              @click="copyName(f.schema, f.name)"
+              @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
+            >
+              <span
+                class="caret"
+                :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig) }"
+                title="Toggle signature"
+                @click.stop="toggleChildren('f-' + f.oid)"
+              >▸</span>
+              <span class="obj-icon"><SquareFunction :size="14" /></span>
+              <span class="obj-name">{{ displayName(f.schema, f.name) }}</span>
+              <span v-if="(overloadCounts.get(f.name) ?? 0) > 1" class="dim sig">({{ f.typeSig }})</span>
+            </div>
+            <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
+              <div v-for="(p, i) in paramRows(f.args, f.returns)" :key="'p-' + i" class="node child">
+                <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
+                <span class="obj-name">{{ p.name }}</span>
+                <span v-if="p.rest" class="dim">{{ p.rest }}</span>
+              </div>
+            </template>
+          </div>
+          <div v-if="!filteredFunctions.length" class="empty">No functions</div>
+        </template>
+      </section>
+
+      <div v-if="isFiltering && !totalMatches" class="empty no-match">
+        No objects match “{{ filter }}”
+      </div>
+    </template>
+  </div>
+</template>
