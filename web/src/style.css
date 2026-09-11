@@ -306,6 +306,32 @@ input {
   word-break: break-word;
 }
 
+.browser-node-menu {
+  position: fixed;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  button {
+    justify-content: flex-start;
+    border: none;
+    background: transparent;
+    padding: 5px 10px;
+    border-radius: 3px;
+    white-space: nowrap;
+
+    &:hover {
+      background: var(--accent-2);
+    }
+  }
+}
+
 .group {
   margin-bottom: 4px;
 
@@ -348,6 +374,37 @@ input {
 .tree {
   display: flex;
   flex-direction: column;
+}
+
+.object-entry-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.object-group-node {
+  font-weight: 600;
+
+  .obj-icon {
+    color: #b18bd8;
+  }
+}
+
+.object-group-children {
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+
+  > .tree > .node {
+    padding-left: 16px;
+  }
+
+  > .tree > .node.cat {
+    padding-left: 32px;
+  }
+
+  > .tree > .node.cat-child {
+    padding-left: 56px;
+  }
 }
 
 .node {

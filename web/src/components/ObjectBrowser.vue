@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -13,6 +13,8 @@ import {
   CornerDownRight,
   Ellipsis,
   Eye,
+  Folder,
+  FolderOpen,
   Grid2x2,
   KeyRound,
   Link,
@@ -35,16 +37,110 @@ import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
 import type { TableInfo } from '../types'
+import { groupTables, type TableEntry } from '../lib/tablegroups'
+import { groupNamedObjects } from '../lib/objectgroups'
 
 const conn = useConnection()
 const schema = useSchema()
 const tabs = useTabs()
 const toast = useToast()
 
-const open = reactive({ tables: true, views: false, functions: false, types: false })
+const open = reactive({ tables: false, views: false, functions: false, types: false })
 const expanded = reactive(new Set<string>())
 
 type SearchType = 'table' | 'view' | 'function' | 'column' | 'type'
+
+type BrowserNodeType =
+  | 'section'
+  | 'table-group'
+  | 'table'
+  | 'table-category'
+  | 'table-column'
+  | 'table-index'
+  | 'table-constraint'
+  | 'table-trigger'
+  | 'view-group'
+  | 'view'
+  | 'view-column'
+  | 'type-group'
+  | 'type'
+  | 'type-detail'
+  | 'function-group'
+  | 'function'
+  | 'function-parameter'
+
+interface BrowserNode {
+  type: BrowserNodeType
+  key: string
+  collapseKeys: string[]
+  section?: BrowserSection
+  groupKeys?: string[]
+  groupState?: Set<string>
+}
+
+type BrowserSection = 'tables' | 'views' | 'types' | 'functions'
+
+interface BrowserContextMenu {
+  x: number
+  y: number
+  node: BrowserNode
+}
+
+const contextMenu = ref<BrowserContextMenu | null>(null)
+
+function browserNode(type: BrowserNodeType, key: string, collapseKeys = [key], groupState?: Set<string>): BrowserNode {
+  return { type, key, collapseKeys, groupState }
+}
+
+function openNodeMenu(e: MouseEvent, node: BrowserNode) {
+  e.preventDefault()
+  e.stopPropagation()
+  cancelPendingToggle()
+
+  const width = 150
+  const height = 36
+  contextMenu.value = {
+    x: Math.min(e.clientX, Math.max(8, window.innerWidth - width - 8)),
+    y: Math.min(e.clientY, Math.max(8, window.innerHeight - height - 8)),
+    node,
+  }
+}
+
+function collapseNode(node: BrowserNode) {
+  node.groupState?.delete(node.key)
+  if (node.type === 'section' && node.section) open[node.section] = false
+  for (const key of node.groupKeys ?? []) (node.groupState ?? expandedTableGroups).delete(key)
+
+  for (const root of node.collapseKeys) {
+    for (const key of expanded) {
+      if (key === root || key.startsWith(`${root}-`)) expanded.delete(key)
+    }
+  }
+}
+
+function collapseContextNode() {
+  const node = contextMenu.value?.node
+  if (node) collapseNode(node)
+  contextMenu.value = null
+}
+
+function closeContextMenu() {
+  contextMenu.value = null
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeContextMenu()
+}
+
+onMounted(() => {
+  window.addEventListener('click', closeContextMenu)
+  window.addEventListener('keydown', onGlobalKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('keydown', onGlobalKeydown)
+})
 
 const TYPE_WORDS: Record<string, SearchType> = {
   table: 'table',
@@ -211,6 +307,64 @@ function cancelPendingToggle() {
 const tables = computed(() => schema.state.data?.tables ?? [])
 const views = computed(() => schema.state.data?.views ?? [])
 const functions = computed(() => schema.state.data?.functions ?? [])
+const AUTO_GROUP_TABLES = true
+const AUTO_GROUP_OBJECTS = true
+const expandedTableGroups = reactive(new Set<string>())
+const expandedViewGroups = reactive(new Set<string>())
+const expandedFunctionGroups = reactive(new Set<string>())
+const expandedTypeGroups = reactive(new Set<string>())
+const tableEntries = computed(() => groupTables(filteredTables.value, AUTO_GROUP_TABLES))
+const viewEntries = computed(() => groupNamedObjects(filteredViews.value, AUTO_GROUP_OBJECTS, 'view'))
+const functionEntries = computed(() => groupNamedObjects(filteredFunctions.value, AUTO_GROUP_OBJECTS, 'function'))
+const typeEntries = computed(() => groupNamedObjects(filteredTypes.value, AUTO_GROUP_OBJECTS, 'type'))
+
+function sectionNode(section: BrowserSection): BrowserNode {
+  const collapseKeys =
+    section === 'tables'
+      ? tables.value.map((table) => `t-${table.oid}`)
+      : section === 'views'
+        ? views.value.map((view) => `v-${view.oid}`)
+        : section === 'types'
+          ? types.value.map((type) => `ty-${type.oid}`)
+          : functions.value.map((func) => `f-${func.oid}`)
+  const groupKeys =
+    section === 'tables'
+      ? groupTables(tables.value, AUTO_GROUP_TABLES)
+          .filter((entry) => entry.kind === 'group')
+          .map((entry) => entry.key)
+      : section === 'views'
+        ? viewEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
+        : section === 'types'
+          ? typeEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
+          : functionEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
+  const groupState =
+    section === 'tables'
+      ? expandedTableGroups
+      : section === 'views'
+        ? expandedViewGroups
+        : section === 'types'
+          ? expandedTypeGroups
+          : expandedFunctionGroups
+  return { ...browserNode('section', `section-${section}`, collapseKeys, groupState), section, groupKeys }
+}
+
+function tableGroupOpen(entry: TableEntry): boolean {
+  return entry.kind === 'table' || expandedTableGroups.has(entry.key) || (isFiltering.value && entry.kind === 'group')
+}
+
+function toggleTableGroup(key: string) {
+  if (expandedTableGroups.has(key)) expandedTableGroups.delete(key)
+  else expandedTableGroups.add(key)
+}
+
+function objectGroupOpen(entry: { kind: 'group' | 'item'; key: string }, groups: Set<string>): boolean {
+  return entry.kind === 'item' || groups.has(entry.key) || (isFiltering.value && entry.kind === 'group')
+}
+
+function toggleObjectGroup(key: string, groups: Set<string>) {
+  if (groups.has(key)) groups.delete(key)
+  else groups.add(key)
+}
 
 function displayName(schemaName: string, name: string): string {
   return schemaName === 'public' ? name : `${schemaName}.${name}`
@@ -410,251 +564,341 @@ async function refresh() {
       <div v-if="schema.state.error" class="browser-error">{{ schema.state.error }}</div>
 
       <section v-if="showTables" class="group">
-        <h3 @click="open.tables = !open.tables">
+        <h3 @click="open.tables = !open.tables" @contextmenu="openNodeMenu($event, sectionNode('tables'))">
           <component :is="open.tables || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Tables
           <span class="count">{{ isFiltering ? `${filteredTables.length}/${tables.length}` : tables.length }}</span>
         </h3>
         <template v-if="open.tables || isFiltering">
-          <div v-for="t in filteredTables" :key="'t-' + t.oid" class="tree">
+          <template v-for="entry in tableEntries" :key="entry.key">
             <div
-              class="node"
-              :title="tableTooltip(t)"
-              @click="queueToggle($event, 't-' + t.oid)"
-              @dblclick="openObject('table', t.schema, t.name, t.oid)"
+              v-if="entry.kind === 'group'"
+              class="node object-group-node"
+              :title="`${displayName(entry.schema, entry.name)} · ${entry.tables.length} tables`"
+              @click="toggleTableGroup(entry.key)"
+              @contextmenu="openNodeMenu($event, browserNode('table-group', entry.key, entry.tables.map((t) => 't-' + t.oid), expandedTableGroups))"
             >
-              <span
-                class="caret"
-                :class="{ open: tableOpen(t) }"
-                title="Expand"
-                @click.stop="toggleChildren('t-' + t.oid)"
-              ><ChevronRight :size="12" /></span>
-              <span class="obj-icon">
-                <Table2 :size="14" />
-                <component
-                  :is="tableBadge(t)"
-                  v-if="tableBadge(t)"
-                  class="obj-badge"
-                  :class="t.isPartition || t.parents ? 'child' : 'parent'"
-                  :size="9"
-                />
-              </span>
-              <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
+              <span class="caret" :class="{ open: tableGroupOpen(entry) }"><ChevronRight :size="12" /></span>
+              <span class="obj-icon"><component :is="tableGroupOpen(entry) ? FolderOpen : Folder" :size="14" /></span>
+              <span class="obj-name">{{ displayName(entry.schema, entry.name) }}</span>
+              <span class="count">{{ entry.tables.length }}</span>
             </div>
-            <template v-if="tableOpen(t)">
-              <div class="node cat" @click="toggleChildren(`t-${t.oid}-cols`)">
-                <span
-                  class="caret"
-                  :class="{ open: catOpen(t, 'cols') }"
-                  @click.stop="toggleChildren(`t-${t.oid}-cols`)"
-                ><ChevronRight :size="11" /></span>
-                <span class="obj-icon"><Columns3 :size="13" /></span>
-                <span class="obj-name">Columns</span>
-                <span class="count">{{ t.columns.length }}</span>
-              </div>
-              <template v-if="catOpen(t, 'cols')">
-                <div
-                  v-for="c in t.columns"
-                  :key="c.name"
-                  class="node cat-child typed-row"
-                  :title="`${c.name} · ${c.type}`"
-                >
-                  <span class="obj-name" :class="{ tbd: isTbd(c.name) }">{{ c.name }}</span>
-                  <span class="dim">{{ c.type }}</span>
-                </div>
-                <div v-if="!t.columns.length" class="empty">None</div>
-              </template>
+            <template v-if="tableGroupOpen(entry)">
+              <div class="object-entry-children" :class="{ 'object-group-children': entry.kind === 'group' }">
+                <div v-for="t in entry.tables" :key="'t-' + t.oid" class="tree">
+                  <div
+                    class="node"
+                    :title="tableTooltip(t)"
+                    @click="queueToggle($event, 't-' + t.oid)"
+                    @dblclick="openObject('table', t.schema, t.name, t.oid)"
+                    @contextmenu="openNodeMenu($event, browserNode('table', 't-' + t.oid))"
+                  >
+                    <span
+                      class="caret"
+                      :class="{ open: tableOpen(t) }"
+                      title="Expand"
+                      @click.stop="toggleChildren('t-' + t.oid)"
+                    ><ChevronRight :size="12" /></span>
+                    <span class="obj-icon">
+                      <Table2 :size="14" />
+                      <component
+                        :is="tableBadge(t)"
+                        v-if="tableBadge(t)"
+                        class="obj-badge"
+                        :class="t.isPartition || t.parents ? 'child' : 'parent'"
+                        :size="9"
+                      />
+                    </span>
+                    <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
+                  </div>
+                  <template v-if="tableOpen(t)">
+                    <div class="node cat" @click="toggleChildren(`t-${t.oid}-cols`)" @contextmenu="openNodeMenu($event, browserNode('table-category', `t-${t.oid}-cols`))">
+                      <span
+                        class="caret"
+                        :class="{ open: catOpen(t, 'cols') }"
+                        @click.stop="toggleChildren(`t-${t.oid}-cols`)"
+                      ><ChevronRight :size="11" /></span>
+                      <span class="obj-icon"><Columns3 :size="13" /></span>
+                      <span class="obj-name">Columns</span>
+                      <span class="count">{{ t.columns.length }}</span>
+                    </div>
+                    <template v-if="catOpen(t, 'cols')">
+                      <div
+                        v-for="c in t.columns"
+                        :key="c.name"
+                        class="node cat-child typed-row"
+                        :title="`${c.name} · ${c.type}`"
+                        @contextmenu="openNodeMenu($event, browserNode('table-column', `t-${t.oid}-cols-${c.name}`, []))"
+                      >
+                        <span class="obj-name" :class="{ tbd: isTbd(c.name) }">{{ c.name }}</span>
+                        <span class="dim">{{ c.type }}</span>
+                      </div>
+                      <div v-if="!t.columns.length" class="empty">None</div>
+                    </template>
 
-              <div class="node cat" @click="toggleChildren(`t-${t.oid}-idx`)">
-                <span
-                  class="caret"
-                  :class="{ open: expanded.has(`t-${t.oid}-idx`) }"
-                  @click.stop="toggleChildren(`t-${t.oid}-idx`)"
-                ><ChevronRight :size="11" /></span>
-                <span class="obj-icon"><ListTree :size="13" /></span>
-                <span class="obj-name">Indexes</span>
-                <span class="count">{{ t.indexes.length }}</span>
-              </div>
-              <template v-if="expanded.has(`t-${t.oid}-idx`)">
-                <div
-                  v-for="ix in t.indexes"
-                  :key="ix.name"
-                  class="node cat-child typed-row"
-                  :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
-                  @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
-                >
-                  <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
-                  <span class="obj-name" :class="{ tbd: isTbd(ix.name) }">{{ ix.name }}</span>
-                  <span class="dim">{{ ix.method }}</span>
-                </div>
-                <div v-if="!t.indexes.length" class="empty">None</div>
-              </template>
+                    <div class="node cat" @click="toggleChildren(`t-${t.oid}-idx`)" @contextmenu="openNodeMenu($event, browserNode('table-category', `t-${t.oid}-idx`))">
+                      <span
+                        class="caret"
+                        :class="{ open: expanded.has(`t-${t.oid}-idx`) }"
+                        @click.stop="toggleChildren(`t-${t.oid}-idx`)"
+                      ><ChevronRight :size="11" /></span>
+                      <span class="obj-icon"><ListTree :size="13" /></span>
+                      <span class="obj-name">Indexes</span>
+                      <span class="count">{{ t.indexes.length }}</span>
+                    </div>
+                    <template v-if="expanded.has(`t-${t.oid}-idx`)">
+                      <div
+                        v-for="ix in t.indexes"
+                        :key="ix.name"
+                        class="node cat-child typed-row"
+                        :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
+                        @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
+                        @contextmenu="openNodeMenu($event, browserNode('table-index', `t-${t.oid}-idx-${ix.name}`, []))"
+                      >
+                        <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
+                        <span class="obj-name" :class="{ tbd: isTbd(ix.name) }">{{ ix.name }}</span>
+                        <span class="dim">{{ ix.method }}</span>
+                      </div>
+                      <div v-if="!t.indexes.length" class="empty">None</div>
+                    </template>
 
-              <div class="node cat" @click="toggleChildren(`t-${t.oid}-con`)">
-                <span
-                  class="caret"
-                  :class="{ open: expanded.has(`t-${t.oid}-con`) }"
-                  @click.stop="toggleChildren(`t-${t.oid}-con`)"
-                ><ChevronRight :size="11" /></span>
-                <span class="obj-icon"><KeyRound :size="13" /></span>
-                <span class="obj-name">Constraints</span>
-                <span class="count">{{ t.constraints.length }}</span>
-              </div>
-              <template v-if="expanded.has(`t-${t.oid}-con`)">
-                <div
-                  v-for="con in t.constraints"
-                  :key="con.name"
-                  class="node cat-child"
-                  :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
-                  @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
-                >
-                  <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
-                  <span class="obj-name" :class="{ tbd: isTbd(con.name) }">{{ con.name }}</span>
-                </div>
-                <div v-if="!t.constraints.length" class="empty">None</div>
-              </template>
+                    <div class="node cat" @click="toggleChildren(`t-${t.oid}-con`)" @contextmenu="openNodeMenu($event, browserNode('table-category', `t-${t.oid}-con`))">
+                      <span
+                        class="caret"
+                        :class="{ open: expanded.has(`t-${t.oid}-con`) }"
+                        @click.stop="toggleChildren(`t-${t.oid}-con`)"
+                      ><ChevronRight :size="11" /></span>
+                      <span class="obj-icon"><KeyRound :size="13" /></span>
+                      <span class="obj-name">Constraints</span>
+                      <span class="count">{{ t.constraints.length }}</span>
+                    </div>
+                    <template v-if="expanded.has(`t-${t.oid}-con`)">
+                      <div
+                        v-for="con in t.constraints"
+                        :key="con.name"
+                        class="node cat-child"
+                        :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
+                        @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
+                        @contextmenu="openNodeMenu($event, browserNode('table-constraint', `t-${t.oid}-con-${con.name}`, []))"
+                      >
+                        <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
+                        <span class="obj-name" :class="{ tbd: isTbd(con.name) }">{{ con.name }}</span>
+                      </div>
+                      <div v-if="!t.constraints.length" class="empty">None</div>
+                    </template>
 
-              <div class="node cat" @click="toggleChildren(`t-${t.oid}-trg`)">
-                <span
-                  class="caret"
-                  :class="{ open: expanded.has(`t-${t.oid}-trg`) }"
-                  @click.stop="toggleChildren(`t-${t.oid}-trg`)"
-                ><ChevronRight :size="11" /></span>
-                <span class="obj-icon"><Zap :size="13" /></span>
-                <span class="obj-name">Triggers</span>
-                <span class="count">{{ t.triggers.length }}</span>
-              </div>
-              <template v-if="expanded.has(`t-${t.oid}-trg`)">
-                <div
-                  v-for="trg in t.triggers"
-                  :key="trg.name"
-                  class="node cat-child"
-                  title="Double-click to open DDL"
-                  @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
-                >
-                  <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
+                    <div class="node cat" @click="toggleChildren(`t-${t.oid}-trg`)" @contextmenu="openNodeMenu($event, browserNode('table-category', `t-${t.oid}-trg`))">
+                      <span
+                        class="caret"
+                        :class="{ open: expanded.has(`t-${t.oid}-trg`) }"
+                        @click.stop="toggleChildren(`t-${t.oid}-trg`)"
+                      ><ChevronRight :size="11" /></span>
+                      <span class="obj-icon"><Zap :size="13" /></span>
+                      <span class="obj-name">Triggers</span>
+                      <span class="count">{{ t.triggers.length }}</span>
+                    </div>
+                    <template v-if="expanded.has(`t-${t.oid}-trg`)">
+                      <div
+                        v-for="trg in t.triggers"
+                        :key="trg.name"
+                        class="node cat-child"
+                        title="Double-click to open DDL"
+                        @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
+                        @contextmenu="openNodeMenu($event, browserNode('table-trigger', `t-${t.oid}-trg-${trg.name}`, []))"
+                      >
+                        <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
+                      </div>
+                      <div v-if="!t.triggers.length" class="empty">None</div>
+                    </template>
+                  </template>
                 </div>
-                <div v-if="!t.triggers.length" class="empty">None</div>
-              </template>
+              </div>
             </template>
-          </div>
+          </template>
           <div v-if="!filteredTables.length" class="empty">No tables</div>
         </template>
       </section>
 
       <section v-if="showViews" class="group">
-        <h3 @click="open.views = !open.views">
+        <h3 @click="open.views = !open.views" @contextmenu="openNodeMenu($event, sectionNode('views'))">
           <component :is="open.views || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Views
           <span class="count">{{ isFiltering ? `${filteredViews.length}/${views.length}` : views.length }}</span>
         </h3>
         <template v-if="open.views || isFiltering">
-          <div v-for="v in filteredViews" :key="'v-' + v.oid" class="tree">
-            <div class="node" title="Click to expand/collapse · double-click to open DDL" @click="queueToggle($event, 'v-' + v.oid)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
-              <span
-                class="caret"
-                :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
-                title="Toggle columns"
-                @click.stop="toggleChildren('v-' + v.oid)"
-              ><ChevronRight :size="12" /></span>
-              <span class="obj-icon"><Eye :size="14" /></span>
-              <span class="obj-name" :class="{ tbd: isTbd(v.name) }">{{ displayName(v.schema, v.name) }}</span>
-              <span v-if="v.materialized" class="void-badge">mat</span>
+          <template v-for="entry in viewEntries" :key="entry.key">
+            <div
+              v-if="entry.kind === 'group'"
+              class="node object-group-node"
+              :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} views`"
+              @click="toggleObjectGroup(entry.key, expandedViewGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('view-group', entry.key, entry.objects.map((v) => 'v-' + v.oid), expandedViewGroups))"
+            >
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedViewGroups) }"><ChevronRight :size="12" /></span>
+              <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedViewGroups) ? FolderOpen : Folder" :size="14" /></span>
+              <span class="obj-name">{{ displayName(entry.schema, entry.name) }}</span>
+              <span class="count">{{ entry.objects.length }}</span>
             </div>
-            <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
-              <div
-                v-for="c in v.columns"
-                :key="c.name"
-                class="node child typed-row"
-                :title="`${c.name} · ${c.type}`"
-              >
-                <span class="obj-name">{{ c.name }}</span>
-                <span class="dim">{{ c.type }}</span>
+            <template v-if="objectGroupOpen(entry, expandedViewGroups)">
+              <div class="object-entry-children" :class="{ 'object-group-children': entry.kind === 'group' }">
+                <div v-for="v in entry.objects" :key="'v-' + v.oid" class="tree">
+                  <div class="node" title="Click to expand/collapse · double-click to open DDL" @click="queueToggle($event, 'v-' + v.oid)" @dblclick="openObject('view', v.schema, v.name, v.oid)" @contextmenu="openNodeMenu($event, browserNode('view', 'v-' + v.oid))">
+                    <span
+                      class="caret"
+                      :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
+                      title="Toggle columns"
+                      @click.stop="toggleChildren('v-' + v.oid)"
+                    ><ChevronRight :size="12" /></span>
+                    <span class="obj-icon"><Eye :size="14" /></span>
+                    <span class="obj-name" :class="{ tbd: isTbd(v.name) }">{{ displayName(v.schema, v.name) }}</span>
+                    <span v-if="v.materialized" class="void-badge">mat</span>
+                  </div>
+                  <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
+                    <div
+                      v-for="c in v.columns"
+                      :key="c.name"
+                      class="node child typed-row"
+                      :title="`${c.name} · ${c.type}`"
+                      @contextmenu="openNodeMenu($event, browserNode('view-column', `v-${v.oid}-${c.name}`, []))"
+                    >
+                      <span class="obj-name">{{ c.name }}</span>
+                      <span class="dim">{{ c.type }}</span>
+                    </div>
+                  </template>
+                </div>
               </div>
             </template>
-          </div>
+          </template>
           <div v-if="!filteredViews.length" class="empty">No views</div>
         </template>
       </section>
 
       <section v-if="showTypes" class="group">
-        <h3 @click="open.types = !open.types">
+        <h3 @click="open.types = !open.types" @contextmenu="openNodeMenu($event, sectionNode('types'))">
           <component :is="open.types || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Types
           <span class="count">{{ isFiltering ? `${filteredTypes.length}/${types.length}` : types.length }}</span>
         </h3>
         <template v-if="open.types || isFiltering">
-          <div v-for="t in filteredTypes" :key="'ty-' + t.oid" class="tree">
+          <template v-for="entry in typeEntries" :key="entry.key">
             <div
-              class="node"
-              :title="`${t.kind} · ${t.detail} · Click to expand/collapse · double-click to open DDL`"
-              @click="queueToggle($event, 'ty-' + t.oid)"
-              @dblclick="openObject('type', t.schema, t.name, t.oid)"
+              v-if="entry.kind === 'group'"
+              class="node object-group-node"
+              :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} types`"
+              @click="toggleObjectGroup(entry.key, expandedTypeGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('type-group', entry.key, entry.objects.map((t) => 'ty-' + t.oid), expandedTypeGroups))"
             >
-              <span
-                class="caret"
-                :class="{ open: expanded.has('ty-' + t.oid) }"
-                title="Toggle detail"
-                @click.stop="toggleChildren('ty-' + t.oid)"
-              ><ChevronRight :size="12" /></span>
-              <span class="obj-icon"><Shapes :size="14" /></span>
-              <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
-              <span class="void-badge">{{ t.kind }}</span>
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedTypeGroups) }"><ChevronRight :size="12" /></span>
+              <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedTypeGroups) ? FolderOpen : Folder" :size="14" /></span>
+              <span class="obj-name">{{ displayName(entry.schema, entry.name) }}</span>
+              <span class="count">{{ entry.objects.length }}</span>
             </div>
-            <template v-if="expanded.has('ty-' + t.oid)">
-              <div class="node child" :title="t.detail">
-                <span class="obj-name">{{ t.detail || '—' }}</span>
+            <template v-if="objectGroupOpen(entry, expandedTypeGroups)">
+              <div class="object-entry-children" :class="{ 'object-group-children': entry.kind === 'group' }">
+                <div v-for="t in entry.objects" :key="'ty-' + t.oid" class="tree">
+                  <div
+                    class="node"
+                    :title="`${t.kind} · ${t.detail} · Click to expand/collapse · double-click to open DDL`"
+                    @click="queueToggle($event, 'ty-' + t.oid)"
+                    @dblclick="openObject('type', t.schema, t.name, t.oid)"
+                    @contextmenu="openNodeMenu($event, browserNode('type', 'ty-' + t.oid))"
+                  >
+                    <span
+                      class="caret"
+                      :class="{ open: expanded.has('ty-' + t.oid) }"
+                      title="Toggle detail"
+                      @click.stop="toggleChildren('ty-' + t.oid)"
+                    ><ChevronRight :size="12" /></span>
+                    <span class="obj-icon"><Shapes :size="14" /></span>
+                    <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
+                    <span class="void-badge">{{ t.kind }}</span>
+                  </div>
+                  <template v-if="expanded.has('ty-' + t.oid)">
+                    <div class="node child" :title="t.detail" @contextmenu="openNodeMenu($event, browserNode('type-detail', `ty-${t.oid}-detail`, []))">
+                      <span class="obj-name">{{ t.detail || '—' }}</span>
+                    </div>
+                  </template>
+                </div>
               </div>
             </template>
-          </div>
+          </template>
           <div v-if="!filteredTypes.length" class="empty">No types</div>
         </template>
       </section>
 
       <section v-if="showFunctions" class="group">
-        <h3 @click="open.functions = !open.functions">
+        <h3 @click="open.functions = !open.functions" @contextmenu="openNodeMenu($event, sectionNode('functions'))">
           <component :is="open.functions || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
           Functions
           <span class="count">{{ isFiltering ? `${filteredFunctions.length}/${functions.length}` : functions.length }}</span>
         </h3>
         <template v-if="open.functions || isFiltering">
-          <div v-for="f in filteredFunctions" :key="'f-' + f.oid" class="tree">
+          <template v-for="entry in functionEntries" :key="entry.key">
             <div
-              class="node"
-              :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to expand/collapse · double-click to open DDL`"
-              @click="queueToggle($event, 'f-' + f.oid)"
-              @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
+              v-if="entry.kind === 'group'"
+              class="node object-group-node"
+              :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} functions`"
+              @click="toggleObjectGroup(entry.key, expandedFunctionGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('function-group', entry.key, entry.objects.map((f) => 'f-' + f.oid), expandedFunctionGroups))"
             >
-              <span
-                class="caret"
-                :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig) }"
-                title="Toggle signature"
-                @click.stop="toggleChildren('f-' + f.oid)"
-              ><ChevronRight :size="12" /></span>
-              <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
-              <span class="obj-name" :class="{ tbd: isTbd(f.name) }">{{ displayName(f.schema, f.name) }}</span>
-              <span v-if="f.returns === 'void'" class="void-badge">void</span>
-              <span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span>
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedFunctionGroups) }"><ChevronRight :size="12" /></span>
+              <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedFunctionGroups) ? FolderOpen : Folder" :size="14" /></span>
+              <span class="obj-name">{{ displayName(entry.schema, entry.name) }}</span>
+              <span class="count">{{ entry.objects.length }}</span>
             </div>
-            <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
-              <div
-                v-for="(p, i) in paramRows(f.args, f.returns)"
-                :key="'p-' + i"
-                class="node child typed-row"
-                :title="p.rest ? `${p.name} ${p.rest}` : p.name"
-              >
-                <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
-                <span class="obj-name">{{ p.name }}</span>
-                <span v-if="p.rest" class="dim">{{ p.rest }}</span>
+            <template v-if="objectGroupOpen(entry, expandedFunctionGroups)">
+              <div class="object-entry-children" :class="{ 'object-group-children': entry.kind === 'group' }">
+                <div v-for="f in entry.objects" :key="'f-' + f.oid" class="tree">
+                  <div
+                    class="node"
+                    :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to expand/collapse · double-click to open DDL`"
+                    @click="queueToggle($event, 'f-' + f.oid)"
+                    @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
+                    @contextmenu="openNodeMenu($event, browserNode('function', 'f-' + f.oid))"
+                  >
+                    <span
+                      class="caret"
+                      :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig) }"
+                      title="Toggle signature"
+                      @click.stop="toggleChildren('f-' + f.oid)"
+                    ><ChevronRight :size="12" /></span>
+                    <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
+                    <span class="obj-name" :class="{ tbd: isTbd(f.name) }">{{ displayName(f.schema, f.name) }}</span>
+                    <span v-if="f.returns === 'void'" class="void-badge">void</span>
+                    <span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span>
+                  </div>
+                  <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
+                    <div
+                      v-for="(p, i) in paramRows(f.args, f.returns)"
+                      :key="'p-' + i"
+                      class="node child typed-row"
+                      :title="p.rest ? `${p.name} ${p.rest}` : p.name"
+                      @contextmenu="openNodeMenu($event, browserNode('function-parameter', `f-${f.oid}-param-${i}`, []))"
+                    >
+                      <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
+                      <span class="obj-name">{{ p.name }}</span>
+                      <span v-if="p.rest" class="dim">{{ p.rest }}</span>
+                    </div>
+                  </template>
+                </div>
               </div>
             </template>
-          </div>
+          </template>
           <div v-if="!filteredFunctions.length" class="empty">No functions</div>
         </template>
       </section>
 
       <div v-if="isFiltering && !totalMatches" class="empty no-match">
         No objects match “{{ filter }}”
+      </div>
+
+      <div
+        v-if="contextMenu"
+        class="browser-node-menu"
+        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @click.stop
+      >
+        <button @click="collapseContextNode">Collapse</button>
       </div>
     </template>
   </div>
