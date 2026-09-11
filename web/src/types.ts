@@ -5,11 +5,34 @@ export interface ColumnInfo {
   defaultValue: string | null
 }
 
+export interface IndexInfo {
+  name: string
+  type: 'primary' | 'unique' | 'exclusion' | 'normal'
+  method: string
+}
+
+export interface ConstraintInfo {
+  name: string
+  type: string
+  definition: string
+}
+
+export interface TriggerInfo {
+  name: string
+  definition: string
+}
+
 export interface TableInfo {
   schema: string
   name: string
   oid: string
   columns: ColumnInfo[]
+  indexes: IndexInfo[]
+  constraints: ConstraintInfo[]
+  triggers: TriggerInfo[]
+  isPartition: boolean
+  isPartitioned: boolean
+  parents: string
 }
 
 export interface ViewInfo {

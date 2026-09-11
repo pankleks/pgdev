@@ -134,7 +134,7 @@ function fmt(v: unknown): string {
 async function copyCell(v: unknown) {
   const text = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
   const ok = await copyText(text)
-  toast.show(ok ? 'Value copied' : 'Copy to clipboard failed')
+  toast.show(ok ? 'Value copied.' : 'Copy to clipboard failed')
 }
 
 function cancelRun() {

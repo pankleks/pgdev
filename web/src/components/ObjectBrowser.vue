@@ -6,14 +6,24 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  CircleSlash,
+  Columns3,
   CornerDownRight,
   Ellipsis,
   Eye,
+  Grid2x2,
+  KeyRound,
+  Link,
+  ListTree,
   LoaderCircle,
   RotateCw,
+  ShieldCheck,
   SquareFunction,
   Table2,
   X,
+  Zap,
   type LucideIcon,
 } from 'lucide-vue-next'
 import { useConnection } from '../composables/connection'
@@ -22,6 +32,7 @@ import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
 import { copyText } from '../lib/gridio'
+import type { TableInfo } from '../types'
 
 const conn = useConnection()
 const schema = useSchema()
@@ -87,6 +98,10 @@ function displayName(schemaName: string, name: string): string {
   return schemaName === 'public' ? name : `${schemaName}.${name}`
 }
 
+function isTbd(name: string): boolean {
+  return name.includes('_tbd')
+}
+
 function splitArgs(args: string): string[] {
   const trimmed = args.trim()
   if (!trimmed) return []
@@ -130,6 +145,42 @@ const PARAM_ICONS: Record<ParamKind, LucideIcon> = {
   returns: CornerDownRight,
 }
 
+type IndexType = 'primary' | 'unique' | 'exclusion' | 'normal'
+
+const INDEX_ICONS: Record<IndexType, LucideIcon> = {
+  primary: KeyRound,
+  unique: ShieldCheck,
+  exclusion: CircleSlash,
+  normal: ListTree,
+}
+
+const CONSTRAINT_META: Record<string, { icon: LucideIcon; label: string; cls: string }> = {
+  p: { icon: KeyRound, label: 'PRIMARY KEY', cls: 'primary' },
+  u: { icon: ShieldCheck, label: 'UNIQUE', cls: 'unique' },
+  f: { icon: Link, label: 'FOREIGN KEY', cls: 'fk' },
+  c: { icon: CircleCheck, label: 'CHECK', cls: 'check' },
+  x: { icon: CircleSlash, label: 'EXCLUSION', cls: 'exclusion' },
+  n: { icon: CircleAlert, label: 'NOT NULL', cls: 'notnull' },
+}
+
+function constraintMeta(type: string): { icon: LucideIcon; label: string; cls: string } {
+  return CONSTRAINT_META[type] ?? { icon: CircleAlert, label: type, cls: 'notnull' }
+}
+
+function tableTooltip(t: TableInfo): string {
+  const base = 'Click to copy name · double-click to open DDL'
+  if (t.isPartition) return `Partition of ${t.parents} · ${base}`
+  if (t.parents) return `Inherits: ${t.parents} · ${base}`
+  if (t.isPartitioned) return `Partitioned table · ${base}`
+  return base
+}
+
+function tableBadge(t: TableInfo): LucideIcon | null {
+  if (t.isPartition || t.parents) return CornerDownRight
+  if (t.isPartitioned) return Grid2x2
+  return null
+}
+
 interface ParamRow {
   kind: ParamKind
   name: string
@@ -155,9 +206,23 @@ function paramRows(args: string, returns: string): ParamRow[] {
   return rows
 }
 
-async function copyName(schemaName: string, name: string) {
-  const ok = await copyText(displayName(schemaName, name))
+async function copyName(schemaName: string | null, name: string) {
+  const text = schemaName ? displayName(schemaName, name) : name
+  const ok = await copyText(text)
   toast.show(ok ? 'Object name copied.' : 'Copy failed')
+}
+
+type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
+
+function tableOpen(t: TableInfo): boolean {
+  return expanded.has('t-' + t.oid) || autoExpandRel(t.name, t.schema, t.columns)
+}
+
+function catOpen(t: TableInfo, cat: TableCategory): boolean {
+  return (
+    expanded.has(`t-${t.oid}-${cat}`) ||
+    (cat === 'cols' && autoExpandRel(t.name, t.schema, t.columns))
+  )
 }
 
 async function openObject(
@@ -211,21 +276,127 @@ async function refresh() {
         </h3>
         <template v-if="open.tables || isFiltering">
           <div v-for="t in filteredTables" :key="'t-' + t.oid" class="tree">
-            <div class="node" title="Click to copy name · double-click to open DDL" @click="copyName(t.schema, t.name)" @dblclick="openObject('table', t.schema, t.name, t.oid)">
+            <div
+              class="node"
+              :title="tableTooltip(t)"
+              @click="copyName(t.schema, t.name)"
+              @dblclick="openObject('table', t.schema, t.name, t.oid)"
+            >
               <span
                 class="caret"
-                :class="{ open: expanded.has('t-' + t.oid) || autoExpandRel(t.name, t.schema, t.columns) }"
-                title="Toggle columns"
+                :class="{ open: tableOpen(t) }"
+                title="Expand"
                 @click.stop="toggleChildren('t-' + t.oid)"
-              >▸</span>
-              <span class="obj-icon"><Table2 :size="14" /></span>
-              <span class="obj-name">{{ displayName(t.schema, t.name) }}</span>
+              ><ChevronRight :size="12" /></span>
+              <span class="obj-icon">
+                <Table2 :size="14" />
+                <component
+                  :is="tableBadge(t)"
+                  v-if="tableBadge(t)"
+                  class="obj-badge"
+                  :class="t.isPartition || t.parents ? 'child' : 'parent'"
+                  :size="9"
+                />
+              </span>
+              <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
             </div>
-            <template v-if="expanded.has('t-' + t.oid) || autoExpandRel(t.name, t.schema, t.columns)">
-              <div v-for="c in t.columns" :key="c.name" class="node child">
-                <span class="obj-name">{{ c.name }}</span>
-                <span class="dim">{{ c.type }}</span>
+            <template v-if="tableOpen(t)">
+              <div class="node cat" @click="toggleChildren(`t-${t.oid}-cols`)">
+                <span
+                  class="caret"
+                  :class="{ open: catOpen(t, 'cols') }"
+                  @click.stop="toggleChildren(`t-${t.oid}-cols`)"
+                ><ChevronRight :size="11" /></span>
+                <span class="obj-icon"><Columns3 :size="13" /></span>
+                <span class="obj-name">Columns</span>
+                <span class="count">{{ t.columns.length }}</span>
               </div>
+              <template v-if="catOpen(t, 'cols')">
+                <div
+                  v-for="c in t.columns"
+                  :key="c.name"
+                  class="node cat-child"
+                  title="Click to copy name"
+                  @click="copyName(null, c.name)"
+                >
+                  <span class="obj-name" :class="{ tbd: isTbd(c.name) }">{{ c.name }}</span>
+                  <span class="dim">{{ c.type }}</span>
+                </div>
+                <div v-if="!t.columns.length" class="empty">None</div>
+              </template>
+
+              <div class="node cat" @click="toggleChildren(`t-${t.oid}-idx`)">
+                <span
+                  class="caret"
+                  :class="{ open: expanded.has(`t-${t.oid}-idx`) }"
+                  @click.stop="toggleChildren(`t-${t.oid}-idx`)"
+                ><ChevronRight :size="11" /></span>
+                <span class="obj-icon"><ListTree :size="13" /></span>
+                <span class="obj-name">Indexes</span>
+                <span class="count">{{ t.indexes.length }}</span>
+              </div>
+              <template v-if="expanded.has(`t-${t.oid}-idx`)">
+                <div
+                  v-for="ix in t.indexes"
+                  :key="ix.name"
+                  class="node cat-child"
+                  :title="`${ix.type} index · ${ix.method}`"
+                  @click="copyName(null, ix.name)"
+                >
+                  <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
+                  <span class="obj-name" :class="{ tbd: isTbd(ix.name) }">{{ ix.name }}</span>
+                  <span class="dim">{{ ix.method }}</span>
+                </div>
+                <div v-if="!t.indexes.length" class="empty">None</div>
+              </template>
+
+              <div class="node cat" @click="toggleChildren(`t-${t.oid}-con`)">
+                <span
+                  class="caret"
+                  :class="{ open: expanded.has(`t-${t.oid}-con`) }"
+                  @click.stop="toggleChildren(`t-${t.oid}-con`)"
+                ><ChevronRight :size="11" /></span>
+                <span class="obj-icon"><KeyRound :size="13" /></span>
+                <span class="obj-name">Constraints</span>
+                <span class="count">{{ t.constraints.length }}</span>
+              </div>
+              <template v-if="expanded.has(`t-${t.oid}-con`)">
+                <div
+                  v-for="con in t.constraints"
+                  :key="con.name"
+                  class="node cat-child"
+                  :title="`${constraintMeta(con.type).label}: ${con.definition}`"
+                  @click="copyName(null, con.name)"
+                >
+                  <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
+                  <span class="obj-name" :class="{ tbd: isTbd(con.name) }">{{ con.name }}</span>
+                </div>
+                <div v-if="!t.constraints.length" class="empty">None</div>
+              </template>
+
+              <div class="node cat" @click="toggleChildren(`t-${t.oid}-trg`)">
+                <span
+                  class="caret"
+                  :class="{ open: expanded.has(`t-${t.oid}-trg`) }"
+                  @click.stop="toggleChildren(`t-${t.oid}-trg`)"
+                ><ChevronRight :size="11" /></span>
+                <span class="obj-icon"><Zap :size="13" /></span>
+                <span class="obj-name">Triggers</span>
+                <span class="count">{{ t.triggers.length }}</span>
+              </div>
+              <template v-if="expanded.has(`t-${t.oid}-trg`)">
+                <div
+                  v-for="trg in t.triggers"
+                  :key="trg.name"
+                  class="node cat-child"
+                  title="Click to copy name"
+                  @click="copyName(null, trg.name)"
+                >
+                  <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
+                  <span class="dim">{{ trg.definition }}</span>
+                </div>
+                <div v-if="!t.triggers.length" class="empty">None</div>
+              </template>
             </template>
           </div>
           <div v-if="!filteredTables.length" class="empty">No tables</div>
@@ -248,7 +419,7 @@ async function refresh() {
                 @click.stop="toggleChildren('v-' + v.oid)"
               >▸</span>
               <span class="obj-icon"><Eye :size="14" /></span>
-              <span class="obj-name">{{ displayName(v.schema, v.name) }}</span>
+              <span class="obj-name" :class="{ tbd: isTbd(v.name) }">{{ displayName(v.schema, v.name) }}</span>
             </div>
             <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
               <div v-for="c in v.columns" :key="c.name" class="node child">
@@ -282,7 +453,7 @@ async function refresh() {
                 @click.stop="toggleChildren('f-' + f.oid)"
               >▸</span>
               <span class="obj-icon"><SquareFunction :size="14" /></span>
-              <span class="obj-name">{{ displayName(f.schema, f.name) }}</span>
+              <span class="obj-name" :class="{ tbd: isTbd(f.name) }">{{ displayName(f.schema, f.name) }}</span>
               <span v-if="(overloadCounts.get(f.name) ?? 0) > 1" class="dim sig">({{ f.typeSig }})</span>
             </div>
             <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">

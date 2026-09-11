@@ -15,7 +15,7 @@ const tabs = useTabs()
 const results = useResults()
 const toast = useToast()
 
-const sideW = ref(280)
+const sideW = ref(336)
 const resultsH = ref(240)
 let dragKind: 'side' | 'results' | null = null
 

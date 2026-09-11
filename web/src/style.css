@@ -377,6 +377,89 @@ input:focus {
   display: block;
 }
 
+.node.cat {
+  padding-left: 40px;
+  cursor: pointer;
+}
+
+.node.cat .obj-icon {
+  color: var(--text-dim);
+}
+
+.node.cat-child {
+  padding-left: 64px;
+  gap: 12px;
+  cursor: default;
+}
+
+.node.cat-child .dim {
+  margin-left: auto;
+}
+
+.idx-icon {
+  width: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.idx-icon svg {
+  display: block;
+}
+
+.idx-icon.normal {
+  color: var(--text-dim);
+}
+
+.idx-icon.primary {
+  color: var(--accent);
+}
+
+.idx-icon.unique {
+  color: var(--ok);
+}
+
+.idx-icon.exclusion {
+  color: #c586c0;
+}
+
+.con-icon {
+  width: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.con-icon svg {
+  display: block;
+}
+
+.con-icon.primary {
+  color: var(--accent);
+}
+
+.con-icon.unique {
+  color: var(--ok);
+}
+
+.con-icon.fk {
+  color: #d7ba7d;
+}
+
+.con-icon.check {
+  color: #4ec9b0;
+}
+
+.con-icon.exclusion {
+  color: #c586c0;
+}
+
+.con-icon.notnull {
+  color: var(--text-dim);
+}
+
 .node.child {
   padding-left: 60px;
   gap: 12px;
@@ -426,15 +509,37 @@ input:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 .obj-icon svg {
   display: block;
 }
 
+.obj-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  background: var(--panel);
+  border-radius: 50%;
+  padding: 1px;
+}
+
+.obj-badge.child {
+  color: #d7ba7d;
+}
+
+.obj-badge.parent {
+  color: var(--ok);
+}
+
 .obj-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.obj-name.tbd {
+  color: #e5c07b;
 }
 
 .dim {
