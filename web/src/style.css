@@ -258,6 +258,11 @@ input:focus {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  user-select: none;
+}
+
+.browser-search input {
+  user-select: text;
 }
 
 .browser-empty {
@@ -468,6 +473,23 @@ input:focus {
 
 .node.child .dim {
   margin-left: auto;
+}
+
+/* Rows that display a type: single line, never wrapped. The name keeps
+   priority (never squeezed to "re…"), the type ellipsizes, and the full
+   text is always in the title tooltip. */
+.node.typed-row .obj-name {
+  flex-shrink: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node.typed-row .dim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .param-icon {

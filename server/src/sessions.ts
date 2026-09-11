@@ -74,3 +74,9 @@ export async function closeSessionsForConnection(connId: string): Promise<void> 
   const keys = [...sessions.keys()].filter((k) => sessions.get(k)?.connId === connId)
   await Promise.all(keys.map((k) => teardownSession(k, 'rollback')))
 }
+
+/** Drop sessions pinned to a dead pool client (see pool 'error' handler). */
+export async function closeSessionsForClient(client: PoolClient): Promise<void> {
+  const keys = [...sessions.keys()].filter((k) => sessions.get(k)?.client === client)
+  await Promise.all(keys.map((k) => teardownSession(k, 'rollback')))
+}

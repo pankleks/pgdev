@@ -3,7 +3,7 @@ import { Pool } from 'pg'
 import { randomUUID } from 'node:crypto'
 import { setPool, removePool } from '../pools.js'
 import { pgErrorMessage } from '../pgerror.js'
-import { closeSessionsForConnection } from '../sessions.js'
+import { closeSessionsForConnection, closeSessionsForClient } from '../sessions.js'
 
 interface ConnectBody {
   connectionString?: string
@@ -36,6 +36,13 @@ export async function connectionRoutes(app: FastifyInstance) {
     config.application_name = 'pgdev'
 
     const pool = new Pool(config)
+    // Idle clients can die at any time (server restart, NAT/VPN timeout,
+    // idle_session_timeout). Without this handler node-postgres rethrows as
+    // an unhandled 'error' event and takes down the whole API process.
+    pool.on('error', (err, client) => {
+      console.error(`pg pool error: ${pgErrorMessage(err, 'Database connection error')}`)
+      if (client) void closeSessionsForClient(client)
+    })
     try {
       const client = await pool.connect()
       client.release()

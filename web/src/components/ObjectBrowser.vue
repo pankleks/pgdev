@@ -34,7 +34,6 @@ import { useSchema } from '../composables/schema'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
-import { copyText } from '../lib/gridio'
 import type { TableInfo } from '../types'
 
 const conn = useConnection()
@@ -172,9 +171,41 @@ const totalMatches = computed(
     filteredTypes.value.length,
 )
 
-function toggleChildren(key: string) {
+function flip(key: string) {
   if (expanded.has(key)) expanded.delete(key)
   else expanded.add(key)
+}
+
+function toggleChildren(key: string) {
+  // Any explicit toggle wins over a pending delayed one.
+  window.clearTimeout(clickTimer)
+  pendingToggle = null
+  flip(key)
+}
+
+// Row-body single clicks toggle on a delay so a double-click (open DDL)
+// never flips expand state: the 2nd click (detail > 1) is ignored and
+// dblclick cancels the pending toggle — or reverts it if a slow 2nd
+// click already let it fire.
+let clickTimer = 0
+let pendingToggle: { key: string; fired: boolean; at: number } | null = null
+
+function queueToggle(e: MouseEvent, key: string) {
+  if (e.detail !== 1) return
+  window.clearTimeout(clickTimer)
+  pendingToggle = { key, fired: false, at: Date.now() }
+  clickTimer = window.setTimeout(() => {
+    flip(key)
+    if (pendingToggle && pendingToggle.key === key) pendingToggle.fired = true
+  }, 300)
+}
+
+function cancelPendingToggle() {
+  window.clearTimeout(clickTimer)
+  if (pendingToggle && Date.now() - pendingToggle.at < 600) {
+    if (pendingToggle.fired) flip(pendingToggle.key)
+  }
+  pendingToggle = null
 }
 
 const tables = computed(() => schema.state.data?.tables ?? [])
@@ -275,7 +306,7 @@ function constraintMeta(type: string): { icon: LucideIcon; label: string; cls: s
 }
 
 function tableTooltip(t: TableInfo): string {
-  const base = 'Click to copy name · double-click to open DDL'
+  const base = 'Click to expand/collapse · double-click to open DDL'
   if (t.isPartition) return `Partition of ${t.parents} · ${base}`
   if (t.parents) return `Inherits: ${t.parents} · ${base}`
   if (t.isPartitioned) return `Partitioned table · ${base}`
@@ -313,21 +344,6 @@ function paramRows(args: string, returns: string): ParamRow[] {
   return rows
 }
 
-let copyTimer = 0
-
-// Single click copies; the second click of a double-click (detail > 1)
-// is ignored so double-click only opens the DDL. The delay lets the
-// dblclick handler cancel a pending copy from the first click.
-function queueCopy(e: MouseEvent, schemaName: string | null, name: string) {
-  if (e.detail !== 1) return
-  window.clearTimeout(copyTimer)
-  const text = schemaName ? displayName(schemaName, name) : name
-  copyTimer = window.setTimeout(async () => {
-    const ok = await copyText(text)
-    toast.show(ok ? 'Object name copied.' : 'Copy failed')
-  }, 350)
-}
-
 type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
 
 function tableOpen(t: TableInfo): boolean {
@@ -349,7 +365,7 @@ async function openObject(
   suffix = '',
   parent?: string,
 ) {
-  window.clearTimeout(copyTimer)
+  cancelPendingToggle()
   if (!conn.state.id) return
   try {
     const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
@@ -398,7 +414,7 @@ async function refresh() {
             <div
               class="node"
               :title="tableTooltip(t)"
-              @click="queueCopy($event, t.schema, t.name)"
+              @click="queueToggle($event, 't-' + t.oid)"
               @dblclick="openObject('table', t.schema, t.name, t.oid)"
             >
               <span
@@ -434,9 +450,8 @@ async function refresh() {
                 <div
                   v-for="c in t.columns"
                   :key="c.name"
-                  class="node cat-child"
-                  title="Click to copy name"
-                  @click="queueCopy($event, null, c.name)"
+                  class="node cat-child typed-row"
+                  :title="`${c.name} · ${c.type}`"
                 >
                   <span class="obj-name" :class="{ tbd: isTbd(c.name) }">{{ c.name }}</span>
                   <span class="dim">{{ c.type }}</span>
@@ -458,9 +473,8 @@ async function refresh() {
                 <div
                   v-for="ix in t.indexes"
                   :key="ix.name"
-                  class="node cat-child"
+                  class="node cat-child typed-row"
                   :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
-                  @click="queueCopy($event, null, ix.name)"
                   @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
                 >
                   <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
@@ -486,7 +500,6 @@ async function refresh() {
                   :key="con.name"
                   class="node cat-child"
                   :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
-                  @click="queueCopy($event, null, con.name)"
                   @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
                 >
                   <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
@@ -510,8 +523,7 @@ async function refresh() {
                   v-for="trg in t.triggers"
                   :key="trg.name"
                   class="node cat-child"
-                  title="Click to copy name · double-click to open DDL"
-                  @click="queueCopy($event, null, trg.name)"
+                  title="Double-click to open DDL"
                   @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
                 >
                   <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
@@ -532,7 +544,7 @@ async function refresh() {
         </h3>
         <template v-if="open.views || isFiltering">
           <div v-for="v in filteredViews" :key="'v-' + v.oid" class="tree">
-            <div class="node" title="Click to copy name · double-click to open DDL" @click="queueCopy($event, v.schema, v.name)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
+            <div class="node" title="Click to expand/collapse · double-click to open DDL" @click="queueToggle($event, 'v-' + v.oid)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
               <span
                 class="caret"
                 :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
@@ -544,7 +556,12 @@ async function refresh() {
               <span v-if="v.materialized" class="void-badge">mat</span>
             </div>
             <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
-              <div v-for="c in v.columns" :key="c.name" class="node child">
+              <div
+                v-for="c in v.columns"
+                :key="c.name"
+                class="node child typed-row"
+                :title="`${c.name} · ${c.type}`"
+              >
                 <span class="obj-name">{{ c.name }}</span>
                 <span class="dim">{{ c.type }}</span>
               </div>
@@ -564,8 +581,8 @@ async function refresh() {
           <div v-for="t in filteredTypes" :key="'ty-' + t.oid" class="tree">
             <div
               class="node"
-              :title="`${t.kind} · ${t.detail} · Click to copy name · double-click to open DDL`"
-              @click="queueCopy($event, t.schema, t.name)"
+              :title="`${t.kind} · ${t.detail} · Click to expand/collapse · double-click to open DDL`"
+              @click="queueToggle($event, 'ty-' + t.oid)"
               @dblclick="openObject('type', t.schema, t.name, t.oid)"
             >
               <span
@@ -579,7 +596,7 @@ async function refresh() {
               <span class="void-badge">{{ t.kind }}</span>
             </div>
             <template v-if="expanded.has('ty-' + t.oid)">
-              <div class="node child" :title="t.detail" @click="queueCopy($event, t.schema, t.name)">
+              <div class="node child" :title="t.detail">
                 <span class="obj-name">{{ t.detail || '—' }}</span>
               </div>
             </template>
@@ -598,8 +615,8 @@ async function refresh() {
           <div v-for="f in filteredFunctions" :key="'f-' + f.oid" class="tree">
             <div
               class="node"
-              :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to copy name · double-click to open DDL`"
-              @click="queueCopy($event, f.schema, f.name)"
+              :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to expand/collapse · double-click to open DDL`"
+              @click="queueToggle($event, 'f-' + f.oid)"
               @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
             >
               <span
@@ -614,7 +631,12 @@ async function refresh() {
               <span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span>
             </div>
             <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
-              <div v-for="(p, i) in paramRows(f.args, f.returns)" :key="'p-' + i" class="node child">
+              <div
+                v-for="(p, i) in paramRows(f.args, f.returns)"
+                :key="'p-' + i"
+                class="node child typed-row"
+                :title="p.rest ? `${p.name} ${p.rest}` : p.name"
+              >
                 <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
                 <span class="obj-name">{{ p.name }}</span>
                 <span v-if="p.rest" class="dim">{{ p.rest }}</span>
