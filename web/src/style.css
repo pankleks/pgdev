@@ -216,7 +216,7 @@ button.conn-badge:hover {
 .drag-v {
   width: 4px;
   cursor: col-resize;
-  background: transparent;
+  background: var(--border);
   flex-shrink: 0;
   z-index: 5;
 }
@@ -227,10 +227,13 @@ button.conn-badge:hover {
 
 .drag-h {
   height: 4px;
+  width: calc(100% + 5px);
+  margin-left: -5px;
   cursor: row-resize;
   background: var(--border);
   flex-shrink: 0;
   z-index: 5;
+  position: relative;
 }
 
 .drag-h:hover {
@@ -480,18 +483,21 @@ button.conn-badge:hover {
   margin-left: auto;
 }
 
-/* Rows that display a type: single line, never wrapped. The name keeps
-   priority (never squeezed to "re…"), the type ellipsizes, and the full
-   text is always in the title tooltip. */
+/* Rows that display a type: single line, never wrapped. The name takes the
+   remaining width, the type stays pinned to the right, and both can ellipsize
+   without overflowing the row. */
 .node.typed-row .obj-name {
-  flex-shrink: 0;
-  max-width: 60%;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .node.typed-row .dim {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 35%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
