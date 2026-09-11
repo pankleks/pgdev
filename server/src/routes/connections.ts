@@ -3,6 +3,7 @@ import { Pool } from 'pg'
 import { randomUUID } from 'node:crypto'
 import { setPool, removePool } from '../pools.js'
 import { pgErrorMessage } from '../pgerror.js'
+import { closeSessionsForConnection } from '../sessions.js'
 
 interface ConnectBody {
   connectionString?: string
@@ -29,6 +30,9 @@ export async function connectionRoutes(app: FastifyInstance) {
     if (b.ssl) config.ssl = { rejectUnauthorized: false }
     config.max = 5
     config.statement_timeout = 30000
+    // Tabs can hold a session client while paging large results; fail fast
+    // instead of hanging forever when every pool slot is checked out.
+    config.connectionTimeoutMillis = 10000
     config.application_name = 'pgdev'
 
     const pool = new Pool(config)
@@ -47,6 +51,9 @@ export async function connectionRoutes(app: FastifyInstance) {
 
   app.delete('/api/connections/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
+    // Roll back open transactions and release session clients first —
+    // pool.end() would otherwise wait on the checked-out clients.
+    await closeSessionsForConnection(id)
     const removed = await removePool(id)
     if (!removed) return reply.code(404).send({ error: 'Unknown connection' })
     return { ok: true }

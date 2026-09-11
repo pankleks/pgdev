@@ -315,13 +315,17 @@ function paramRows(args: string, returns: string): ParamRow[] {
 
 let copyTimer = 0
 
-async function copyName(schemaName: string | null, name: string) {
+// Single click copies; the second click of a double-click (detail > 1)
+// is ignored so double-click only opens the DDL. The delay lets the
+// dblclick handler cancel a pending copy from the first click.
+function queueCopy(e: MouseEvent, schemaName: string | null, name: string) {
+  if (e.detail !== 1) return
   window.clearTimeout(copyTimer)
+  const text = schemaName ? displayName(schemaName, name) : name
   copyTimer = window.setTimeout(async () => {
-    const text = schemaName ? displayName(schemaName, name) : name
     const ok = await copyText(text)
     toast.show(ok ? 'Object name copied.' : 'Copy failed')
-  }, 200)
+  }, 350)
 }
 
 type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
@@ -394,7 +398,7 @@ async function refresh() {
             <div
               class="node"
               :title="tableTooltip(t)"
-              @click="copyName(t.schema, t.name)"
+              @click="queueCopy($event, t.schema, t.name)"
               @dblclick="openObject('table', t.schema, t.name, t.oid)"
             >
               <span
@@ -432,7 +436,7 @@ async function refresh() {
                   :key="c.name"
                   class="node cat-child"
                   title="Click to copy name"
-                  @click="copyName(null, c.name)"
+                  @click="queueCopy($event, null, c.name)"
                 >
                   <span class="obj-name" :class="{ tbd: isTbd(c.name) }">{{ c.name }}</span>
                   <span class="dim">{{ c.type }}</span>
@@ -456,7 +460,7 @@ async function refresh() {
                   :key="ix.name"
                   class="node cat-child"
                   :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
-                  @click="copyName(null, ix.name)"
+                  @click="queueCopy($event, null, ix.name)"
                   @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
                 >
                   <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
@@ -482,7 +486,7 @@ async function refresh() {
                   :key="con.name"
                   class="node cat-child"
                   :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
-                  @click="copyName(null, con.name)"
+                  @click="queueCopy($event, null, con.name)"
                   @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
                 >
                   <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
@@ -507,7 +511,7 @@ async function refresh() {
                   :key="trg.name"
                   class="node cat-child"
                   title="Click to copy name · double-click to open DDL"
-                  @click="copyName(null, trg.name)"
+                  @click="queueCopy($event, null, trg.name)"
                   @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
                 >
                   <span class="obj-name" :class="{ tbd: isTbd(trg.name) }">{{ trg.name }}</span>
@@ -528,7 +532,7 @@ async function refresh() {
         </h3>
         <template v-if="open.views || isFiltering">
           <div v-for="v in filteredViews" :key="'v-' + v.oid" class="tree">
-            <div class="node" title="Click to copy name · double-click to open DDL" @click="copyName(v.schema, v.name)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
+            <div class="node" title="Click to copy name · double-click to open DDL" @click="queueCopy($event, v.schema, v.name)" @dblclick="openObject('view', v.schema, v.name, v.oid)">
               <span
                 class="caret"
                 :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
@@ -561,7 +565,7 @@ async function refresh() {
             <div
               class="node"
               :title="`${t.kind} · ${t.detail} · Click to copy name · double-click to open DDL`"
-              @click="copyName(t.schema, t.name)"
+              @click="queueCopy($event, t.schema, t.name)"
               @dblclick="openObject('type', t.schema, t.name, t.oid)"
             >
               <span
@@ -575,7 +579,7 @@ async function refresh() {
               <span class="void-badge">{{ t.kind }}</span>
             </div>
             <template v-if="expanded.has('ty-' + t.oid)">
-              <div class="node child" :title="t.detail" @click="copyName(t.schema, t.name)">
+              <div class="node child" :title="t.detail" @click="queueCopy($event, t.schema, t.name)">
                 <span class="obj-name">{{ t.detail || '—' }}</span>
               </div>
             </template>
@@ -595,7 +599,7 @@ async function refresh() {
             <div
               class="node"
               :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to copy name · double-click to open DDL`"
-              @click="copyName(f.schema, f.name)"
+              @click="queueCopy($event, f.schema, f.name)"
               @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
             >
               <span

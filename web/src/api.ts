@@ -1,4 +1,4 @@
-import type { ConnectionConfig, QueryResponse, SchemaData } from './types'
+import type { ConnectionConfig, FetchMoreResponse, QueryResponse, SchemaData } from './types'
 
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
@@ -46,5 +46,13 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tabKey }),
     }).then((r) => unwrap<{ ok: boolean }>(r))
+  },
+
+  fetchMore(id: string, tabKey: string): Promise<FetchMoreResponse> {
+    return fetch(`/api/connections/${id}/query/more`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tabKey, maxRows: 500 }),
+    }).then((r) => unwrap<FetchMoreResponse>(r))
   },
 }

@@ -99,3 +99,9 @@ export interface QueryResponse {
   results: QueryResult[]
   durationMs: number
 }
+
+export interface FetchMoreResponse {
+  rows: unknown[][]
+  rowCount: number
+  truncated: boolean
+}

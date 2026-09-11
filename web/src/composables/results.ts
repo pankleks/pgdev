@@ -14,6 +14,7 @@ export interface Message {
 export interface TabResult {
   running: boolean
   cancelling: boolean
+  loadingMore: boolean
   grid: GridResult | null
   messages: Message[]
   showMessages: boolean
@@ -27,6 +28,7 @@ function ensure(key: string): TabResult {
     r = reactive<TabResult>({
       running: false,
       cancelling: false,
+      loadingMore: false,
       grid: null,
       messages: [],
       showMessages: false,
@@ -67,7 +69,9 @@ export function useResults() {
           })
         } else {
           lastData = item
-          const truncated = item.truncated ? ` (truncated to ${item.rows.length})` : ''
+          const truncated = item.truncated
+            ? ` (showing first ${item.rows.length} — use Load more)`
+            : ''
           messages.push({
             text: `${stmt}${item.rowCount} row(s)${truncated}`,
             level: 'info',
@@ -106,5 +110,62 @@ export function useResults() {
     await api.cancel(connectionId, tabKey).catch(() => undefined)
   }
 
-  return { state, drop, run, cancel }
+  async function loadMore(tabKey: string, connectionId: string) {
+    const r = state.byTab[tabKey]
+    if (!r?.grid?.truncated || r.running || r.loadingMore) return
+    r.loadingMore = true
+    try {
+      const res = await api.fetchMore(connectionId, tabKey)
+      if (r.grid === null) return
+      r.grid.rows.push(...res.rows)
+      r.grid.rowCount = r.grid.rows.length
+      r.grid.truncated = res.truncated
+      r.messages.push({
+        text: res.truncated
+          ? `Loaded ${res.rows.length} more row(s) (${r.grid.rows.length} total — more available).`
+          : `Loaded ${res.rows.length} more row(s) (${r.grid.rows.length} total, all rows).`,
+        level: 'info',
+      })
+    } catch (e) {
+      r.messages.push({ text: (e as Error).message, level: 'error' })
+    } finally {
+      r.loadingMore = false
+    }
+  }
+
+  /**
+   * Drain all remaining pages into the grid (for CSV export).
+   * Aborts safely if a new query replaces the grid mid-drain.
+   * Returns true when every row was loaded.
+   */
+  async function loadAll(tabKey: string, connectionId: string): Promise<boolean> {
+    const r = state.byTab[tabKey]
+    if (!r?.grid || r.running || r.loadingMore) return (r?.grid && !r.grid.truncated) || false
+    const g = r.grid
+    r.loadingMore = true
+    try {
+      while (r.grid === g && g.truncated && !r.running) {
+        const res = await api.fetchMore(connectionId, tabKey)
+        if (r.grid !== g) return false
+        g.rows.push(...res.rows)
+        g.rowCount = g.rows.length
+        g.truncated = res.truncated
+      }
+      const complete = r.grid === g && !g.truncated
+      r.messages.push({
+        text: complete
+          ? `All rows loaded (${g.rows.length} total).`
+          : 'Stopped early — grid changed during load.',
+        level: complete ? 'info' : 'error',
+      })
+      return complete
+    } catch (e) {
+      r.messages.push({ text: (e as Error).message, level: 'error' })
+      return false
+    } finally {
+      r.loadingMore = false
+    }
+  }
+
+  return { state, drop, run, cancel, loadMore, loadAll }
 }

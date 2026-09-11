@@ -151,6 +151,11 @@ function cancelRun() {
   toast.show('Canceling query…')
 }
 
+function loadMoreRows() {
+  if (!conn.state.id || !result.value?.grid?.truncated) return
+  results.loadMore(tabs.state.activeKey, conn.state.id)
+}
+
 async function copyResult() {
   const g = activeGrid.value
   if (!g) return
@@ -158,9 +163,21 @@ async function copyResult() {
   toast.show(ok ? `Copied ${g.rows.length} row(s) to clipboard` : 'Copy to clipboard failed')
 }
 
-function exportCsv() {
-  const g = activeGrid.value
+async function exportCsv() {
+  if (!conn.state.id) return
+  const tabKey = tabs.state.activeKey
+  let g = results.state.byTab[tabKey]?.grid
   if (!g) return
+  if (g.truncated) {
+    toast.show('Loading all rows for export…')
+    const ok = await results.loadAll(tabKey, conn.state.id)
+    g = results.state.byTab[tabKey]?.grid ?? null
+    if (!ok || !g) {
+      toast.show('Export failed — see Messages')
+      return
+    }
+    toast.show(`Loaded all rows (${g.rows.length} total), exporting…`)
+  }
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
   downloadCsv(g.columns, g.rows, `pgdev-result-${stamp}.csv`)
   toast.show(`Exported ${g.rows.length} row(s) to CSV`)
@@ -189,8 +206,8 @@ function exportCsv() {
       </div>
       <span class="spacer" />
       <template v-if="activeGrid">
-        <button class="btn-sm" title="Copy result to clipboard (TSV)" @click="copyResult()"><Copy :size="13" /> COPY</button>
-        <button class="btn-sm" title="Export result to CSV" @click="exportCsv()"><Download :size="13" /> CSV</button>
+        <button class="btn-sm" title="Copy loaded rows to clipboard (TSV)" :disabled="result?.loadingMore" @click="copyResult()"><Copy :size="13" /> COPY</button>
+        <button class="btn-sm" title="Export all rows to CSV" :disabled="result?.loadingMore" @click="exportCsv()"><Download :size="13" /> CSV</button>
       </template>
       <button
         v-if="result?.running"
@@ -257,8 +274,17 @@ function exportCsv() {
         </div>
       </div>
       <div class="grid-foot">
-        {{ grid.g.rowCount }} row(s)
-        <span v-if="grid.g.truncated">· truncated</span>
+        {{ grid.g.rows.length }} row(s)
+        <span v-if="grid.g.truncated">· more available</span>
+        <button
+          v-if="grid.g.truncated"
+          class="btn-sm"
+          :disabled="result?.loadingMore"
+          title="Fetch the next page of rows"
+          @click="loadMoreRows()"
+        >
+          {{ result?.loadingMore ? 'Loading…' : 'Load more' }}
+        </button>
       </div>
     </div>
   </div>
