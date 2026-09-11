@@ -23,11 +23,12 @@ async function resolveOid(pool: Pool, schema: string, name: string): Promise<str
 export async function tableDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
   const relOid = oid || (await resolveOid(pool, schema, name))
 
-  const [colsRes, consRes, idxRes, pkRes] = await Promise.all([
+  const [colsRes, consRes, idxRes, pkRes, relRes, policiesRes, foreignRes] = await Promise.all([
     pool.query(
       `SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
          a.attnotnull AS notnull,
-         pg_get_expr(d.adbin, d.adrelid) AS default_value
+         pg_get_expr(d.adbin, d.adrelid) AS default_value,
+         quote_literal(col_description(a.attrelid, a.attnum)) AS comment
        FROM pg_attribute a
        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
        WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
@@ -37,7 +38,7 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     pool.query(
       `SELECT conname, contype, pg_get_constraintdef(oid) AS def
        FROM pg_constraint
-       WHERE conrelid = $1 AND contype IN ('p', 'u', 'f', 'c')
+       WHERE conrelid = $1 AND contype IN ('p', 'u', 'f', 'c', 'x')
        ORDER BY contype, conname`,
       [relOid],
     ),
@@ -53,29 +54,109 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
        WHERE i.indrelid = $1 AND i.indisprimary`,
       [relOid],
     ),
+    pool.query(
+      `SELECT c.relkind, c.relpersistence, c.relispartition,
+         c.relrowsecurity, c.relforcerowsecurity,
+         pg_get_userbyid(c.relowner) AS owner,
+         (SELECT spcname FROM pg_tablespace WHERE oid = c.reltablespace) AS tablespace,
+         quote_literal(obj_description(c.oid)) AS comment,
+         (SELECT pg_get_partkeydef(p.partrelid) FROM pg_partitioned_table p WHERE p.partrelid = c.oid) AS partkey,
+         pn.nspname AS part_schema, p.relname AS part_name,
+         CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END AS partbound
+       FROM pg_class c
+       LEFT JOIN pg_inherits i ON i.inhrelid = c.oid AND c.relispartition
+       LEFT JOIN pg_class p ON p.oid = i.inhparent
+       LEFT JOIN pg_namespace pn ON pn.oid = p.relnamespace
+       WHERE c.oid = $1`,
+      [relOid],
+    ),
+    pool.query(
+      `SELECT polname, polcmd, NOT polpermissive AS restrictive,
+         (SELECT string_agg(r.rolname, ', ' ORDER BY r.rolname)
+          FROM pg_roles r WHERE r.oid = ANY (p.polroles)) AS roles,
+         pg_get_expr(p.polqual, p.polrelid) AS qual,
+         pg_get_expr(p.polwithcheck, p.polrelid) AS withcheck
+       FROM pg_policy p
+       WHERE p.polrelid = $1
+       ORDER BY p.polname`,
+      [relOid],
+    ),
+    pool.query(
+      `SELECT s.srvname AS server
+       FROM pg_foreign_table ft
+       JOIN pg_foreign_server s ON s.oid = ft.ftserver
+       WHERE ft.ftrelid = $1`,
+      [relOid],
+    ),
   ])
 
-  const pkCols = new Set(pkRes.rows.map((r) => r.attname as string))
-  const lines = colsRes.rows.map((r) => {
-    const parts = [`${ident(r.name)} ${r.type}`]
-    if (r.default_value != null) parts.push(`DEFAULT ${r.default_value}`)
-    if (r.notnull && !pkCols.has(r.name)) parts.push('NOT NULL')
-    return `  ${parts.join(' ')}`
-  })
-
-  const constraintNames = new Set(consRes.rows.map((r) => r.conname as string))
-  for (const c of consRes.rows) {
-    lines.push(`  CONSTRAINT ${ident(c.conname)} ${c.def}`)
-  }
-
+  const rel = relRes.rows[0]
+  if (!rel) notFound()
   const table = `${ident(schema)}.${ident(name)}`
-  let ddl = `CREATE TABLE ${table} (\n${lines.join(',\n')}\n);`
+  const chunks: string[] = []
 
-  const extraIndexes = idxRes.rows.filter((r) => !constraintNames.has(r.indexname))
-  if (extraIndexes.length) {
-    ddl += '\n\n' + extraIndexes.map((r) => `${r.indexdef};`).join('\n')
+  if (rel.relispartition && rel.part_name) {
+    // Partitions inherit columns/constraints/indexes from the parent —
+    // only the attachment bound is per-partition DDL.
+    chunks.push(
+      `CREATE TABLE ${table}\n  PARTITION OF ${ident(rel.part_schema)}.${ident(rel.part_name)}\n  FOR VALUES ${rel.partbound};`,
+    )
+  } else {
+    const pkCols = new Set(pkRes.rows.map((r) => r.attname as string))
+    const lines = colsRes.rows.map((r) => {
+      const parts = [`${ident(r.name)} ${r.type}`]
+      if (r.default_value != null) parts.push(`DEFAULT ${r.default_value}`)
+      if (r.notnull && !pkCols.has(r.name)) parts.push('NOT NULL')
+      return `  ${parts.join(' ')}`
+    })
+
+    const constraintNames = new Set(consRes.rows.map((r) => r.conname as string))
+    for (const c of consRes.rows) {
+      lines.push(`  CONSTRAINT ${ident(c.conname)} ${c.def}`)
+    }
+
+    const kind = rel.relkind === 'f' ? 'FOREIGN TABLE' : rel.relpersistence === 'u' ? 'UNLOGGED TABLE' : 'TABLE'
+    let create = `CREATE ${kind} ${table} (\n${lines.join(',\n')}\n)`
+    if (rel.relkind === 'f' && foreignRes.rows[0]) {
+      create += `\n  SERVER ${ident(foreignRes.rows[0].server)}`
+    }
+    if (rel.partkey) create += `\n  PARTITION BY ${rel.partkey}`
+    if (rel.tablespace) create += `\n  TABLESPACE ${ident(rel.tablespace)}`
+    chunks.push(create + ';')
+
+    if (!rel.relispartition) {
+      const extraIndexes = idxRes.rows.filter((r) => !constraintNames.has(r.indexname))
+      if (extraIndexes.length) {
+        chunks.push(extraIndexes.map((r) => `${r.indexdef};`).join('\n'))
+      }
+    }
   }
-  return ddl
+
+  if (rel.relrowsecurity) {
+    chunks.push(
+      `ALTER TABLE ${table} ${rel.relforcerowsecurity ? 'FORCE' : 'ENABLE'} ROW LEVEL SECURITY;`,
+    )
+  }
+  const cmdName: Record<string, string> = { r: 'SELECT', a: 'INSERT', w: 'UPDATE', d: 'DELETE', '*': 'ALL' }
+  for (const p of policiesRes.rows) {
+    const forWhat = `FOR ${cmdName[p.polcmd as string] ?? 'ALL'}`
+    const toRoles = `TO ${p.roles ?? 'PUBLIC'}`
+    const asMode = p.restrictive ? ' AS RESTRICTIVE' : ''
+    const using = p.qual != null ? ` USING (${p.qual})` : ''
+    const check = p.withcheck != null ? ` WITH CHECK (${p.withcheck})` : ''
+    chunks.push(
+      `CREATE POLICY ${ident(p.polname)} ON ${table}${asMode}\n  ${forWhat} ${toRoles}${using}${check};`,
+    )
+  }
+
+  if (rel.owner) chunks.push(`ALTER TABLE ${table} OWNER TO ${ident(rel.owner)};`)
+  if (rel.comment) chunks.push(`COMMENT ON TABLE ${table} IS ${rel.comment};`)
+  for (const c of colsRes.rows) {
+    if (c.comment) {
+      chunks.push(`COMMENT ON COLUMN ${table}.${ident(c.name)} IS ${c.comment};`)
+    }
+  }
+  return chunks.join('\n\n')
 }
 
 export async function viewDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
@@ -100,26 +181,68 @@ export async function functionDdl(pool: Pool, oid: string, schema: string, name:
       `SELECT p.oid::text AS oid
        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
        WHERE n.nspname = $1 AND p.proname = $2
-       ORDER BY p.oid
+       ORDER BY pg_get_function_identity_arguments(p.oid), p.oid
        LIMIT 1`,
       [schema, name],
     )
     if (!fallback.rows[0]) notFound()
     target = fallback.rows[0].oid
   }
-  const res = await pool.query(
-    `SELECT pg_get_functiondef(p.oid) AS def,
-            n.nspname AS schema, p.proname AS name,
+  const info = await pool.query(
+    `SELECT p.prokind, n.nspname AS schema, p.proname AS name,
             pg_get_function_identity_arguments(p.oid) AS args
      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE p.oid = $1::oid`,
     [target],
   )
+  const row = info.rows[0]
+  if (!row) notFound()
+  const q = `${ident(row.schema)}.${ident(row.name)}(${row.args})`
+  if (row.prokind === 'a') return aggregateDdl(pool, target, q)
+  // NB: pg_get_functiondef() only works for plain/window functions and
+  // procedures — aggregates are handled above.
+  const res = await pool.query(`SELECT pg_get_functiondef($1::oid) AS def`, [target])
+  if (!res.rows[0]) notFound()
+  const def = String(res.rows[0].def).trim()
+  const ddl = def.endsWith(';') ? def : def + ';'
+  const keyword = row.prokind === 'p' ? 'PROCEDURE' : 'FUNCTION'
+  const drop = `-- DROP ${keyword} IF EXISTS ${q};`
+  return `${drop}\n\n${ddl}`
+}
+
+async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string> {
+  const res = await pool.query(
+    `SELECT a.aggkind, a.aggtransfn::regproc::text AS sfunc,
+            format_type(a.aggtranstype, NULL) AS stype,
+            NULLIF(a.aggfinalfn::regproc::text, '-') AS finalfn,
+            NULLIF(a.aggcombinefn::regproc::text, '-') AS combinefn,
+            NULLIF(a.aggserialfn::regproc::text, '-') AS serialfn,
+            NULLIF(a.aggdeserialfn::regproc::text, '-') AS deserialfn,
+            NULLIF(a.agginitval, '') AS initcond,
+            NULLIF(a.aggsortop::regoper::text, '-') AS sortop,
+            p.proparallel
+     FROM pg_aggregate a
+     JOIN pg_proc p ON p.oid = a.aggfnoid
+     WHERE a.aggfnoid = $1::oid`,
+    [oid],
+  )
   const row = res.rows[0]
   if (!row) notFound()
-  const def = String(row.def).trim()
-  const ddl = def.endsWith(';') ? def : def + ';'
-  const drop = `-- DROP FUNCTION IF EXISTS ${ident(row.schema)}.${ident(row.name)}(${row.args});`
+  const opts = [`SFUNC = ${row.sfunc}`, `STYPE = ${row.stype}`]
+  if (row.finalfn) opts.push(`FINALFUNC = ${row.finalfn}`)
+  if (row.combinefn) opts.push(`COMBINEFUNC = ${row.combinefn}`)
+  if (row.serialfn) opts.push(`SERIALFUNC = ${row.serialfn}`)
+  if (row.deserialfn) opts.push(`DESERIALFUNC = ${row.deserialfn}`)
+  if (row.initcond != null) opts.push(`INITCOND = '${String(row.initcond).replace(/'/g, "''")}'`)
+  if (row.sortop) opts.push(`SORTOP = ${row.sortop}`)
+  if (row.proparallel === 's') opts.push('PARALLEL = SAFE')
+  else if (row.proparallel === 'r') opts.push('PARALLEL = RESTRICTED')
+  const header =
+    row.aggkind === 'n'
+      ? `CREATE AGGREGATE ${q} (`
+      : `-- NOTE: ordered-set/hypothetical aggregate — verify the ORDER BY direct-argument list.\nCREATE AGGREGATE ${q} (`
+  const ddl = `${header}\n  ${opts.join(',\n  ')}\n);`
+  const drop = `-- DROP AGGREGATE IF EXISTS ${q};`
   return `${drop}\n\n${ddl}`
 }
 

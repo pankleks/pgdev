@@ -49,6 +49,22 @@ function formatActive() {
   if (!editor || props.tab.readOnly) return
   const model = editor.getModel()
   if (!model) return
+  const selection = editor.getSelection()
+  const sel = selection && !selection.isEmpty() ? selection : null
+  const selected = sel ? model.getValueInRange(sel) : ''
+  if (sel && selected.trim()) {
+    // Format just the selection (e.g. a function body) in place.
+    let formatted: string
+    try {
+      formatted = formatSql(selected).replace(/\s+$/, '')
+    } catch (e) {
+      toast.show(`Format failed: ${(e as Error).message}`)
+      return
+    }
+    if (!formatted || formatted === selected) return
+    editor.executeEdits('pgdev-format', [{ range: sel, text: formatted }])
+    return
+  }
   const current = model.getValue()
   if (!current.trim()) return
   let formatted: string

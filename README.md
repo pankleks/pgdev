@@ -2,7 +2,7 @@
 
 Minimal IDE for Postgres in the browser:
 
-- **Object browser** (left): tables, views and functions with columns/types; double-click an object to open its DDL script in a new read-only editor tab. Search box filters by object or column name.
+- **Object browser** (left): tables, views and functions with columns/types; double-click an object to open its DDL script in a new editor tab (read-only preview, except function/view DDL which is editable and runnable via `CREATE OR REPLACE`). Search box filters by object or column name.
 - **Query tool**: Monaco editor (VS Code) with schema-aware intellisense — tables, views, columns (`alias.` + `Ctrl+Space`), functions and keywords. `Ctrl/Cmd+Enter` runs the query.
 - **Results panel**: virtualized data grids (one per result set) plus a Messages tab with row counts, durations and errors. SELECTs show a grid; writes/DDL show affected-row counts.
 - **Connection manager**: connect via parameters or connection string; saved connections live in your browser's localStorage. Pools are kept in-memory on the server per session.
@@ -49,7 +49,7 @@ sample/   demo schema (tables, view, functions, indexes)
 
 ## Notes / MVP caveats
 
-- DDL is reconstructed from `pg_catalog` (no `pg_dump` dependency). Tables cover columns, defaults, NOT NULL, PK/unique/FK/check constraints and indexes. Exotic features (partition attachments, RLS, extended statistics) are not emitted yet. Function overloads: first overload only.
+- DDL is reconstructed from `pg_catalog` (no `pg_dump` dependency). Tables cover columns, defaults, NOT NULL, PK/unique/FK/check/exclusion constraints, indexes, partitioning (`PARTITION BY` + partition bounds), RLS + policies, owner/comments, tablespaces and foreign servers. Still skipped: extended statistics, replica identity, FDW options. Functions resolve the exact overload from the browser (name-only fallback: first by signature); aggregates are reconstructed, ordered-set ones need a manual check of the `ORDER BY` argument list.
 - Queries are capped at 500 rows per result set server-side; statement timeout is 30s.
 - Saved connections (including password, if you opt in) are stored unencrypted in the browser's localStorage — intended for local/trusted use only. There is no server-side auth.
 - Requires PostgreSQL 11+ (tested against 18).

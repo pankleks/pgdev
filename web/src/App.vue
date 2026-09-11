@@ -113,7 +113,7 @@ provide('pgdev:run', runActive)
       <span class="spacer" />
       <button
         class="icon"
-        title="Format SQL (Ctrl+Shift+F)"
+        title="Format SQL or selection (Ctrl+Shift+F)"
         :disabled="!activeTab || activeTab.readOnly"
         @click="triggerFormat()"
       ><Wand2 :size="15" /></button>
