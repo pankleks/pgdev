@@ -369,10 +369,11 @@ async function openObject(
   if (!conn.state.id) return
   try {
     const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
-    // Function/view DDL is CREATE OR REPLACE (re-runnable), so those tabs
-    // are editable; everything else is a read-only preview. Re-opening
+    // Function/view DDL is CREATE OR REPLACE (re-runnable), and index/
+    // trigger/type DDL ships with a commented DROP line, so those tabs are
+    // editable; tables and constraints stay read-only previews. Re-opening
     // refreshes content.
-    const editable = type === 'function' || type === 'view'
+    const editable = type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type'
     tabs.openDdl(type, schemaName, name, ddl, suffix, editable, parent ?? '')
   } catch (e) {
     toast.show((e as Error).message)

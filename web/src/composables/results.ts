@@ -11,6 +11,31 @@ export interface Message {
   level: 'info' | 'error'
 }
 
+export interface QueryErrorInfo {
+  text: string
+  level: 'info' | 'error'
+}
+
+// Statement timeouts surface as 57014 "canceling statement due to statement
+// timeout" — previously misreported as a user cancel. The pool runs with a
+// 30s statement_timeout (see server connection config).
+export function describeQueryError(
+  raw: string,
+  code: unknown,
+  wasCancelling: boolean,
+): QueryErrorInfo {
+  if (/statement timeout/i.test(raw)) {
+    return { text: 'Query timed out (30s statement limit).', level: 'error' }
+  }
+  // NB: no /aborted/i heuristic — 25P02 "current transaction is aborted"
+  // is a server state, not a user cancel; it must surface verbatim.
+  const cancelled =
+    wasCancelling || /cancel/i.test(raw) || /57014/.test(raw) || code === '57014'
+  return cancelled
+    ? { text: 'Query canceled.', level: 'info' }
+    : { text: raw, level: 'error' }
+}
+
 export interface TabResult {
   running: boolean
   cancelling: boolean
@@ -88,13 +113,9 @@ export function useResults() {
       r.grid = lastData ? { ...lastData, key: `grid-${tabKey}` } : null
       if (!r.grid) r.showMessages = true
     } catch (e) {
-      const wasCancelling = r.cancelling
-      const raw = (e as Error).message
-      const isCancel =
-        wasCancelling || /cancel/i.test(raw) || /57014/.test(raw) || /aborted/i.test(raw)
-      r.messages = [
-        { text: isCancel ? 'Query canceled.' : raw, level: isCancel ? 'info' : 'error' },
-      ]
+      const err = e as Error & { code?: string | null }
+      const info = describeQueryError(err.message, err.code, r.cancelling)
+      r.messages = [{ text: info.text, level: info.level }]
       r.grid = null
       r.showMessages = true
     } finally {

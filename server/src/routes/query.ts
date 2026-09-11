@@ -128,10 +128,22 @@ export async function queryRoutes(app: FastifyInstance) {
     setRunning(runKey, client)
     try {
       await client.query('BEGIN')
+      let inTxn = true
       try {
-        await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
+        await client.query('SAVEPOINT pgdev_init')
+        try {
+          await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
+        } catch {
+          // Pre-9.6 servers: reaper + explicit teardown still apply.
+          // The savepoint rollback below undoes the aborted state.
+          try {
+            await client.query('ROLLBACK TO SAVEPOINT pgdev_init')
+          } catch {
+            inTxn = false
+          }
+        }
       } catch {
-        // Pre-9.6 servers: reaper + explicit teardown still apply.
+        inTxn = false
       }
 
       const results: (
@@ -141,36 +153,65 @@ export async function queryRoutes(app: FastifyInstance) {
       let seq = 0
       let openCursor: string | null = null
 
+      // Direct execution for non-cursor statements. Throws on error so the
+      // batch aborts with the statement's real message (never masked).
+      // Also tracks user-typed transaction control (COMMIT/ROLLBACK/END).
+      const execDirect = async (stmt: string): Promise<void> => {
+        if (/^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i.test(stmt)) {
+          // Ends our transaction server-side, taking any open cursor with it.
+          openCursor = null
+        }
+        const res = await client.query({ text: stmt, rowMode: 'array' })
+        if (/^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i.test(stmt)) inTxn = false
+        if (!res.fields || res.fields.length === 0) {
+          results.push({
+            kind: 'command',
+            command: res.command ?? 'OK',
+            rowCount: res.rowCount ?? 0,
+          })
+        } else {
+          const rows = res.rows.map((row: unknown[]) =>
+            row.map((cell) => normalizeCell(cell)),
+          )
+          results.push({
+            kind: 'data',
+            page: {
+              fields: (res.fields ?? []) as FieldInfo[],
+              rows: rows.slice(0, cap),
+              hasMore: rows.length > cap,
+            },
+          })
+        }
+      }
+
       for (const stmt of statements) {
         const cursor = `pgdev_cur_${++seq}`
+        if (!inTxn) {
+          await execDirect(stmt)
+          continue
+        }
+        try {
+          await client.query('SAVEPOINT pgdev_sp')
+        } catch {
+          inTxn = false
+          await execDirect(stmt)
+          continue
+        }
         let page: DataPage | null = null
         try {
           await client.query(`DECLARE "${cursor}" NO SCROLL CURSOR FOR ${stmt}`)
           page = await fetchPage(client, cursor, cap)
         } catch {
           // Not a cursor-compatible statement (DDL, writes, EXPLAIN, …):
-          // run it directly. Such statements return command tags or a
-          // handful of rows, so materializing is safe.
-          const res = await client.query({ text: stmt, rowMode: 'array' })
-          if (!res.fields || res.fields.length === 0) {
-            results.push({
-              kind: 'command',
-              command: res.command ?? 'OK',
-              rowCount: res.rowCount ?? 0,
-            })
-          } else {
-            const rows = res.rows.map((row: unknown[]) =>
-              row.map((cell) => normalizeCell(cell)),
-            )
-            results.push({
-              kind: 'data',
-              page: {
-                fields: (res.fields ?? []) as FieldInfo[],
-                rows: rows.slice(0, cap),
-                hasMore: rows.length > cap,
-              },
-            })
+          // roll back to the savepoint so the failed DECLARE doesn't poison
+          // the transaction, then run it directly. Such statements return
+          // command tags or a handful of rows, so materializing is safe.
+          try {
+            await client.query('ROLLBACK TO SAVEPOINT pgdev_sp')
+          } catch {
+            inTxn = false
           }
+          await execDirect(stmt)
           continue
         }
         if (page.hasMore) {
@@ -236,10 +277,14 @@ export async function queryRoutes(app: FastifyInstance) {
           // Already released.
         }
       }
-      const e = err as Error & { position?: string }
+      const e = err as Error & { position?: string; code?: string }
       return reply
         .code(400)
-        .send({ error: pgErrorMessage(err, 'Query failed'), position: e.position ?? null })
+        .send({
+          error: pgErrorMessage(err, 'Query failed'),
+          position: e.position ?? null,
+          code: e.code ?? null,
+        })
     } finally {
       deleteRunning(runKey, client)
     }
@@ -273,10 +318,14 @@ export async function queryRoutes(app: FastifyInstance) {
       return { rows: page.rows, rowCount: page.rows.length, truncated: page.hasMore }
     } catch (err) {
       await teardownSession(runKey, 'rollback')
-      const e = err as Error & { position?: string }
+      const e = err as Error & { position?: string; code?: string }
       return reply
         .code(400)
-        .send({ error: pgErrorMessage(err, 'Query failed'), position: e.position ?? null })
+        .send({
+          error: pgErrorMessage(err, 'Query failed'),
+          position: e.position ?? null,
+          code: e.code ?? null,
+        })
     } finally {
       deleteRunning(runKey, sess.client)
     }

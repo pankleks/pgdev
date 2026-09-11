@@ -3,7 +3,10 @@ import type { ConnectionConfig, FetchMoreResponse, QueryResponse, SchemaData } f
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
+    const errBody = body as { error?: string; code?: string | null }
+    const err = new Error(errBody.error || `Request failed (${res.status})`)
+    ;(err as Error & { code?: string | null }).code = errBody.code ?? null
+    throw err
   }
   return body as T
 }
