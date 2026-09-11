@@ -8,6 +8,8 @@ import {
   sessionKey,
   getSession,
   setSession,
+  beginSession,
+  finishSession,
   teardownSession,
 } from '../sessions.js'
 
@@ -43,6 +45,29 @@ interface DataPage {
   fields: FieldInfo[]
   rows: unknown[][]
   hasMore: boolean
+  pendingRow: unknown[] | null
+}
+
+interface FetchedRows {
+  fields: FieldInfo[]
+  rows: unknown[][]
+}
+
+async function fetchRows(
+  client: PoolClient,
+  cursor: string,
+  count: number,
+): Promise<FetchedRows> {
+  const res = await client.query({
+    // Cursor names are server-generated (`pgdev_cur_N`), never user input.
+    text: `FETCH FORWARD ${count} FROM "${cursor}"`,
+    rowMode: 'array',
+  })
+  return {
+    fields: (res.fields ?? []) as FieldInfo[],
+    rows: res.rows
+      .map((row: unknown[]) => row.map((cell) => normalizeCell(cell))),
+  }
 }
 
 async function fetchPage(
@@ -50,19 +75,65 @@ async function fetchPage(
   cursor: string,
   cap: number,
 ): Promise<DataPage> {
-  const res = await client.query({
-    // Cursor names are server-generated (`pgdev_cur_N`), never user input.
-    text: `FETCH FORWARD ${cap + 1} FROM "${cursor}"`,
-    rowMode: 'array',
-  })
-  const hasMore = res.rows.length > cap
+  const fetched = await fetchRows(client, cursor, cap + 1)
+  const hasMore = fetched.rows.length > cap
   return {
-    fields: (res.fields ?? []) as FieldInfo[],
-    rows: res.rows
-      .slice(0, cap)
-      .map((row: unknown[]) => row.map((cell) => normalizeCell(cell))),
+    fields: fetched.fields,
+    rows: fetched.rows.slice(0, cap),
     hasMore,
+    pendingRow: hasMore ? fetched.rows[cap] : null,
   }
+}
+
+function withoutLeadingComments(sql: string): string {
+  let i = 0
+  while (i < sql.length) {
+    while (/\s/.test(sql[i] ?? '')) i++
+    if (sql[i] === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i + 2)
+      i = end === -1 ? sql.length : end + 1
+      continue
+    }
+    if (sql[i] === '/' && sql[i + 1] === '*') {
+      let depth = 1
+      i += 2
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+          depth++
+          i += 2
+        } else if (sql[i] === '*' && sql[i + 1] === '/') {
+          depth--
+          i += 2
+        } else {
+          i++
+        }
+      }
+      continue
+    }
+    break
+  }
+  return sql.slice(i)
+}
+
+function canUseCursor(stmt: string): boolean {
+  return /^(SELECT|VALUES|SHOW|EXPLAIN|TABLE|SET|RESET|DISCARD|BEGIN|START|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|CLOSE|FETCH)\b/i.test(
+    withoutLeadingComments(stmt),
+  )
+}
+
+function requiresAutocommit(stmt: string): boolean {
+  const text = withoutLeadingComments(stmt)
+  if (/^(VACUUM|CLUSTER|CHECKPOINT|CREATE\s+DATABASE|DROP\s+DATABASE|ALTER\s+SYSTEM|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(text)) {
+    return true
+  }
+  if (/^(CREATE|DROP)\b[\s\S]*\bINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
+  if (/^REINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
+  return /^REFRESH\s+MATERIALIZED\s+VIEW\s+CONCURRENTLY\b/i.test(text)
+}
+
+function parseMaxRows(value: unknown): number | null {
+  if (value === undefined) return 500
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 10000 ? value : null
 }
 
 async function closeCursor(
@@ -97,9 +168,10 @@ async function typeNamesFor(
 export async function queryRoutes(app: FastifyInstance) {
   app.post('/api/connections/:id/query', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { sql, maxRows, tabKey } = req.body as QueryBody
-    if (!sql || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
-    const cap = Math.max(1, Math.min(maxRows ?? 500, 10000))
+    const { sql, maxRows, tabKey } = (req.body ?? {}) as QueryBody
+    if (typeof sql !== 'string' || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
+    const cap = parseMaxRows(maxRows)
+    if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
     const pool = getPool(id)
     const runKey = sessionKey(id, tabKey ?? '')
     if (getRunning(runKey)) {
@@ -109,6 +181,7 @@ export async function queryRoutes(app: FastifyInstance) {
     await teardownSession(runKey, 'rollback')
     const statements = splitStatements(sql)
     if (!statements.length) return reply.code(400).send({ error: 'Empty query' })
+    const autocommit = statements.some(requiresAutocommit)
 
     const start = performance.now()
     let client: PoolClient
@@ -125,11 +198,12 @@ export async function queryRoutes(app: FastifyInstance) {
     // From here the client is owned either by the session map (kept open
     // for FETCH MORE) or released explicitly on every exit path.
     let sessionKept = false
+    let inTxn = false
     setRunning(runKey, client)
     try {
-      await client.query('BEGIN')
-      let inTxn = true
-      try {
+      if (!autocommit) {
+        await client.query('BEGIN')
+        inTxn = true
         await client.query('SAVEPOINT pgdev_init')
         try {
           await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
@@ -139,11 +213,9 @@ export async function queryRoutes(app: FastifyInstance) {
           try {
             await client.query('ROLLBACK TO SAVEPOINT pgdev_init')
           } catch {
-            inTxn = false
+            throw new Error('Unable to recover the query transaction')
           }
         }
-      } catch {
-        inTxn = false
       }
 
       const results: (
@@ -152,17 +224,25 @@ export async function queryRoutes(app: FastifyInstance) {
       )[] = []
       let seq = 0
       let openCursor: string | null = null
+      // Only the final statement may retain a cursor. Earlier result sets are
+      // materialized, so the UI never advertises a closed cursor as pageable.
+      // A mutation-containing batch also finishes and commits in this request.
+      const useCursors = !autocommit && statements.every(canUseCursor)
 
       // Direct execution for non-cursor statements. Throws on error so the
       // batch aborts with the statement's real message (never masked).
       // Also tracks user-typed transaction control (COMMIT/ROLLBACK/END).
       const execDirect = async (stmt: string): Promise<void> => {
-        if (/^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i.test(stmt)) {
+        const control = withoutLeadingComments(stmt)
+        const endsTxn = /^(COMMIT|ROLLBACK|END|ABORT)\b/i.test(control)
+        const startsTxn = /^(BEGIN|START\s+TRANSACTION)\b/i.test(control)
+        if (endsTxn) {
           // Ends our transaction server-side, taking any open cursor with it.
           openCursor = null
         }
         const res = await client.query({ text: stmt, rowMode: 'array' })
-        if (/^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i.test(stmt)) inTxn = false
+        if (endsTxn) inTxn = false
+        if (startsTxn) inTxn = true
         if (!res.fields || res.fields.length === 0) {
           results.push({
             kind: 'command',
@@ -177,43 +257,39 @@ export async function queryRoutes(app: FastifyInstance) {
             kind: 'data',
             page: {
               fields: (res.fields ?? []) as FieldInfo[],
-              rows: rows.slice(0, cap),
-              hasMore: rows.length > cap,
+              rows,
+              hasMore: false,
+              pendingRow: null,
             },
           })
         }
       }
 
-      for (const stmt of statements) {
+      for (const [index, stmt] of statements.entries()) {
         const cursor = `pgdev_cur_${++seq}`
-        if (!inTxn) {
+        const cursorForThisStatement = useCursors && index === statements.length - 1
+        if (!inTxn || !cursorForThisStatement) {
           await execDirect(stmt)
           continue
         }
-        try {
-          await client.query('SAVEPOINT pgdev_sp')
-        } catch {
-          inTxn = false
-          await execDirect(stmt)
-          continue
-        }
-        let page: DataPage | null = null
+        await client.query('SAVEPOINT pgdev_sp')
         try {
           await client.query(`DECLARE "${cursor}" NO SCROLL CURSOR FOR ${stmt}`)
-          page = await fetchPage(client, cursor, cap)
-        } catch {
+        } catch (declareError) {
           // Not a cursor-compatible statement (DDL, writes, EXPLAIN, …):
           // roll back to the savepoint so the failed DECLARE doesn't poison
-          // the transaction, then run it directly. Such statements return
-          // command tags or a handful of rows, so materializing is safe.
+          // the transaction, then run it directly.
           try {
             await client.query('ROLLBACK TO SAVEPOINT pgdev_sp')
           } catch {
-            inTxn = false
+            throw declareError
           }
           await execDirect(stmt)
           continue
         }
+        // A FETCH failure is a query failure, not evidence that the statement
+        // should be executed again without a cursor.
+        const page = await fetchPage(client, cursor, cap)
         if (page.hasMore) {
           // Only the last result set is pageable in the UI; earlier
           // truncated cursors are closed (their counts stay in Messages).
@@ -245,16 +321,19 @@ export async function queryRoutes(app: FastifyInstance) {
 
       const last = results[results.length - 1]
       if (last?.kind === 'data' && last.page.hasMore && openCursor) {
-        setSession(runKey, id, client, openCursor)
+        setSession(runKey, id, client, openCursor, last.page.pendingRow)
         sessionKept = true
       } else {
-        try {
-          await client.query('COMMIT')
-        } catch {
+        if (inTxn) {
           try {
-            await client.query('ROLLBACK')
-          } catch {
-            // Transaction already gone.
+            await client.query('COMMIT')
+          } catch (err) {
+            try {
+              await client.query('ROLLBACK')
+            } catch {
+              // Transaction already gone.
+            }
+            throw err
           }
         }
         client.release()
@@ -266,10 +345,12 @@ export async function queryRoutes(app: FastifyInstance) {
         // Error before any session was kept: the client may still hold the
         // open (possibly aborted) transaction — roll back explicitly so a
         // dirty client never returns to the pool.
-        try {
-          await client.query('ROLLBACK')
-        } catch {
-          // Connection already gone; release() will drop it.
+        if (inTxn) {
+          try {
+            await client.query('ROLLBACK')
+          } catch {
+            // Connection already gone; release() will drop it.
+          }
         }
         try {
           client.release()
@@ -292,30 +373,44 @@ export async function queryRoutes(app: FastifyInstance) {
 
   app.post('/api/connections/:id/query/more', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { tabKey, maxRows } = req.body as MoreBody
-    const cap = Math.max(1, Math.min(maxRows ?? 500, 10000))
+    const { tabKey, maxRows } = (req.body ?? {}) as MoreBody
+    const cap = parseMaxRows(maxRows)
+    if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
     getPool(id)
     const runKey = sessionKey(id, tabKey ?? '')
     if (getRunning(runKey)) {
       return reply.code(409).send({ error: 'A query is already running for this tab' })
     }
-    const sess = getSession(runKey)
-    if (!sess?.cursor) {
+    const existing = getSession(runKey)
+    if (!existing?.cursor) {
       return reply.code(400).send({ error: 'No more rows — please re-run the query' })
     }
+    const sess = beginSession(runKey)
+    if (!sess?.cursor) return reply.code(409).send({ error: 'A query is already running for this tab' })
     setRunning(runKey, sess.client)
+    let finished = false
     try {
-      const page = await fetchPage(sess.client, sess.cursor, cap)
-      if (!page.hasMore) {
+      if (!sess.pendingRow) {
+        await teardownSession(runKey, 'rollback')
+        return reply.code(400).send({ error: 'No more rows — please re-run the query' })
+      }
+      const fetched = await fetchRows(sess.client, sess.cursor, cap)
+      const combined = [sess.pendingRow, ...fetched.rows]
+      const hasMore = combined.length > cap
+      const rows = combined.slice(0, cap)
+      if (!hasMore) {
         const done = sess.cursor
         sess.cursor = null
+        sess.pendingRow = null
         await closeCursor(sess.client, done)
-        await teardownSession(runKey, 'commit')
+        await finishSession(runKey, sess, 'commit')
       } else {
         // Refresh the idle reaper while pages are still being consumed.
-        setSession(runKey, id, sess.client, sess.cursor)
+        sess.pendingRow = combined[cap] ?? null
+        await finishSession(runKey, sess, 'keep')
       }
-      return { rows: page.rows, rowCount: page.rows.length, truncated: page.hasMore }
+      finished = true
+      return { rows, rowCount: rows.length, truncated: hasMore }
     } catch (err) {
       await teardownSession(runKey, 'rollback')
       const e = err as Error & { position?: string; code?: string }
@@ -327,16 +422,30 @@ export async function queryRoutes(app: FastifyInstance) {
           code: e.code ?? null,
         })
     } finally {
+      if (!finished) await finishSession(runKey, sess, 'rollback')
       deleteRunning(runKey, sess.client)
     }
   })
 
   app.post('/api/connections/:id/cancel', async (req) => {
     const { id } = req.params as { id: string }
-    const { tabKey } = req.body as { tabKey?: string }
+    const { tabKey } = (req.body ?? {}) as { tabKey?: string }
     const running = getRunning(sessionKey(id, tabKey ?? ''))
     if (!running) return { ok: false }
     cancelClientQuery(running)
+    return { ok: true }
+  })
+
+  app.post('/api/connections/:id/query/close', async (req) => {
+    const { id } = req.params as { id: string }
+    const { tabKey } = (req.body ?? {}) as { tabKey?: string }
+    getPool(id)
+    const key = sessionKey(id, tabKey ?? '')
+    // Let an in-flight request perform its own teardown. Releasing its client
+    // here would race the FETCH/query currently using it.
+    const running = getRunning(key)
+    if (running) cancelClientQuery(running)
+    else await teardownSession(key, 'rollback')
     return { ok: true }
   })
 }

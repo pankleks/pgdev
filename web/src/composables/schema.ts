@@ -8,21 +8,27 @@ const state = reactive<{ data: SchemaData | null; loading: boolean; error: strin
   error: null,
 })
 
+let loadVersion = 0
+
 export function useSchema() {
   async function load(id: string) {
+    const version = ++loadVersion
     state.loading = true
     state.error = null
     try {
-      state.data = await api.schema(id)
+      const data = await api.schema(id)
+      if (version === loadVersion) state.data = data
     } catch (e) {
-      state.error = (e as Error).message
+      if (version === loadVersion) state.error = (e as Error).message
     } finally {
-      state.loading = false
+      if (version === loadVersion) state.loading = false
     }
   }
 
   function reset() {
+    loadVersion++
     state.data = null
+    state.loading = false
     state.error = null
   }
 

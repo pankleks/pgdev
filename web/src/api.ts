@@ -58,4 +58,12 @@ export const api = {
       body: JSON.stringify({ tabKey, maxRows: 500 }),
     }).then((r) => unwrap<FetchMoreResponse>(r))
   },
+
+  closeSession(id: string, tabKey: string): Promise<{ ok: boolean }> {
+    return fetch(`/api/connections/${id}/query/close`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tabKey }),
+    }).then((r) => unwrap<{ ok: boolean }>(r))
+  },
 }

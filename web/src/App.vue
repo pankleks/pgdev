@@ -83,8 +83,14 @@ function runActive() {
     return
   }
   const existing = results.state.byTab[tab.key]
-  if (existing?.running) {
-    toast.show(existing.cancelling ? 'Query is being canceled…' : 'Query already running')
+   if (existing?.running || existing?.loadingMore) {
+     toast.show(
+       existing.loadingMore
+         ? 'Rows are still loading…'
+         : existing.cancelling
+           ? 'Query is being canceled…'
+           : 'Query already running',
+     )
     return
   }
   const selected = getActiveSelection()

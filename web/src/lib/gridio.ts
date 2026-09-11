@@ -17,6 +17,9 @@ export function formatCellForDisplay(value: unknown): string {
 }
 
 export function csvEscape(value: string): string {
+  // Prefix spreadsheet formula starters so opening the CSV cannot execute
+  // values returned by an untrusted database.
+  if (/^[\t\r\n ]*[=+\-@]/.test(value)) value = `'${value}`
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
 }

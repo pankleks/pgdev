@@ -366,9 +366,11 @@ async function openObject(
   parent?: string,
 ) {
   cancelPendingToggle()
-  if (!conn.state.id) return
+  const connectionId = conn.state.id
+  if (!connectionId) return
   try {
-    const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
+    const { ddl } = await api.ddl(connectionId, type, schemaName, name, oid, parent)
+    if (conn.state.id !== connectionId) return
     // Function/view DDL is CREATE OR REPLACE (re-runnable), and index/
     // trigger/type DDL ships with a commented DROP line, so those tabs are
     // editable; tables and constraints stay read-only previews. Re-opening

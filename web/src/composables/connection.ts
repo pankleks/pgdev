@@ -14,6 +14,7 @@ const state = reactive({
 
 const SAVED_KEY = 'pgdev.savedConnections'
 const LAST_KEY = 'pgdev.lastConnection'
+let connectionAttempt = 0
 
 export interface SavedConnection extends ConnectionConfig {
   label: string
@@ -60,18 +61,33 @@ export function useConnection() {
 
   function forget(label: string) {
     localStorage.setItem(SAVED_KEY, JSON.stringify(saved().filter((c) => c.label !== label)))
+    try {
+      const raw = localStorage.getItem(LAST_KEY)
+      if (raw && labelOf(JSON.parse(raw) as ConnectionConfig) === label) localStorage.removeItem(LAST_KEY)
+    } catch {
+      // Ignore malformed old storage.
+    }
   }
 
-  async function connect(cfg: ConnectionConfig, save: boolean) {
+  async function connect(cfg: ConnectionConfig, save: boolean, preserveLast = false) {
+    const attempt = ++connectionAttempt
     state.connecting = true
     state.error = ''
     try {
       const prevId = state.id
       const { id } = await api.connect(cfg)
+      if (attempt !== connectionAttempt) {
+        await api.disconnect(id).catch(() => {})
+        return
+      }
       if (prevId && prevId !== id) {
         // Switching connections from the badge dialog: close the old pool
         // and drop its per-tab results so stale data isn't shown.
         await api.disconnect(prevId).catch(() => {})
+        if (attempt !== connectionAttempt) {
+          await api.disconnect(id).catch(() => {})
+          return
+        }
         try {
           const { useResults } = await import('./results')
           const res = useResults()
@@ -80,23 +96,28 @@ export function useConnection() {
           // ignore cleanup errors
         }
       }
+      useSchema().reset()
       state.id = id
       state.label = labelOf(cfg)
       state.dialog = false
-      if (save) remember(cfg)
-      rememberLast(cfg)
+      if (save) {
+        remember(cfg)
+        rememberLast(cfg)
+      } else if (!preserveLast) {
+        localStorage.removeItem(LAST_KEY)
+      }
       await useSchema().load(id)
     } catch (e) {
-      state.error = (e as Error).message
+      if (attempt === connectionAttempt) state.error = (e as Error).message
     } finally {
-      state.connecting = false
+      if (attempt === connectionAttempt) state.connecting = false
     }
   }
 
   async function autoConnect() {
     const cfg = lastConfig()
-    if (!cfg || state.id) return
-    await connect(cfg, false)
+    if (!cfg || state.id || state.connecting) return
+    await connect(cfg, false, true)
     if (!state.id) {
       state.dialog = true
       useToast().show(`Auto-connect failed: ${state.error}`)
@@ -104,6 +125,8 @@ export function useConnection() {
   }
 
   async function disconnect() {
+    const attempt = ++connectionAttempt
+    state.connecting = false
     const id = state.id
     if (id) {
       // Best-effort cancel of in-flight queries, then close the pool.
@@ -112,15 +135,17 @@ export function useConnection() {
         const res = useResults()
         const runningKeys = Object.keys(res.state.byTab).filter((key) => {
           const r = res.state.byTab[key]
-          return r.running && !r.cancelling
+          return (r.running || r.loadingMore) && !r.cancelling
         })
         await Promise.all(runningKeys.map((key) => res.cancel(key, id).catch(() => undefined)))
+        if (attempt !== connectionAttempt) return
         for (const key of Object.keys(res.state.byTab)) res.drop(key)
       } catch {
         // ignore cleanup errors
       }
       await api.disconnect(id).catch(() => {})
     }
+    if (attempt !== connectionAttempt) return
     state.id = null
     state.label = ''
     useSchema().reset()

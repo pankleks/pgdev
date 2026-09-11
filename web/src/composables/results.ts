@@ -37,6 +37,7 @@ export function describeQueryError(
 }
 
 export interface TabResult {
+  operation: number
   running: boolean
   cancelling: boolean
   loadingMore: boolean
@@ -51,6 +52,7 @@ function ensure(key: string): TabResult {
   let r = state.byTab[key]
   if (!r) {
     r = reactive<TabResult>({
+      operation: 0,
       running: false,
       cancelling: false,
       loadingMore: false,
@@ -65,12 +67,19 @@ function ensure(key: string): TabResult {
 
 export function useResults() {
   function drop(key: string) {
+    const r = state.byTab[key]
+    if (r) r.operation++
     delete state.byTab[key]
+  }
+
+  function isCurrent(key: string, result: TabResult, operation: number): boolean {
+    return state.byTab[key] === result && result.operation === operation
   }
 
   async function run(tabKey: string, connectionId: string, sql: string) {
     const r = ensure(tabKey)
-    if (!sql.trim() || r.running) return
+    if (!sql.trim() || r.running || r.loadingMore) return
+    const operation = ++r.operation
     r.running = true
     r.cancelling = false
     r.grid = null
@@ -78,6 +87,7 @@ export function useResults() {
     r.messages = [{ text: 'Running query…', level: 'info' }]
     try {
       const res = await api.query(connectionId, sql, tabKey)
+      if (!isCurrent(tabKey, r, operation)) return
       const multi = res.results.length > 1
       const messages: Message[] = [
         { text: `${res.results.length} statement(s) in ${res.durationMs} ms`, level: 'info' },
@@ -113,20 +123,23 @@ export function useResults() {
       r.grid = lastData ? { ...lastData, key: `grid-${tabKey}` } : null
       if (!r.grid) r.showMessages = true
     } catch (e) {
+      if (!isCurrent(tabKey, r, operation)) return
       const err = e as Error & { code?: string | null }
       const info = describeQueryError(err.message, err.code, r.cancelling)
       r.messages = [{ text: info.text, level: info.level }]
       r.grid = null
       r.showMessages = true
     } finally {
-      r.running = false
-      r.cancelling = false
+      if (isCurrent(tabKey, r, operation)) {
+        r.running = false
+        r.cancelling = false
+      }
     }
   }
 
   async function cancel(tabKey: string, connectionId: string) {
     const r = state.byTab[tabKey]
-    if (!r?.running || r.cancelling) return
+    if ((!r?.running && !r?.loadingMore) || r.cancelling) return
     r.cancelling = true
     await api.cancel(connectionId, tabKey).catch(() => undefined)
   }
@@ -134,10 +147,11 @@ export function useResults() {
   async function loadMore(tabKey: string, connectionId: string) {
     const r = state.byTab[tabKey]
     if (!r?.grid?.truncated || r.running || r.loadingMore) return
+    const operation = r.operation
     r.loadingMore = true
     try {
       const res = await api.fetchMore(connectionId, tabKey)
-      if (r.grid === null) return
+      if (!isCurrent(tabKey, r, operation) || r.grid === null) return
       r.grid.rows.push(...res.rows)
       r.grid.rowCount = r.grid.rows.length
       r.grid.truncated = res.truncated
@@ -148,9 +162,12 @@ export function useResults() {
         level: 'info',
       })
     } catch (e) {
-      r.messages.push({ text: (e as Error).message, level: 'error' })
+      if (isCurrent(tabKey, r, operation)) r.messages.push({ text: (e as Error).message, level: 'error' })
     } finally {
-      r.loadingMore = false
+      if (isCurrent(tabKey, r, operation)) {
+        r.loadingMore = false
+        r.cancelling = false
+      }
     }
   }
 
@@ -163,15 +180,17 @@ export function useResults() {
     const r = state.byTab[tabKey]
     if (!r?.grid || r.running || r.loadingMore) return (r?.grid && !r.grid.truncated) || false
     const g = r.grid
+    const operation = r.operation
     r.loadingMore = true
     try {
-      while (r.grid === g && g.truncated && !r.running) {
+      while (isCurrent(tabKey, r, operation) && r.grid === g && g.truncated && !r.running) {
         const res = await api.fetchMore(connectionId, tabKey)
-        if (r.grid !== g) return false
+        if (!isCurrent(tabKey, r, operation) || r.grid !== g) return false
         g.rows.push(...res.rows)
         g.rowCount = g.rows.length
         g.truncated = res.truncated
       }
+      if (!isCurrent(tabKey, r, operation)) return false
       const complete = r.grid === g && !g.truncated
       r.messages.push({
         text: complete
@@ -181,10 +200,13 @@ export function useResults() {
       })
       return complete
     } catch (e) {
-      r.messages.push({ text: (e as Error).message, level: 'error' })
+      if (isCurrent(tabKey, r, operation)) r.messages.push({ text: (e as Error).message, level: 'error' })
       return false
     } finally {
-      r.loadingMore = false
+      if (isCurrent(tabKey, r, operation)) {
+        r.loadingMore = false
+        r.cancelling = false
+      }
     }
   }
 

@@ -2,9 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { X } from 'lucide-vue-next'
 import { useTabs } from '../composables/tabs'
+import { useConnection } from '../composables/connection'
+import { useResults } from '../composables/results'
+import { api } from '../api'
 import QueryEditor from './QueryEditor.vue'
 
 const tabs = useTabs()
+const conn = useConnection()
+const results = useResults()
 const active = computed(
   () => tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
 )
@@ -25,6 +30,35 @@ function openMenu(e: MouseEvent, tabKey: string) {
 function menuItem(action: () => void) {
   action()
   menu.value = null
+}
+
+function closeSession(key: string) {
+  results.drop(key)
+  if (conn.state.id) void api.closeSession(conn.state.id, key).catch(() => undefined)
+}
+
+function closeTab(key: string) {
+  closeSession(key)
+  tabs.close(key)
+}
+
+function closeAllTabs() {
+  for (const tab of tabs.state.tabs) closeSession(tab.key)
+  tabs.closeAll()
+}
+
+function closeOtherTabs(key: string) {
+  for (const tab of tabs.state.tabs) {
+    if (tab.key !== key) closeSession(tab.key)
+  }
+  tabs.closeOthers(key)
+}
+
+function closeRightTabs(key: string) {
+  const index = tabs.state.tabs.findIndex((tab) => tab.key === key)
+  if (index === -1) return
+  for (const tab of tabs.state.tabs.slice(index + 1)) closeSession(tab.key)
+  tabs.closeRight(key)
 }
 
 function onGlobalClick() {
@@ -51,7 +85,7 @@ const menuIndex = computed(() =>
         @contextmenu="openMenu($event, t.key)"
       >
         <span class="tab-title">{{ t.title }}</span>
-        <button class="tab-close" title="Close tab" @click.stop="tabs.close(t.key)"><X :size="14" /></button>
+        <button class="tab-close" title="Close tab" @click.stop="closeTab(t.key)"><X :size="14" /></button>
       </div>
     </div>
     <QueryEditor v-if="active" :tab="active" />
@@ -66,12 +100,12 @@ const menuIndex = computed(() =>
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
       @click.stop
     >
-      <button @click="menuItem(() => tabs.close(menu!.tabKey))">Close</button>
-      <button @click="menuItem(() => tabs.closeAll())">Close all</button>
-      <button :disabled="tabs.state.tabs.length <= 1" @click="menuItem(() => tabs.closeOthers(menu!.tabKey))">
+      <button @click="menuItem(() => closeTab(menu!.tabKey))">Close</button>
+      <button @click="menuItem(() => closeAllTabs())">Close all</button>
+      <button :disabled="tabs.state.tabs.length <= 1" @click="menuItem(() => closeOtherTabs(menu!.tabKey))">
         Close all except this
       </button>
-      <button :disabled="menuIndex >= tabs.state.tabs.length - 1" @click="menuItem(() => tabs.closeRight(menu!.tabKey))">
+      <button :disabled="menuIndex >= tabs.state.tabs.length - 1" @click="menuItem(() => closeRightTabs(menu!.tabKey))">
         Close all on the right
       </button>
     </div>

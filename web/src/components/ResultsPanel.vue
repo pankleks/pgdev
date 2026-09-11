@@ -146,9 +146,9 @@ async function copyCell(v: unknown) {
 }
 
 function cancelRun() {
-  if (!conn.state.id || !result.value?.running) return
+  if (!conn.state.id || (!result.value?.running && !result.value?.loadingMore)) return
   results.cancel(tabs.state.activeKey, conn.state.id)
-  toast.show('Canceling query…')
+  toast.show(result.value.loadingMore ? 'Canceling row load…' : 'Canceling query…')
 }
 
 function loadMoreRows() {
@@ -164,13 +164,18 @@ async function copyResult() {
 }
 
 async function exportCsv() {
-  if (!conn.state.id) return
+  const connectionId = conn.state.id
+  if (!connectionId) return
   const tabKey = tabs.state.activeKey
   let g = results.state.byTab[tabKey]?.grid
   if (!g) return
   if (g.truncated) {
     toast.show('Loading all rows for export…')
-    const ok = await results.loadAll(tabKey, conn.state.id)
+    const ok = await results.loadAll(tabKey, connectionId)
+    if (tabs.state.activeKey !== tabKey || conn.state.id !== connectionId) {
+      toast.show('Export canceled because the active connection or tab changed')
+      return
+    }
     g = results.state.byTab[tabKey]?.grid ?? null
     if (!ok || !g) {
       toast.show('Export failed — see Messages')
@@ -210,18 +215,18 @@ async function exportCsv() {
         <button class="btn-sm" title="Export all rows to CSV" :disabled="result?.loadingMore" @click="exportCsv()"><Download :size="13" /> CSV</button>
       </template>
       <button
-        v-if="result?.running"
+        v-if="result?.running || result?.loadingMore"
         class="danger"
         :disabled="result?.cancelling"
-        title="Cancel running query"
+        title="Cancel running query or row load"
         @click="cancelRun()"
       >
-        <Square :size="11" /> {{ result?.cancelling ? 'Canceling…' : 'Cancel' }}
+        <Square :size="11" /> {{ result?.cancelling ? 'Canceling…' : result?.loadingMore ? 'Cancel load' : 'Cancel' }}
       </button>
       <button
         v-else
         class="primary run-btn"
-        :disabled="!conn.state.id || tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)?.readOnly"
+        :disabled="!conn.state.id || result?.loadingMore || tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)?.readOnly"
         title="Ctrl+Enter"
         @click="run?.()"
       >

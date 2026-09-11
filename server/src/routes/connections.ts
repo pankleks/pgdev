@@ -27,7 +27,11 @@ export async function connectionRoutes(app: FastifyInstance) {
           user: b.user,
           password: b.password,
         }
-    if (b.ssl) config.ssl = { rejectUnauthorized: false }
+    if (!b.connectionString) {
+      // The parameter-form SSL flag is authoritative. Self-signed server
+      // certificates are allowed when SSL is enabled.
+      config.ssl = b.ssl ? { rejectUnauthorized: false } : false
+    }
     config.max = 5
     config.statement_timeout = 30000
     // Tabs can hold a session client while paging large results; fail fast
