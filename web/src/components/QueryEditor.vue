@@ -23,7 +23,7 @@ onMounted(() => {
     theme: 'vs-dark',
     automaticLayout: true,
     minimap: { enabled: false },
-    fontSize: 13,
+    fontSize: 14,
     tabSize: 4,
     insertSpaces: false,
     detectIndentation: false,
