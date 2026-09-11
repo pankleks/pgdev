@@ -51,6 +51,7 @@ export interface FunctionInfo {
   args: string
   returns: string
   typeSig: string
+  kind: 'function' | 'procedure' | 'window' | 'trigger'
   oid: string
 }
 
@@ -145,6 +146,12 @@ SELECT n.nspname AS schema, p.proname AS name,
   COALESCE(pg_get_function_identity_arguments(p.oid), '') AS args,
   pg_get_function_result(p.oid) AS returns,
   COALESCE((SELECT string_agg(format_type(t.oid, NULL), ', ') FROM unnest(p.proargtypes) AS t(oid)), '') AS type_sig,
+  CASE
+    WHEN pg_get_function_result(p.oid) = 'trigger' THEN 'trigger'
+    WHEN p.prokind = 'p' THEN 'procedure'
+    WHEN p.prokind = 'w' THEN 'window'
+    ELSE 'function'
+  END AS kind,
   p.oid::text AS oid
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -242,6 +249,7 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     args: r.args,
     returns: r.returns,
     typeSig: r.type_sig,
+    kind: r.kind,
     oid: r.oid,
   }))
 

@@ -49,6 +49,7 @@ export interface FunctionInfo {
   args: string
   returns: string
   typeSig: string
+  kind: 'function' | 'procedure' | 'window' | 'trigger'
   oid: string
 }
 

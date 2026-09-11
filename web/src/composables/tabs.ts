@@ -32,7 +32,7 @@ export function useTabs() {
     state.activeKey = key
   }
 
-  function openDdl(type: string, schema: string, name: string, ddl: string, suffix = '') {
+  function openDdl(type: string, schema: string, name: string, ddl: string, suffix = '', editable = false) {
     const key = `ddl-${type}-${schema}-${name}${suffix}`
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
@@ -44,7 +44,7 @@ export function useTabs() {
       kind: 'ddl',
       title: suffix ? `${name} ${suffix}` : `${name} (${type})`,
       content: ddl,
-      readOnly: true,
+      readOnly: !editable,
     })
     state.activeKey = key
   }

@@ -1,11 +1,21 @@
 type Handler = () => void
+type SelectionGetter = () => string | undefined
 
-let handler: Handler | null = null
+let formatHandler: Handler | null = null
+let selectionGetter: SelectionGetter | null = null
 
 export function setFormatHandler(f: Handler | null): void {
-  handler = f
+  formatHandler = f
 }
 
 export function triggerFormat(): void {
-  handler?.()
+  formatHandler?.()
+}
+
+export function setSelectionGetter(g: SelectionGetter | null): void {
+  selectionGetter = g
+}
+
+export function getActiveSelection(): string | undefined {
+  return selectionGetter?.()
 }

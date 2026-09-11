@@ -86,9 +86,11 @@ export async function viewDdl(pool: Pool, oid: string, schema: string, name: str
   )
   const row = res.rows[0]
   if (!row) notFound()
-  const keyword = row.relkind === 'm' ? 'CREATE MATERIALIZED VIEW' : 'CREATE VIEW'
+  const materialized = row.relkind === 'm'
+  const keyword = materialized ? 'CREATE MATERIALIZED VIEW' : 'CREATE OR REPLACE VIEW'
   const definition = String(row.def).trim().replace(/;$/, '')
-  return `${keyword} ${ident(schema)}.${ident(name)} AS\n${definition};`
+  const drop = `-- DROP ${materialized ? 'MATERIALIZED ' : ''}VIEW IF EXISTS ${ident(schema)}.${ident(name)};`
+  return `${drop}\n\n${keyword} ${ident(schema)}.${ident(name)} AS\n${definition};`
 }
 
 export async function functionDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
@@ -106,13 +108,19 @@ export async function functionDdl(pool: Pool, oid: string, schema: string, name:
     target = fallback.rows[0].oid
   }
   const res = await pool.query(
-    `SELECT pg_get_functiondef(p.oid) AS def FROM pg_proc p WHERE p.oid = $1::oid`,
+    `SELECT pg_get_functiondef(p.oid) AS def,
+            n.nspname AS schema, p.proname AS name,
+            pg_get_function_identity_arguments(p.oid) AS args
+     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE p.oid = $1::oid`,
     [target],
   )
   const row = res.rows[0]
   if (!row) notFound()
   const def = String(row.def).trim()
-  return def.endsWith(';') ? def : def + ';'
+  const ddl = def.endsWith(';') ? def : def + ';'
+  const drop = `-- DROP FUNCTION IF EXISTS ${ident(row.schema)}.${ident(row.name)}(${row.args});`
+  return `${drop}\n\n${ddl}`
 }
 
 export async function indexDdl(pool: Pool, schema: string, name: string): Promise<string> {

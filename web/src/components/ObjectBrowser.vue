@@ -20,7 +20,9 @@ import {
   LoaderCircle,
   RotateCw,
   ShieldCheck,
+  Sigma,
   SquareFunction,
+  SquareTerminal,
   Table2,
   X,
   Zap,
@@ -218,6 +220,26 @@ const INDEX_ICONS: Record<IndexType, LucideIcon> = {
   normal: ListTree,
 }
 
+type FunctionKind = 'function' | 'procedure' | 'window' | 'trigger'
+
+const FUNCTION_ICONS: Record<FunctionKind, LucideIcon> = {
+  function: SquareFunction,
+  procedure: SquareTerminal,
+  window: Sigma,
+  trigger: Zap,
+}
+
+const FUNCTION_LABELS: Record<FunctionKind, string> = {
+  function: 'function',
+  procedure: 'procedure',
+  window: 'window function',
+  trigger: 'trigger function',
+}
+
+function functionIcon(kind: string | undefined): LucideIcon {
+  return FUNCTION_ICONS[(kind ?? 'function') as FunctionKind] ?? SquareFunction
+}
+
 const CONSTRAINT_META: Record<string, { icon: LucideIcon; label: string; cls: string }> = {
   p: { icon: KeyRound, label: 'PRIMARY KEY', cls: 'primary' },
   u: { icon: ShieldCheck, label: 'UNIQUE', cls: 'unique' },
@@ -300,7 +322,7 @@ async function openObject(
   if (!conn.state.id) return
   try {
     const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
-    tabs.openDdl(type, schemaName, name, ddl, suffix)
+    tabs.openDdl(type, schemaName, name, ddl, suffix, type === 'function' || type === 'view')
   } catch (e) {
     toast.show((e as Error).message)
   }
@@ -487,6 +509,7 @@ async function refresh() {
               >▸</span>
               <span class="obj-icon"><Eye :size="14" /></span>
               <span class="obj-name" :class="{ tbd: isTbd(v.name) }">{{ displayName(v.schema, v.name) }}</span>
+              <span v-if="v.materialized" class="void-badge">mat</span>
             </div>
             <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
               <div v-for="c in v.columns" :key="c.name" class="node child">
@@ -509,7 +532,7 @@ async function refresh() {
           <div v-for="f in filteredFunctions" :key="'f-' + f.oid" class="tree">
             <div
               class="node"
-              title="Click to copy name · double-click to open DDL"
+              :title="`${FUNCTION_LABELS[(f.kind ?? 'function') as FunctionKind] ?? 'function'} · args: (${f.args}) · returns: ${f.returns} · Click to copy name · double-click to open DDL`"
               @click="copyName(f.schema, f.name)"
               @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
             >
@@ -519,9 +542,10 @@ async function refresh() {
                 title="Toggle signature"
                 @click.stop="toggleChildren('f-' + f.oid)"
               >▸</span>
-              <span class="obj-icon"><SquareFunction :size="14" /></span>
+              <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
               <span class="obj-name" :class="{ tbd: isTbd(f.name) }">{{ displayName(f.schema, f.name) }}</span>
-              <span v-if="(overloadCounts.get(f.name) ?? 0) > 1" class="dim sig">({{ f.typeSig }})</span>
+              <span v-if="f.returns === 'void'" class="void-badge">void</span>
+              <span v-if="(overloadCounts.get(f.name) ?? 0) > 1" class="void-badge overload-badge">overload</span>
             </div>
             <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
               <div v-for="(p, i) in paramRows(f.args, f.returns)" :key="'p-' + i" class="node child">

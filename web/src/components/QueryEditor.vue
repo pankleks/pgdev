@@ -4,7 +4,7 @@ import monaco from '../monaco'
 import { registerSqlCompletion } from '../monaco/completions'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { formatSql } from '../lib/sqlformat'
-import { setFormatHandler } from '../lib/formatbridge'
+import { setFormatHandler, setSelectionGetter } from '../lib/formatbridge'
 
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
@@ -29,16 +29,17 @@ onMounted(() => {
   })
   registerSqlCompletion(monaco)
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-    const model = editor?.getModel()
-    const selection = editor?.getSelection()
-    const selected =
-      model && selection && !selection.isEmpty() ? model.getValueInRange(selection) : undefined
-    run?.(selected)
+    run?.()
   })
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, () => {
     formatActive()
   })
   setFormatHandler(() => formatActive())
+  setSelectionGetter(() => {
+    const model = editor?.getModel()
+    const selection = editor?.getSelection()
+    return model && selection && !selection.isEmpty() ? model.getValueInRange(selection) : undefined
+  })
   applyTab(props.tab)
 })
 
@@ -89,6 +90,7 @@ watch(
 
 onBeforeUnmount(() => {
   setFormatHandler(null)
+  setSelectionGetter(null)
   editor?.dispose()
   models.forEach((m) => m.dispose())
   models.clear()

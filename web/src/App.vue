@@ -9,6 +9,7 @@ import { useConnection } from './composables/connection'
 import { useTabs } from './composables/tabs'
 import { useResults } from './composables/results'
 import { useToast } from './composables/toast'
+import { getActiveSelection } from './lib/formatbridge'
 
 const conn = useConnection()
 const tabs = useTabs()
@@ -43,14 +44,17 @@ onBeforeUnmount(() => {
   window.removeEventListener('mouseup', onMouseUp)
 })
 
-function runActive(sql?: string) {
+function runActive() {
   if (!conn.state.id) {
     toast.show('Connect to a database first')
     conn.state.dialog = true
     return
   }
   const tab = tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)
-  if (tab) results.run(tab.key, conn.state.id, sql?.trim() ? sql : tab.content)
+  if (tab) {
+    const selected = getActiveSelection()
+    results.run(tab.key, conn.state.id, selected?.trim() ? selected : tab.content)
+  }
 }
 
 provide('pgdev:run', runActive)
