@@ -195,7 +195,7 @@ function exportCsv() {
       <button
         v-else
         class="primary run-btn"
-        :disabled="!conn.state.id"
+        :disabled="!conn.state.id || tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)?.readOnly"
         title="Ctrl+Enter"
         @click="run?.()"
       >

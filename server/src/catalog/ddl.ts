@@ -131,7 +131,9 @@ export async function indexDdl(pool: Pool, schema: string, name: string): Promis
     [schema, name],
   )
   if (!res.rows[0]) notFound()
-  return String(res.rows[0].def).trim() + ';'
+  const def = String(res.rows[0].def).trim() + ';'
+  const drop = `-- DROP INDEX IF EXISTS ${ident(schema)}.${ident(name)};`
+  return `${drop}\n\n${def}`
 }
 
 export async function constraintDdl(pool: Pool, schema: string, table: string, name: string): Promise<string> {
@@ -144,7 +146,9 @@ export async function constraintDdl(pool: Pool, schema: string, table: string, n
     [schema, table, name],
   )
   if (!res.rows[0]) notFound()
-  return `ALTER TABLE ${ident(schema)}.${ident(table)}\n  ADD CONSTRAINT ${ident(name)} ${String(res.rows[0].def).trim()};`
+  const def = `ALTER TABLE ${ident(schema)}.${ident(table)}\n  ADD CONSTRAINT ${ident(name)} ${String(res.rows[0].def).trim()};`
+  const drop = `-- ALTER TABLE ${ident(schema)}.${ident(table)} DROP CONSTRAINT ${ident(name)};`
+  return `${drop}\n\n${def}`
 }
 
 export async function triggerDdl(pool: Pool, schema: string, table: string, name: string): Promise<string> {
@@ -157,5 +161,66 @@ export async function triggerDdl(pool: Pool, schema: string, table: string, name
     [schema, table, name],
   )
   if (!res.rows[0]) notFound()
-  return String(res.rows[0].def).trim() + ';'
+  const def = String(res.rows[0].def).trim() + ';'
+  const drop = `-- DROP TRIGGER IF EXISTS ${ident(name)} ON ${ident(schema)}.${ident(table)};`
+  return `${drop}\n\n${def}`
+}
+
+export async function typeDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
+  let target = oid
+  if (!target) {
+    const fallback = await pool.query(
+      `SELECT t.oid::text AS oid
+       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+       WHERE n.nspname = $1 AND t.typname = $2
+       LIMIT 1`,
+      [schema, name],
+    )
+    if (!fallback.rows[0]) notFound()
+    target = fallback.rows[0].oid
+  }
+  const res = await pool.query(
+    `SELECT t.typtype, t.typnotnull, t.typdefault,
+       format_type(t.typbasetype, t.typtypmod) AS base,
+       (SELECT string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder)
+          FROM pg_enum e WHERE e.enumtypid = t.oid) AS labels,
+       (SELECT string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum)
+          FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) AS attrs,
+       (SELECT string_agg(pg_get_constraintdef(c.oid), ' ' ORDER BY c.oid)
+          FROM pg_constraint c WHERE c.contypid = t.oid) AS cons,
+       format_type(r.rngsubtype, NULL) AS subtype,
+       r.rngsubopc::regclass::text AS subopc,
+       r.rngcanonical::text AS canonical,
+       r.rngsubdiff::text AS subdiff
+     FROM pg_type t
+     JOIN pg_namespace n ON n.oid = t.typnamespace
+     LEFT JOIN pg_range r ON r.rngtypid = t.oid
+     WHERE t.oid = $1::oid`,
+    [target],
+  )
+  const row = res.rows[0]
+  if (!row) notFound()
+  const q = `${ident(schema)}.${ident(name)}`
+  let ddl: string
+  if (row.typtype === 'e') {
+    ddl = `CREATE TYPE ${q} AS ENUM (${row.labels ?? ''});`
+  } else if (row.typtype === 'c') {
+    ddl = `CREATE TYPE ${q} AS (${row.attrs ?? ''});`
+  } else if (row.typtype === 'd') {
+    const parts = [`CREATE DOMAIN ${q} AS ${row.base}`]
+    if (row.typdefault != null) parts.push(`DEFAULT ${row.typdefault}`)
+    if (row.typnotnull) parts.push('NOT NULL')
+    if (row.cons) parts.push(String(row.cons).trim())
+    ddl = parts.join(' ') + ';'
+  } else if (row.typtype === 'r') {
+    const opts = [`SUBTYPE = ${row.subtype}`]
+    if (row.subopc) opts.push(`SUBTYPE_OPCLASS = ${row.subopc}`)
+    if (row.canonical && row.canonical !== '-') opts.push(`CANONICAL = ${row.canonical}`)
+    if (row.subdiff && row.subdiff !== '-') opts.push(`SUBTYPE_DIFF = ${row.subdiff}`)
+    ddl = `CREATE TYPE ${q} AS RANGE (\n  ${opts.join(',\n  ')}\n);`
+  } else {
+    notFound()
+  }
+  const drop = row.typtype === 'd' ? `-- DROP DOMAIN IF EXISTS ${q};` : `-- DROP TYPE IF EXISTS ${q};`
+  return `${drop}\n\n${ddl}`
 }

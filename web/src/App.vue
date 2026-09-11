@@ -51,7 +51,7 @@ function runActive() {
     return
   }
   const tab = tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)
-  if (tab) {
+  if (tab && !tab.readOnly) {
     const selected = getActiveSelection()
     results.run(tab.key, conn.state.id, selected?.trim() ? selected : tab.content)
   }

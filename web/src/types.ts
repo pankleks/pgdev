@@ -53,10 +53,19 @@ export interface FunctionInfo {
   oid: string
 }
 
+export interface TypeInfo {
+  schema: string
+  name: string
+  oid: string
+  kind: 'enum' | 'composite' | 'domain' | 'range'
+  detail: string
+}
+
 export interface SchemaData {
   tables: TableInfo[]
   views: ViewInfo[]
   functions: FunctionInfo[]
+  types: TypeInfo[]
 }
 
 export interface ConnectionConfig {

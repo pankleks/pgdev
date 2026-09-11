@@ -55,10 +55,19 @@ export interface FunctionInfo {
   oid: string
 }
 
+export interface TypeInfo {
+  schema: string
+  name: string
+  oid: string
+  kind: 'enum' | 'composite' | 'domain' | 'range'
+  detail: string
+}
+
 export interface SchemaData {
   tables: TableInfo[]
   views: ViewInfo[]
   functions: FunctionInfo[]
+  types: TypeInfo[]
 }
 
 const TABLES_SQL = `
@@ -159,13 +168,38 @@ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND p.prokind IN ('f', 'p', 'w')
 ORDER BY n.nspname, p.proname`
 
+const TYPES_SQL = `
+SELECT n.nspname AS schema, t.typname AS name, t.oid::text AS oid,
+  CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'c' THEN 'composite' WHEN 'd' THEN 'domain' ELSE 'range' END AS kind,
+  COALESCE(en.labels, ca.attrs, dm.base, format_type(r.rngsubtype, NULL), '') AS detail
+FROM pg_type t
+JOIN pg_namespace n ON n.oid = t.typnamespace
+LEFT JOIN LATERAL (
+  SELECT string_agg(e.enumlabel, ', ' ORDER BY e.enumsortorder) AS labels
+  FROM pg_enum e WHERE e.enumtypid = t.oid
+) en ON t.typtype = 'e'
+LEFT JOIN LATERAL (
+  SELECT string_agg(a.attname || ' ' || format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum) AS attrs
+  FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped
+) ca ON t.typtype = 'c'
+LEFT JOIN LATERAL (
+  SELECT format_type(t.typbasetype, t.typtypmod) AS base
+) dm ON t.typtype = 'd'
+LEFT JOIN pg_range r ON r.rngtypid = t.oid
+WHERE t.typtype IN ('e', 'c', 'd', 'r')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_class c WHERE c.oid = t.typrelid))
+ORDER BY n.nspname, t.typname`
+
 export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
-  const [tablesRes, viewsRes, columnsRes, functionsRes, indexesRes, constraintsRes, triggersRes] =
+  const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, indexesRes, constraintsRes, triggersRes] =
     await Promise.all([
       pool.query(TABLES_SQL),
       pool.query(VIEWS_SQL),
       pool.query(COLUMNS_SQL),
       pool.query(FUNCTIONS_SQL),
+      pool.query(TYPES_SQL),
       pool.query(INDEXES_SQL),
       pool.query(CONSTRAINTS_SQL),
       pool.query(TRIGGERS_SQL),
@@ -253,5 +287,13 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     oid: r.oid,
   }))
 
-  return { tables, views, functions }
+  const types: TypeInfo[] = typesRes.rows.map((r) => ({
+    schema: r.schema,
+    name: r.name,
+    oid: r.oid,
+    kind: r.kind,
+    detail: r.detail ?? '',
+  }))
+
+  return { tables, views, functions, types }
 }

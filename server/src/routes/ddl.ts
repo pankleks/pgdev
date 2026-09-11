@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { getPool } from '../pools.js'
-import { tableDdl, viewDdl, functionDdl, indexDdl, constraintDdl, triggerDdl } from '../catalog/ddl.js'
+import { tableDdl, viewDdl, functionDdl, indexDdl, constraintDdl, triggerDdl, typeDdl } from '../catalog/ddl.js'
 
 export async function ddlRoutes(app: FastifyInstance) {
   app.get('/api/connections/:id/ddl', async (req, reply) => {
@@ -20,6 +20,7 @@ export async function ddlRoutes(app: FastifyInstance) {
     else if (type === 'index') ddl = await indexDdl(pool, schema, name)
     else if (type === 'constraint') ddl = await constraintDdl(pool, schema, parent ?? '', name)
     else if (type === 'trigger') ddl = await triggerDdl(pool, schema, parent ?? '', name)
+    else if (type === 'type') ddl = await typeDdl(pool, oid ?? '', schema, name)
     else return reply.code(400).send({ error: `Unknown object type: ${type}` })
     return { ddl }
   })

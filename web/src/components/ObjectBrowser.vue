@@ -20,6 +20,7 @@ import {
   LoaderCircle,
   RotateCw,
   ShieldCheck,
+  Shapes,
   Sigma,
   SquareFunction,
   SquareTerminal,
@@ -41,10 +42,10 @@ const schema = useSchema()
 const tabs = useTabs()
 const toast = useToast()
 
-const open = reactive({ tables: false, views: false, functions: false })
+const open = reactive({ tables: false, views: false, functions: false, types: false })
 const expanded = reactive(new Set<string>())
 
-type SearchType = 'table' | 'view' | 'function' | 'column'
+type SearchType = 'table' | 'view' | 'function' | 'column' | 'type'
 
 const TYPE_WORDS: Record<string, SearchType> = {
   table: 'table',
@@ -58,6 +59,8 @@ const TYPE_WORDS: Record<string, SearchType> = {
   column: 'column',
   columns: 'column',
   col: 'column',
+  type: 'type',
+  types: 'type',
 }
 
 const filter = ref('')
@@ -111,6 +114,9 @@ const showViews = computed(
 const showFunctions = computed(
   () => !isFiltering.value || searchType.value === null || searchType.value === 'function',
 )
+const showTypes = computed(
+  () => !isFiltering.value || searchType.value === null || searchType.value === 'type',
+)
 
 const filteredTables = computed(() =>
   showTables.value
@@ -147,8 +153,23 @@ const filteredFunctions = computed(() =>
       )
     : [],
 )
+const types = computed(() => schema.state.data?.types ?? [])
+const filteredTypes = computed(() =>
+  showTypes.value
+    ? types.value.filter(
+        (t) =>
+          !isFiltering.value ||
+          nameMatched(t.name, t.schema) ||
+          t.detail.toLowerCase().includes(query.value),
+      )
+    : [],
+)
 const totalMatches = computed(
-  () => filteredTables.value.length + filteredViews.value.length + filteredFunctions.value.length,
+  () =>
+    filteredTables.value.length +
+    filteredViews.value.length +
+    filteredFunctions.value.length +
+    filteredTypes.value.length,
 )
 
 function toggleChildren(key: string) {
@@ -292,10 +313,15 @@ function paramRows(args: string, returns: string): ParamRow[] {
   return rows
 }
 
+let copyTimer = 0
+
 async function copyName(schemaName: string | null, name: string) {
-  const text = schemaName ? displayName(schemaName, name) : name
-  const ok = await copyText(text)
-  toast.show(ok ? 'Object name copied.' : 'Copy failed')
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(async () => {
+    const text = schemaName ? displayName(schemaName, name) : name
+    const ok = await copyText(text)
+    toast.show(ok ? 'Object name copied.' : 'Copy failed')
+  }, 250)
 }
 
 type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
@@ -312,17 +338,25 @@ function catOpen(t: TableInfo, cat: TableCategory): boolean {
 }
 
 async function openObject(
-  type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger',
+  type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type',
   schemaName: string,
   name: string,
   oid?: string,
   suffix = '',
   parent?: string,
 ) {
+  window.clearTimeout(copyTimer)
   if (!conn.state.id) return
   try {
     const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
-    tabs.openDdl(type, schemaName, name, ddl, suffix, type === 'function' || type === 'view')
+    tabs.openDdl(
+      type,
+      schemaName,
+      name,
+      ddl,
+      suffix,
+      type !== 'table',
+    )
   } catch (e) {
     toast.show((e as Error).message)
   }
@@ -519,6 +553,40 @@ async function refresh() {
             </template>
           </div>
           <div v-if="!filteredViews.length" class="empty">No views</div>
+        </template>
+      </section>
+
+      <section v-if="showTypes" class="group">
+        <h3 @click="open.types = !open.types">
+          <component :is="open.types || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
+          Types
+          <span class="count">{{ isFiltering ? `${filteredTypes.length}/${types.length}` : types.length }}</span>
+        </h3>
+        <template v-if="open.types || isFiltering">
+          <div v-for="t in filteredTypes" :key="'ty-' + t.oid" class="tree">
+            <div
+              class="node"
+              :title="`${t.kind} · ${t.detail} · Click to copy name · double-click to open DDL`"
+              @click="copyName(t.schema, t.name)"
+              @dblclick="openObject('type', t.schema, t.name, t.oid)"
+            >
+              <span
+                class="caret"
+                :class="{ open: expanded.has('ty-' + t.oid) }"
+                title="Toggle detail"
+                @click.stop="toggleChildren('ty-' + t.oid)"
+              >▸</span>
+              <span class="obj-icon"><Shapes :size="14" /></span>
+              <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
+              <span class="void-badge">{{ t.kind }}</span>
+            </div>
+            <template v-if="expanded.has('ty-' + t.oid)">
+              <div class="node child" :title="t.detail" @click="copyName(null, t.detail)">
+                <span class="obj-name">{{ t.detail || '—' }}</span>
+              </div>
+            </template>
+          </div>
+          <div v-if="!filteredTypes.length" class="empty">No types</div>
         </template>
       </section>
 
