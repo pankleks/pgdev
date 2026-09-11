@@ -999,9 +999,57 @@ input {
     padding: 20px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 
+    .modal-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+
+      h2 {
+        margin-bottom: 0;
+      }
+    }
+
     h2 {
       font-size: 16px;
       margin-bottom: 14px;
+    }
+
+    .settings-section {
+      h3 {
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+      }
+
+      .setting-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        cursor: pointer;
+
+        input {
+          width: auto;
+          margin-top: 2px;
+          flex-shrink: 0;
+        }
+
+        span {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+
+        strong {
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        small {
+          color: var(--text-dim);
+          line-height: 1.4;
+        }
+      }
     }
 
     .saved {

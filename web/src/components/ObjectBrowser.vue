@@ -33,6 +33,7 @@ import {
 } from 'lucide-vue-next'
 import { useConnection } from '../composables/connection'
 import { useSchema } from '../composables/schema'
+import { useSettings } from '../composables/settings'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
@@ -42,6 +43,7 @@ import { groupNamedObjects } from '../lib/objectgroups'
 
 const conn = useConnection()
 const schema = useSchema()
+const settings = useSettings()
 const tabs = useTabs()
 const toast = useToast()
 
@@ -327,16 +329,14 @@ function cancelPendingToggle() {
 const tables = computed(() => schema.state.data?.tables ?? [])
 const views = computed(() => schema.state.data?.views ?? [])
 const functions = computed(() => schema.state.data?.functions ?? [])
-const AUTO_GROUP_TABLES = true
-const AUTO_GROUP_OBJECTS = true
 const expandedTableGroups = reactive(new Set<string>())
 const expandedViewGroups = reactive(new Set<string>())
 const expandedFunctionGroups = reactive(new Set<string>())
 const expandedTypeGroups = reactive(new Set<string>())
-const tableEntries = computed(() => groupTables(filteredTables.value, AUTO_GROUP_TABLES))
-const viewEntries = computed(() => groupNamedObjects(filteredViews.value, AUTO_GROUP_OBJECTS, 'view'))
-const functionEntries = computed(() => groupNamedObjects(filteredFunctions.value, AUTO_GROUP_OBJECTS, 'function'))
-const typeEntries = computed(() => groupNamedObjects(filteredTypes.value, AUTO_GROUP_OBJECTS, 'type'))
+const tableEntries = computed(() => groupTables(filteredTables.value, settings.state.groupObjects))
+const viewEntries = computed(() => groupNamedObjects(filteredViews.value, settings.state.groupObjects, 'view'))
+const functionEntries = computed(() => groupNamedObjects(filteredFunctions.value, settings.state.groupObjects, 'function'))
+const typeEntries = computed(() => groupNamedObjects(filteredTypes.value, settings.state.groupObjects, 'type'))
 
 function sectionNode(section: BrowserSection): BrowserNode {
   const collapseKeys =
@@ -349,7 +349,7 @@ function sectionNode(section: BrowserSection): BrowserNode {
           : functions.value.map((func) => `f-${func.oid}`)
   const groupKeys =
     section === 'tables'
-      ? groupTables(tables.value, AUTO_GROUP_TABLES)
+      ? groupTables(tables.value, settings.state.groupObjects)
           .filter((entry) => entry.kind === 'group')
           .map((entry) => entry.key)
       : section === 'views'
@@ -784,7 +784,7 @@ async function refresh() {
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Eye :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(v.schema, v.name))" />
-                    <span class="node-badges"><span v-if="isTbd(v.name)" class="void-badge tbd-badge">tbd</span><span v-if="v.materialized" class="void-badge">mat</span></span>
+                    <span class="node-badges"><span v-if="v.materialized" class="void-badge">mat</span><span v-if="isTbd(v.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
                     <div
@@ -846,7 +846,7 @@ async function refresh() {
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Shapes :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(t.schema, t.name))" />
-                    <span class="node-badges"><span v-if="isTbd(t.name)" class="void-badge tbd-badge">tbd</span><span class="void-badge">{{ t.kind }}</span></span>
+                    <span class="node-badges"><span class="void-badge">{{ t.kind }}</span><span v-if="isTbd(t.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('ty-' + t.oid)">
                     <div class="node child" :title="t.detail" @contextmenu="openNodeMenu($event, browserNode('type-detail', `ty-${t.oid}-detail`, []))">
@@ -901,7 +901,7 @@ async function refresh() {
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(f.schema, f.name))" />
-                    <span class="node-badges"><span v-if="isTbd(f.name)" class="void-badge tbd-badge">tbd</span><span v-if="f.returns === 'void'" class="void-badge">void</span><span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span></span>
+                    <span class="node-badges"><span v-if="f.returns === 'void'" class="void-badge">void</span><span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span><span v-if="isTbd(f.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
                     <div

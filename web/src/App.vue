@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
-import { Database, FilePlus2, FolderOpen, Wand2 } from 'lucide-vue-next'
+import { Database, FilePlus2, FolderOpen, Settings, Wand2 } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ResultsPanel from './components/ResultsPanel.vue'
@@ -15,6 +16,7 @@ const conn = useConnection()
 const tabs = useTabs()
 const results = useResults()
 const toast = useToast()
+const settingsOpen = ref(false)
 
 const activeTab = computed(() =>
   tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
@@ -127,6 +129,7 @@ provide('pgdev:run', runActive)
       <button class="icon" title="New query tab" @click="tabs.newQuery()"><FilePlus2 :size="15" /></button>
       <button v-if="conn.state.id" @click="conn.disconnect()">Disconnect</button>
       <button v-else class="primary" @click="conn.state.dialog = true">Connect</button>
+      <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
     </header>
     <input
       ref="fileInput"
@@ -154,6 +157,7 @@ provide('pgdev:run', runActive)
     </div>
 
     <ConnectDialog v-if="conn.state.dialog" />
+    <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <div v-if="toast.state.visible" class="toast">{{ toast.state.text }}</div>
   </div>
 </template>
