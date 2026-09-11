@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { getPool, setRunning, getRunning, deleteRunning } from '../pools.js'
 import { cancelClientQuery } from '../pgcancel.js'
+import { pgErrorMessage } from '../pgerror.js'
 
 interface QueryBody {
   sql?: string
@@ -36,8 +37,7 @@ export async function queryRoutes(app: FastifyInstance) {
     try {
       client = await pool.connect()
     } catch (err) {
-      const e = err as Error
-      return reply.code(400).send({ error: e.message })
+      return reply.code(400).send({ error: pgErrorMessage(err) })
     }
     if (getRunning(runKey)) {
       client.release()

@@ -3,7 +3,7 @@ import type { ConnectionConfig, QueryResponse, SchemaData } from './types'
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new Error((body as { error?: string }).error ?? `Request failed (${res.status})`)
+    throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
   }
   return body as T
 }

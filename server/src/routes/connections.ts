@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { Pool } from 'pg'
 import { randomUUID } from 'node:crypto'
 import { setPool, removePool } from '../pools.js'
+import { pgErrorMessage } from '../pgerror.js'
 
 interface ConnectBody {
   connectionString?: string
@@ -36,8 +37,7 @@ export async function connectionRoutes(app: FastifyInstance) {
       client.release()
     } catch (err) {
       await pool.end().catch(() => {})
-      const e = err as Error
-      return reply.code(400).send({ error: e.message })
+      return reply.code(400).send({ error: pgErrorMessage(err) })
     }
 
     const id = randomUUID()
