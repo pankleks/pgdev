@@ -177,6 +177,29 @@ The API has no authentication and can open arbitrary database connections, so `/
 
 This is not a replacement for authentication or network access control. The application is intended for local or trusted environments.
 
+## Progressive Web App
+
+The frontend uses `vite-plugin-pwa` to generate a web app manifest and a Workbox service worker during the Vite production build. The service worker is registered from `web/src/main.ts` with prompt-based updates so a new build does not reload the IDE without user confirmation and risk losing editor state.
+
+The manifest defines:
+
+- `pgdev` as the application name and short name.
+- `/` as the start URL, scope, and application ID.
+- Standalone display mode with the existing dark theme colors.
+- Transparent `any` icons at 192x192 and 512x512.
+- An opaque dark-navy 512x512 maskable icon for platform-shaped icon containers.
+
+The supplied robot artwork is retained at `web/assets/pwa/robot-source.png`. Generated icon files are stored under `web/public/icons/`:
+
+- `pgdev-192.png`
+- `pgdev-512.png`
+- `pgdev-maskable-512.png`
+- `apple-touch-icon.png`
+
+The Workbox precache includes the application shell and static build assets. The `/api/` runtime route uses `NetworkOnly`, so query results, metadata, connection responses, and cancellation requests are never served from a stale service-worker cache. Offline startup can display the cached IDE shell, but PostgreSQL operations still require the backend and database.
+
+PWA installation works on `localhost` and on HTTPS origins. A non-local HTTP deployment cannot be installed because service workers require a secure context.
+
 ## Verification
 
 The main verification command is:
@@ -197,6 +220,7 @@ This runs `vue-tsc --noEmit`, the Vite production build, and the server TypeScri
 - Dollar-body formatter preservation.
 - CSV formula protection.
 - Same-origin, Vite proxy, missing-origin, and wrong-port behavior.
+- PWA manifest generation, icon dimensions, service-worker generation, and API network-only routing.
 
 There is currently no automated test runner in the repository. Live PostgreSQL integration testing requires a local PostgreSQL instance or Docker.
 
@@ -211,3 +235,4 @@ There is currently no automated test runner in the repository. Live PostgreSQL i
 - Make editor tab width and formatting preferences configurable instead of fixed at four columns.
 - Remove or resolve the Vite warning caused by `results.ts` being both statically and dynamically imported.
 - Add end-to-end browser tests for connection switching, tab closure during queries, cancellation, pagination, export, and stale-response scenarios.
+- Add a repeatable icon-generation script if the robot artwork needs to be updated regularly.

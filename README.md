@@ -24,6 +24,8 @@ npm run build   # builds web/dist and server/dist
 npm start       # Fastify serves the SPA + API on http://localhost:3000
 ```
 
+The production web build is installable as a PWA. Open the app from `localhost` or an HTTPS deployment and use the browser's install action. The service worker caches the application shell and static assets, but `/api/*` requests remain network-only because queries and schema data must be live.
+
 ## Project layout
 
 ```
@@ -53,3 +55,4 @@ sample/   demo schema (tables, view, functions, indexes)
 - Results stream in 500-row pages via server-side cursors (`Load more` / CSV export drains all); statement timeout is 30s per statement.
 - Saved connections (including password, if you opt in) are stored unencrypted in the browser's localStorage — intended for local/trusted use only. There is no server-side auth, but `/api/*` rejects cross-origin browser requests (same-host `Origin` required) so random websites can't drive your local server.
 - Requires PostgreSQL 11+ (tested against 18).
+- PWA installation requires HTTPS outside localhost. Offline mode covers the application shell only; PostgreSQL connections and queries still require the Fastify server and database.
