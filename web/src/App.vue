@@ -110,7 +110,7 @@ provide('pgdev:run', runActive)
 <template>
   <div class="app">
     <header class="topbar">
-      <span class="logo"><Database :size="15" /> pgdev</span>
+      <span class="logo"><Database :size="15" /> pgDEV</span>
       <button
         v-if="conn.state.id"
         class="conn-badge"

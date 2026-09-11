@@ -37,7 +37,7 @@ export async function connectionRoutes(app: FastifyInstance) {
     // Tabs can hold a session client while paging large results; fail fast
     // instead of hanging forever when every pool slot is checked out.
     config.connectionTimeoutMillis = 10000
-    config.application_name = 'pgdev'
+    config.application_name = 'pgDEV'
 
     const pool = new Pool(config)
     // Idle clients can die at any time (server restart, NAT/VPN timeout,

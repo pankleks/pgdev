@@ -184,7 +184,7 @@ async function exportCsv() {
     toast.show(`Loaded all rows (${g.rows.length} total), exporting…`)
   }
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
-  downloadCsv(g.columns, g.rows, `pgdev-result-${stamp}.csv`)
+  downloadCsv(g.columns, g.rows, `pgDEV-result-${stamp}.csv`)
   toast.show(`Exported ${g.rows.length} row(s) to CSV`)
 }
 </script>

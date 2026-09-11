@@ -8,7 +8,7 @@ let updateServiceWorker: (() => Promise<void>) | undefined
 updateServiceWorker = registerSW({
   immediate: true,
   onNeedRefresh() {
-    if (window.confirm('A new pgdev version is available. Reload now?')) {
+    if (window.confirm('A new pgDEV version is available. Reload now?')) {
       void updateServiceWorker?.()
     }
   },

@@ -10,9 +10,9 @@ export default defineConfig({
       injectRegister: false,
       manifest: {
         id: '/',
-        name: 'pgdev',
-        short_name: 'pgdev',
-        description: 'A web IDE for PostgreSQL',
+        name: 'pgDEV',
+        short_name: 'pgDEV',
+        description: 'A minimal IDE for PostgreSQL',
         start_url: '/',
         scope: '/',
         display: 'standalone',

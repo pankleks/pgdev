@@ -92,4 +92,4 @@ if (existsSync(webDist)) {
 
 const port = Number(process.env.PORT) || 3000
 await app.listen({ port, host: '127.0.0.1' })
-console.log(`pgdev server listening on http://localhost:${port}`)
+console.log(`pgDEV server listening on http://localhost:${port}`)

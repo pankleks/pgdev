@@ -2,7 +2,7 @@
 
 ## Solution Description
 
-`pgdev` is a browser-based PostgreSQL IDE with a Fastify backend and a Vue 3 frontend. The browser owns the editor, schema browser, result presentation, and connection form. The backend owns PostgreSQL pools, catalog inspection, DDL reconstruction, query execution, cursor sessions, cancellation, and connection cleanup.
+`pgDEV` is a browser-based PostgreSQL IDE with a Fastify backend and a Vue 3 frontend. The browser owns the editor, schema browser, result presentation, and connection form. The backend owns PostgreSQL pools, catalog inspection, DDL reconstruction, query execution, cursor sessions, cancellation, and connection cleanup.
 
 The implementation is designed for local or trusted use. It does not provide user authentication. Database credentials are sent to the backend only when a connection is opened, and optional remembered connections are stored in browser `localStorage`.
 
@@ -55,7 +55,7 @@ Parameter-based connections apply these backend settings:
 - Pool size: 5 clients.
 - Statement timeout: 30 seconds.
 - Connection timeout: 10 seconds.
-- Application name: `pgdev`.
+- Application name: `pgDEV`.
 - SSL disabled explicitly when the form checkbox is off.
 - SSL enabled with `rejectUnauthorized: false` when the form checkbox is on, allowing self-signed certificates.
 
@@ -183,7 +183,7 @@ The frontend uses `vite-plugin-pwa` to generate a web app manifest and a Workbox
 
 The manifest defines:
 
-- `pgdev` as the application name and short name.
+- `pgDEV` as the application name and short name.
 - `/` as the start URL, scope, and application ID.
 - Standalone display mode with the existing dark theme colors.
 - Transparent `any` icons at 192x192 and 512x512.

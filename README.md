@@ -1,4 +1,4 @@
-# pgdev — a web IDE for PostgreSQL
+# pgDEV — a web IDE for PostgreSQL
 
 Minimal IDE for Postgres in the browser:
 
