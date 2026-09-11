@@ -2,7 +2,8 @@ import { format } from 'sql-formatter'
 
 const OPTS = {
   language: 'postgresql',
-  tabWidth: 2,
+  tabWidth: 4,
+  useTabs: true,
   keywordCase: 'upper',
   linesBetweenQueries: 2,
 } as const
