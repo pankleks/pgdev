@@ -42,7 +42,7 @@ const schema = useSchema()
 const tabs = useTabs()
 const toast = useToast()
 
-const open = reactive({ tables: false, views: false, functions: false, types: false })
+const open = reactive({ tables: true, views: false, functions: false, types: false })
 const expanded = reactive(new Set<string>())
 
 type SearchType = 'table' | 'view' | 'function' | 'column' | 'type'
@@ -140,7 +140,7 @@ const filteredViews = computed(() =>
 )
 const overloadCounts = computed(() => {
   const counts = new Map<string, number>()
-  for (const f of functions.value) counts.set(f.name, (counts.get(f.name) ?? 0) + 1)
+  for (const f of functions.value) counts.set(`${f.schema}.${f.name}`, (counts.get(`${f.schema}.${f.name}`) ?? 0) + 1)
   return counts
 })
 const filteredFunctions = computed(() =>
@@ -321,7 +321,7 @@ async function copyName(schemaName: string | null, name: string) {
     const text = schemaName ? displayName(schemaName, name) : name
     const ok = await copyText(text)
     toast.show(ok ? 'Object name copied.' : 'Copy failed')
-  }, 250)
+  }, 200)
 }
 
 type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
@@ -349,14 +349,8 @@ async function openObject(
   if (!conn.state.id) return
   try {
     const { ddl } = await api.ddl(conn.state.id, type, schemaName, name, oid, parent)
-    tabs.openDdl(
-      type,
-      schemaName,
-      name,
-      ddl,
-      suffix,
-      type !== 'table',
-    )
+    // DDL previews are always read-only (see README); re-opening refreshes content.
+    tabs.openDdl(type, schemaName, name, ddl, suffix, false, parent ?? '')
   } catch (e) {
     toast.show((e as Error).message)
   }
@@ -540,7 +534,7 @@ async function refresh() {
                 :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
                 title="Toggle columns"
                 @click.stop="toggleChildren('v-' + v.oid)"
-              >▸</span>
+              ><ChevronRight :size="12" /></span>
               <span class="obj-icon"><Eye :size="14" /></span>
               <span class="obj-name" :class="{ tbd: isTbd(v.name) }">{{ displayName(v.schema, v.name) }}</span>
               <span v-if="v.materialized" class="void-badge">mat</span>
@@ -575,13 +569,13 @@ async function refresh() {
                 :class="{ open: expanded.has('ty-' + t.oid) }"
                 title="Toggle detail"
                 @click.stop="toggleChildren('ty-' + t.oid)"
-              >▸</span>
+              ><ChevronRight :size="12" /></span>
               <span class="obj-icon"><Shapes :size="14" /></span>
               <span class="obj-name" :class="{ tbd: isTbd(t.name) }">{{ displayName(t.schema, t.name) }}</span>
               <span class="void-badge">{{ t.kind }}</span>
             </div>
             <template v-if="expanded.has('ty-' + t.oid)">
-              <div class="node child" :title="t.detail" @click="copyName(null, t.detail)">
+              <div class="node child" :title="t.detail" @click="copyName(t.schema, t.name)">
                 <span class="obj-name">{{ t.detail || '—' }}</span>
               </div>
             </template>
@@ -609,11 +603,11 @@ async function refresh() {
                 :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig) }"
                 title="Toggle signature"
                 @click.stop="toggleChildren('f-' + f.oid)"
-              >▸</span>
+              ><ChevronRight :size="12" /></span>
               <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
               <span class="obj-name" :class="{ tbd: isTbd(f.name) }">{{ displayName(f.schema, f.name) }}</span>
               <span v-if="f.returns === 'void'" class="void-badge">void</span>
-              <span v-if="(overloadCounts.get(f.name) ?? 0) > 1" class="void-badge overload-badge">overload</span>
+              <span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span>
             </div>
             <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
               <div v-for="(p, i) in paramRows(f.args, f.returns)" :key="'p-' + i" class="node child">

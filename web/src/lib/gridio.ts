@@ -1,3 +1,21 @@
+export function cellToText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+export function formatCellForDisplay(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL'
+  return cellToText(value)
+}
+
 export function csvEscape(value: string): string {
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
@@ -5,9 +23,8 @@ export function csvEscape(value: string): string {
 
 export function toDelimited(columns: string[], rows: unknown[][], separator: ',' | '\t'): string {
   const cell = (v: unknown): string => {
-    if (v === null || v === undefined) return ''
-    const s = String(v)
-    return separator === ',' ? csvEscape(s) : s.replace(/\t/g, ' ').replace(/\n/g, ' ')
+    const s = cellToText(v)
+    return separator === ',' ? csvEscape(s) : s.replace(/\t/g, ' ').replace(/\r?\n/g, ' ')
   }
   const lines = [columns.map((c) => cell(c)).join(separator)]
   for (const row of rows) {
@@ -44,6 +61,9 @@ export function downloadCsv(columns: string[], rows: unknown[][], filename: stri
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  // Must be in the DOM for Safari/Firefox; delay revoke so the download can start.
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

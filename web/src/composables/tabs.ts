@@ -32,10 +32,21 @@ export function useTabs() {
     state.activeKey = key
   }
 
-  function openDdl(type: string, schema: string, name: string, ddl: string, suffix = '', editable = false) {
-    const key = `ddl-${type}-${schema}-${name}${suffix}`
+  function openDdl(
+    type: string,
+    schema: string,
+    name: string,
+    ddl: string,
+    suffix = '',
+    editable = false,
+    parent = '',
+  ) {
+    const parentKey = parent ? `--${parent}` : ''
+    const key = `ddl-${type}-${schema}-${name}${suffix}${parentKey}`
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
+      if (existing.content !== ddl) existing.content = ddl
+      existing.readOnly = !editable
       state.activeKey = key
       return
     }

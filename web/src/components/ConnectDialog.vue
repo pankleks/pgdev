@@ -19,12 +19,18 @@ const form = reactive<ConnectionConfig>({
 const url = ref('')
 
 function pick(c: SavedConnection) {
+  conn.state.error = ''
   if (c.connectionString) {
     mode.value = 'url'
     url.value = c.connectionString
   } else {
     mode.value = 'params'
-    Object.assign(form, c)
+    form.host = c.host ?? 'localhost'
+    form.port = c.port ?? 5432
+    form.database = c.database ?? ''
+    form.user = c.user ?? 'postgres'
+    form.password = c.password ?? ''
+    form.ssl = c.ssl ?? false
   }
 }
 
@@ -34,11 +40,17 @@ function drop(label: string) {
 }
 
 async function submit() {
+  if (mode.value === 'url' && !url.value.trim()) {
+    conn.state.error = 'Connection string is required'
+    return
+  }
   const cfg: ConnectionConfig =
     mode.value === 'url'
       ? { connectionString: url.value.trim() }
       : { ...form, port: Number(form.port) || 5432 }
   await conn.connect(cfg, remember.value)
+  // Refresh the list so a newly saved connection shows without reopening.
+  saved.value = conn.saved()
 }
 </script>
 
@@ -73,7 +85,7 @@ async function submit() {
       </form>
 
       <form v-else class="fields" @submit.prevent="submit">
-        <label>URL <input v-model="url" placeholder="postgres://user:pass@host:5432/db" /></label>
+        <label>URL <input v-model="url" required placeholder="postgres://user:pass@host:5432/db" /></label>
         <label class="check"><input v-model="remember" type="checkbox" /> Remember in this browser</label>
         <button class="primary" type="submit" :disabled="conn.state.connecting">
           {{ conn.state.connecting ? 'Connecting…' : 'Connect' }}

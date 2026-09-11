@@ -27,6 +27,10 @@ export async function queryRoutes(app: FastifyInstance) {
     if (!sql || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
     const cap = Math.max(1, Math.min(maxRows ?? 500, 10000))
     const pool = getPool(id)
+    const runKey = `${id}|${tabKey ?? ''}`
+    if (getRunning(runKey)) {
+      return reply.code(409).send({ error: 'A query is already running for this tab' })
+    }
     const start = performance.now()
     let client
     try {
@@ -35,7 +39,10 @@ export async function queryRoutes(app: FastifyInstance) {
       const e = err as Error
       return reply.code(400).send({ error: e.message })
     }
-    const runKey = `${id}|${tabKey ?? ''}`
+    if (getRunning(runKey)) {
+      client.release()
+      return reply.code(409).send({ error: 'A query is already running for this tab' })
+    }
     const query = client.query({ text: sql, rowMode: 'array' })
     setRunning(runKey, client)
     try {
@@ -74,7 +81,7 @@ export async function queryRoutes(app: FastifyInstance) {
       const e = err as Error & { position?: string }
       return reply.code(400).send({ error: e.message, position: e.position ?? null })
     } finally {
-      deleteRunning(runKey)
+      deleteRunning(runKey, client)
       client.release()
     }
   })

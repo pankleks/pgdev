@@ -12,7 +12,13 @@ export function getRunning(key: string): PoolClient | undefined {
   return runningQueries.get(key)
 }
 
-export function deleteRunning(key: string): void {
+export function deleteRunning(key: string, client?: PoolClient): void {
+  if (client) {
+    // Only clear if the stored client is still ours — prevents a finished
+    // query from wiping the tracking entry of a newer query on the same tab.
+    if (runningQueries.get(key) === client) runningQueries.delete(key)
+    return
+  }
   runningQueries.delete(key)
 }
 

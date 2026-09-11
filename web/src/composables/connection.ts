@@ -91,8 +91,22 @@ export function useConnection() {
   }
 
   async function disconnect() {
-    if (state.id) {
-      await api.disconnect(state.id).catch(() => {})
+    const id = state.id
+    if (id) {
+      // Best-effort cancel of in-flight queries, then close the pool.
+      try {
+        const { useResults } = await import('./results')
+        const res = useResults()
+        const runningKeys = Object.keys(res.state.byTab).filter((key) => {
+          const r = res.state.byTab[key]
+          return r.running && !r.cancelling
+        })
+        await Promise.all(runningKeys.map((key) => res.cancel(key, id).catch(() => undefined)))
+        for (const key of Object.keys(res.state.byTab)) res.drop(key)
+      } catch {
+        // ignore cleanup errors
+      }
+      await api.disconnect(id).catch(() => {})
     }
     state.id = null
     state.label = ''

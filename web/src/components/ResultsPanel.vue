@@ -5,7 +5,7 @@ import { useResults } from '../composables/results'
 import { useConnection } from '../composables/connection'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
-import { copyGrid, copyText, downloadCsv } from '../lib/gridio'
+import { copyGrid, copyText, downloadCsv, cellToText, formatCellForDisplay } from '../lib/gridio'
 
 const results = useResults()
 const conn = useConnection()
@@ -35,6 +35,7 @@ const bodyH = ref(300)
 let observer: ResizeObserver | null = null
 
 const widthsByKey = reactive(new Map<string, number[]>())
+const columnsByKey = reactive(new Map<string, string[]>())
 let dragCol = -1
 let dragStartX = 0
 let dragStartW = 0
@@ -44,11 +45,21 @@ function colWidth(i: number): number {
   return widthsByKey.get(key)?.[i] ?? COL_W
 }
 
-function ensureWidths(key: string, count: number) {
-  let arr = widthsByKey.get(key)
-  if (!arr || arr.length !== count) {
-    arr = Array.from({ length: count }, () => COL_W)
-    widthsByKey.set(key, arr)
+function ensureWidths(key: string, columns: string[]) {
+  const arr = widthsByKey.get(key)
+  const prev = columnsByKey.get(key)
+  const same =
+    arr &&
+    prev &&
+    arr.length === columns.length &&
+    prev.length === columns.length &&
+    prev.every((c, i) => c === columns[i])
+  if (!same) {
+    widthsByKey.set(
+      key,
+      Array.from({ length: columns.length }, () => COL_W),
+    )
+    columnsByKey.set(key, [...columns])
   }
 }
 
@@ -97,7 +108,7 @@ watch(
   (g) => {
     scrollTop.value = 0
     if (bodyEl.value) bodyEl.value.scrollTop = 0
-    if (g) ensureWidths(g.key, g.columns.length)
+    if (g) ensureWidths(g.key, g.columns)
   },
 )
 
@@ -126,14 +137,11 @@ function onScroll() {
 }
 
 function fmt(v: unknown): string {
-  if (v === null || v === undefined) return 'NULL'
-  if (typeof v === 'object') return JSON.stringify(v)
-  return String(v)
+  return formatCellForDisplay(v)
 }
 
 async function copyCell(v: unknown) {
-  const text = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
-  const ok = await copyText(text)
+  const ok = await copyText(cellToText(v))
   toast.show(ok ? 'Value copied.' : 'Copy to clipboard failed')
 }
 
@@ -187,10 +195,11 @@ function exportCsv() {
       <button
         v-if="result?.running"
         class="danger"
+        :disabled="result?.cancelling"
         title="Cancel running query"
         @click="cancelRun()"
       >
-        <Square :size="11" /> Cancel
+        <Square :size="11" /> {{ result?.cancelling ? 'Canceling…' : 'Cancel' }}
       </button>
       <button
         v-else
@@ -218,7 +227,7 @@ function exportCsv() {
           <div class="grid-head">
             <div
               v-for="(c, i) in grid.g.columns"
-              :key="i"
+              :key="`${i}-${c}`"
               class="grid-cell head"
               :style="{ width: colWidth(i) + 'px' }"
             >
@@ -226,10 +235,10 @@ function exportCsv() {
               <span class="col-resize-handle" title="Resize column" @mousedown="startResize(i, $event)" @click.stop />
             </div>
           </div>
-          <div class="grid-spacer" :style="{ height: HEADER_H + grid.g.rows.length * ROW_H + 'px' }" />
+          <div class="grid-spacer" :style="{ height: grid.g.rows.length * ROW_H + 'px' }" />
           <div
             v-for="(r, i) in grid.rows"
-            :key="i"
+            :key="grid.start + i"
             class="grid-row"
             :style="{ top: HEADER_H + (grid.start + i) * ROW_H + 'px' }"
           >

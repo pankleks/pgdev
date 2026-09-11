@@ -74,10 +74,26 @@ function runActive() {
     return
   }
   const tab = tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)
-  if (tab && !tab.readOnly) {
-    const selected = getActiveSelection()
-    results.run(tab.key, conn.state.id, selected?.trim() ? selected : tab.content)
+  if (!tab) {
+    toast.show('No active tab')
+    return
   }
+  if (tab.readOnly) {
+    toast.show('DDL preview is read-only')
+    return
+  }
+  const existing = results.state.byTab[tab.key]
+  if (existing?.running) {
+    toast.show(existing.cancelling ? 'Query is being canceled…' : 'Query already running')
+    return
+  }
+  const selected = getActiveSelection()
+  const sql = selected?.trim() ? selected : tab.content
+  if (!sql.trim()) {
+    toast.show('Nothing to run')
+    return
+  }
+  results.run(tab.key, conn.state.id, sql)
 }
 
 provide('pgdev:run', runActive)

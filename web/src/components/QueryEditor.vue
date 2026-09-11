@@ -3,12 +3,14 @@ import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion } from '../monaco/completions'
 import { useTabs, type EditorTab } from '../composables/tabs'
+import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
 import { setFormatHandler, setSelectionGetter } from '../lib/formatbridge'
 
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
 const tabs = useTabs()
+const toast = useToast()
 const run = inject<(sql?: string) => void>('pgdev:run')
 
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
@@ -47,9 +49,18 @@ function formatActive() {
   if (!editor || props.tab.readOnly) return
   const model = editor.getModel()
   if (!model) return
-  editor.executeEdits('pgdev-format', [
-    { range: model.getFullModelRange(), text: formatSql(model.getValue()) + '\n' },
-  ])
+  const current = model.getValue()
+  if (!current.trim()) return
+  let formatted: string
+  try {
+    formatted = formatSql(current)
+  } catch (e) {
+    toast.show(`Format failed: ${(e as Error).message}`)
+    return
+  }
+  const text = formatted.endsWith('\n') ? formatted : `${formatted}\n`
+  if (text === current) return
+  editor.executeEdits('pgdev-format', [{ range: model.getFullModelRange(), text }])
 }
 
 function modelFor(tab: EditorTab): monaco.editor.ITextModel {
@@ -67,13 +78,31 @@ function modelFor(tab: EditorTab): monaco.editor.ITextModel {
 
 function applyTab(tab: EditorTab) {
   if (!editor) return
-  editor.setModel(modelFor(tab))
+  const model = modelFor(tab)
+  // Push refreshed DDL (or any external update) into the existing model.
+  if (model.getValue() !== tab.content) model.setValue(tab.content)
+  editor.setModel(model)
   editor.updateOptions({ readOnly: tab.readOnly })
+}
+
+function syncExternalContent(tab: EditorTab) {
+  const model = models.get(tab.key)
+  if (model && model.getValue() !== tab.content) model.setValue(tab.content)
 }
 
 watch(
   () => props.tab,
   (tab) => applyTab(tab),
+)
+
+watch(
+  () => props.tab.content,
+  () => syncExternalContent(props.tab),
+)
+
+watch(
+  () => props.tab.readOnly,
+  (readOnly) => editor?.updateOptions({ readOnly }),
 )
 
 watch(
