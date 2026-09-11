@@ -47,11 +47,18 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       })
       const K = monaco.languages.CompletionItemKind
       const suggestions: Monaco.languages.CompletionItem[] = []
+      const relations = [...(data?.tables ?? []), ...(data?.views ?? [])]
+      const sqlBefore = model.getValueInRange({
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column,
+      })
+      const aliases = parseAliases(sqlBefore)
 
       const chain = matchDotChain(lineBefore)
       if (chain) {
         const parts = splitChain(chain)
-        const relations = [...(data?.tables ?? []), ...(data?.views ?? [])]
         const findRel = (ref: RelRef) =>
           relations.find((t) => {
             if (ref.schema) {
@@ -66,18 +73,12 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             (t) => t.name.toLowerCase() === ref.name && t.schema === 'public',
           )
 
-        let match = null as null | (typeof relations)[number]
-        if (parts.length === 1) {
-          const key = normIdent(parts[0])
-          // 1. table alias (`FROM employees e` → `e.`)
-          const sqlBefore = model.getValueInRange({
-            startLineNumber: 1,
-            startColumn: 1,
-            endLineNumber: position.lineNumber,
-            endColumn: position.column,
-          })
-          const target = parseAliases(sqlBefore).get(key)
-          if (target) match = findRel(target) ?? null
+          let match = null as null | (typeof relations)[number]
+          if (parts.length === 1) {
+            const key = normIdent(parts[0])
+            // 1. table alias (`FROM employees e` → `e.`)
+            const target = aliases.get(key)
+            if (target) match = findRel(target) ?? null
           // 2. bare table / view name
           if (!match) match = findRel({ schema: '', name: key }) ?? null
         } else {
@@ -104,6 +105,30 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const kw of KEYWORD_LIST) {
         suggestions.push({ label: kw, kind: K.Keyword, insertText: kw, range })
       }
+
+      // Offer unqualified fields from relations in the current query. When
+      // no relation is known yet, fall back to the loaded schema.
+      const visibleRelations = aliases.size
+        ? relations.filter((relation) =>
+            [...aliases.values()].some((ref) =>
+              ref.schema
+                ? relation.schema.toLowerCase() === ref.schema && relation.name.toLowerCase() === ref.name
+                : relation.name.toLowerCase() === ref.name,
+            ),
+          )
+        : relations
+      for (const relation of visibleRelations) {
+        for (const c of relation.columns) {
+          suggestions.push({
+            label: c.name,
+            kind: K.Field,
+            detail: `${c.type} · ${relation.schema === 'public' ? relation.name : `${relation.schema}.${relation.name}`}`,
+            insertText: quoteIdent(c.name),
+            range,
+          })
+        }
+      }
+
       for (const t of data?.tables ?? []) {
         suggestions.push({
           label: t.name,
