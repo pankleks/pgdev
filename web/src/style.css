@@ -453,7 +453,7 @@ input {
   /* Typed rows keep names and type labels on one line without overlap. */
   &.typed-row {
     .obj-name {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -462,6 +462,7 @@ input {
 
     .dim {
       flex: 0 1 auto;
+      margin-left: auto;
       min-width: 0;
       max-width: 35%;
       overflow: hidden;
@@ -605,6 +606,17 @@ input {
   }
 }
 
+.node-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+
+  &:empty {
+    display: none;
+  }
+}
+
 .obj-badge {
   position: absolute;
   right: -4px;
@@ -625,10 +637,13 @@ input {
 .obj-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
 
-  &.tbd {
-    color: #e5c07b;
-  }
+.search-hit {
+  color: #ffe08a;
+  background: rgba(215, 186, 125, 0.28);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 .dim {
@@ -657,6 +672,12 @@ input {
     color: #d7ba7d;
     background: rgba(215, 186, 125, 0.1);
     border-color: rgba(215, 186, 125, 0.4);
+  }
+
+  &.tbd-badge {
+    color: var(--error);
+    background: rgba(244, 135, 113, 0.12);
+    border-color: rgba(244, 135, 113, 0.5);
   }
 }
 
