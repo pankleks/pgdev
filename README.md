@@ -48,10 +48,11 @@ by object *or* column name (`id col`, `user table`). Double-click an object to
 open its DDL.
 
 **DDL preview and editing** — DDL is reconstructed from `pg_catalog`, no
-`pg_dump` needed. Functions and views are editable and re-runnable; index,
-trigger and type scripts ship with a commented `-- DROP` line. Tables and
-constraints are read-only previews, since re-running them would collide with the
-existing object.
+`pg_dump` needed. Every generated script is editable: functions and views
+re-run via `CREATE OR REPLACE`, and table, constraint, index, trigger and
+type scripts ship with a commented `-- DROP` line you can uncomment to
+rebuild. The one read-only preview is a materialized view, since PostgreSQL
+has no `CREATE OR REPLACE MATERIALIZED VIEW`.
 
 **Query editor** — Monaco (the editor from VS Code) with completions drawn from
 your live schema: tables, views, columns after `alias.`, functions and keywords.

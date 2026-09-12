@@ -611,16 +611,16 @@ async function openObject(
     // A later double-click on the same object, or a connection switch, makes
     // this response stale — discard it without touching the tab strip.
     if (conn.state.id !== connectionId || ddlRequests.get(key) !== version) return
-    // CREATE OR REPLACE makes functions and plain views re-runnable, and the
-    // index/trigger/type scripts ship with a commented DROP line. Tables and
-    // constraints stay read-only previews, and so does a materialized view:
-    // PostgreSQL has no CREATE OR REPLACE MATERIALIZED VIEW, so its generated
-    // script cannot run over the existing object.
+    // Every generated script is now editable: functions and plain views
+    // re-run via CREATE OR REPLACE, and the table, constraint, index, trigger
+    // and type scripts ship with a commented drop line — uncommenting it is
+    // the user's explicit choice to rebuild. The only read-only preview is a
+    // materialized view: PostgreSQL has no CREATE OR REPLACE MATERIALIZED
+    // VIEW, so its generated script cannot run over the existing object.
     const materialized = type === 'view' && !!schema.state.data?.views.find(
       (v) => v.schema === schemaName && v.name === name,
     )?.materialized
-    const editable = !materialized &&
-      (type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type')
+    const editable = !materialized
     const identity = oid ? `--${oid}` : identitySuffix
     tabs.openDdl(type, schemaName, name, ddl, identity, editable, parent ?? '', connectionId)
   } catch (e) {

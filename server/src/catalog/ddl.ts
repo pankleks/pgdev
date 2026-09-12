@@ -247,7 +247,12 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       chunks.push(`COMMENT ON COLUMN ${table}.${ident(c.name)} IS ${c.comment};`)
     }
   }
-  return chunks.join('\n\n')
+  // The commented drop makes the script editable like index/trigger/type
+  // scripts: uncommenting it is the user's explicit, destructive choice.
+  // Plain IF EXISTS rather than CASCADE — dependent views and foreign keys
+  // fail loudly instead of being silently destroyed.
+  const drop = `-- DROP TABLE IF EXISTS ${table};`
+  return [drop, ...chunks].join('\n\n')
 }
 
 export async function viewDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {

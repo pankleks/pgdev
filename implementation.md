@@ -153,7 +153,7 @@ Aggregate DDL emits `SFUNC`, `STYPE`, `SSPACE`, `FINALFUNC`, `FINALFUNC_EXTRA`, 
 
 Range type DDL emits `SUBTYPE`, `SUBTYPE_OPCLASS`, `COLLATION`, `CANONICAL`, `SUBTYPE_DIFF` and `MULTIRANGE_TYPE_NAME`, omitting `CANONICAL`/`SUBTYPE_DIFF` unless the catalog actually defines them, since a `regproc`/`regclass` cast renders oid 0 as `-` rather than NULL. The multirange name is written only when it differs from the name PostgreSQL would generate. Composite type attributes carry their `COLLATE` clause, and domain constraints keep their constraint names.
 
-Function, view, index, trigger, and type DDL tabs are editable. Table and constraint DDL are presented as read-only previews where direct re-execution could collide with an existing object.
+Every DDL tab is editable. Functions and views re-run via `CREATE OR REPLACE`; table, constraint, index, trigger, and type scripts ship with a commented drop line, so rebuilding means uncommenting it — an explicit, destructive choice (the table drop is plain `IF EXISTS`, so dependent objects fail loudly rather than cascade silently). The only read-only preview is a materialized view: PostgreSQL has no `CREATE OR REPLACE MATERIALIZED VIEW`, so its script cannot run over the existing object.
 
 ## SQL Parsing and Formatting
 

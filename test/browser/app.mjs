@@ -179,7 +179,7 @@ try {
 
   ok('table found in the tree', await openDdl('items', 'Tables'))
   await page.waitFor(`window.__pgdev.getValue().includes('CREATE TABLE')`, { timeout: 15000 })
-  eq('table tab is read-only', await page.evaluate(`return window.__pgdev.getReadOnly()`), true)
+  eq('table tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
 
   ok('function found in the tree', await openDdl('item_count', 'Functions'))
   await page.waitFor(`window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })

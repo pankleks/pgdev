@@ -68,8 +68,7 @@ console.log('\n== P2: DDL request ordering race (real openObject logic) ==')
         const materialized = type === 'view' && !!schemaData()?.views.find(
           (v) => v.schema === schemaName && v.name === name,
         )?.materialized
-        const editable = !materialized &&
-          (type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type')
+        const editable = !materialized
         tabs(connectionId, text, editable)
       } catch (e) { if (state.id === connectionId) toast(e.message) }
     }
@@ -129,17 +128,16 @@ console.log('\n== P2: DDL request ordering race (real openObject logic) ==')
     const materialized = type === 'view' && !!schemaViews.views.find(
       (v) => v.schema === 'public' && v.name === name,
     )?.materialized
-    return !materialized &&
-      (type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type')
+    return !materialized
   }
   eq('plain view stays editable', editableFor('view', 'plain_v'), true)
   eq('materialized view is read-only', editableFor('view', 'mat_v'), false)
-  eq('table is read-only', editableFor('table', 't'), false)
+  eq('table is editable', editableFor('table', 't'), true)
   eq('function stays editable', editableFor('function', 'f'), true)
   eq('index stays editable', editableFor('index', 'i'), true)
   eq('trigger stays editable', editableFor('trigger', 'tr'), true)
   eq('type stays editable', editableFor('type', 'ty'), true)
-  eq('constraint is read-only', editableFor('constraint', 'c'), false)
+  eq('constraint is editable', editableFor('constraint', 'c'), true)
   ok('component reads materialized from schema state', /schema\.state\.data\?\.views/.test(body))
 
   console.log('\n== P2: stale failures do not toast ==')
