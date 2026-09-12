@@ -1,6 +1,13 @@
 import { reactive } from 'vue'
 import { api } from '../api'
-import type { DataResult, FetchMoreResponse } from '../types'
+import type { DataResult, FetchMoreResponse, QueryResponse } from '../types'
+
+/** The slice of the API the results state machine drives; tests inject a fake. */
+export interface ResultsApi {
+  query(connectionId: string, sql: string, tabKey: string): Promise<QueryResponse>
+  fetchMore(connectionId: string, tabKey: string): Promise<FetchMoreResponse>
+  cancel(connectionId: string, tabKey: string): Promise<{ ok: boolean }>
+}
 
 export interface GridResult extends DataResult {
   key: string
@@ -50,54 +57,59 @@ export interface TabResult {
   showMessages: boolean
 }
 
-const state = reactive<{ byTab: Record<string, TabResult> }>({ byTab: {} })
-
-function ensure(key: string): TabResult {
-  let r = state.byTab[key]
-  if (!r) {
-    r = reactive<TabResult>({
-      operation: 0,
-      running: false,
-      cancelling: false,
-      loadingMore: false,
-      grids: [],
-      selectedKey: null,
-      get grid(): GridResult | null {
-        return this.grids.find((g: GridResult) => g.key === this.selectedKey) ?? null
-      },
-      messages: [],
-      showMessages: false,
-    })
-    state.byTab[key] = r
-  }
-  return r
-}
-
-function isCurrent(key: string, result: TabResult, operation: number): boolean {
-  return state.byTab[key] === result && result.operation === operation
-}
-
 /**
- * Fetch one more page and apply it to the explicitly captured grid. Returns
- * null when the capture went stale (new run, selection change, dropped tab) —
- * the page is then discarded without touching anything.
+ * Build one results store over an injected API client. The application shares
+ * the module-level instance via useResults(); tests construct isolated stores
+ * with a fake and import this file directly — no source rewriting needed.
  */
-async function fetchPageFor(
-  tabKey: string,
-  connectionId: string,
-  r: TabResult,
-  operation: number,
-  g: GridResult,
-): Promise<FetchMoreResponse | null> {
-  const res = await api.fetchMore(connectionId, tabKey)
-  if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return null
-  g.rows.push(...res.rows)
-  g.rowCount = g.rows.length
-  g.truncated = res.truncated
-  return res
-}
+export function createResults(api: ResultsApi) {
+  const state = reactive<{ byTab: Record<string, TabResult> }>({ byTab: {} })
 
-export function useResults() {
+  function ensure(key: string): TabResult {
+    let r = state.byTab[key]
+    if (!r) {
+      r = reactive<TabResult>({
+        operation: 0,
+        running: false,
+        cancelling: false,
+        loadingMore: false,
+        grids: [],
+        selectedKey: null,
+        get grid(): GridResult | null {
+          return this.grids.find((g: GridResult) => g.key === this.selectedKey) ?? null
+        },
+        messages: [],
+        showMessages: false,
+      })
+      state.byTab[key] = r
+    }
+    return r
+  }
+
+  function isCurrent(key: string, result: TabResult, operation: number): boolean {
+    return state.byTab[key] === result && result.operation === operation
+  }
+
+  /**
+   * Fetch one more page and apply it to the explicitly captured grid. Returns
+   * null when the capture went stale (new run, selection change, dropped tab) —
+   * the page is then discarded without touching anything.
+   */
+  async function fetchPageFor(
+    tabKey: string,
+    connectionId: string,
+    r: TabResult,
+    operation: number,
+    g: GridResult,
+  ): Promise<FetchMoreResponse | null> {
+    const res = await api.fetchMore(connectionId, tabKey)
+    if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return null
+    g.rows.push(...res.rows)
+    g.rowCount = g.rows.length
+    g.truncated = res.truncated
+    return res
+  }
+
   function selectGrid(tabKey: string, gridKey: string) {
     const r = state.byTab[tabKey]
     const grid = r?.grids.find((g) => g.key === gridKey)
@@ -240,4 +252,13 @@ export function useResults() {
   }
 
   return { state, drop, selectGrid, run, cancel, loadMore, loadAll }
+}
+
+export type Results = ReturnType<typeof createResults>
+
+const shared = createResults(api)
+
+/** The application-wide results store. */
+export function useResults(): Results {
+  return shared
 }

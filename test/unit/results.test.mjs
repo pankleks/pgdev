@@ -1,19 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import ts from 'typescript'
-import { reactive } from 'vue'
+import { sourceLoader } from '../lib/load.mjs'
 
-// Execute the real composable with Vue reactivity and controllable API replies.
-// No source copies or platform-dependent dynamic import paths are required.
-const source = readFileSync(new URL('../../web/src/composables/results.ts', import.meta.url), 'utf8')
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')
+// Execute the real composable with Vue reactivity and a controllable API
+// injected through the createResults factory — no source rewriting.
+const load = sourceLoader()
+const { createResults } = await load('web/composables/results.ts')
+
 function setup() {
   const api = {}
-  const useResults = new Function('reactive', 'api', `${compiled}; return useResults`)(reactive, api)
-  return { api, results: useResults() }
+  return { api, results: createResults(api) }
 }
 const data = (name, rows, extra = {}) => ({
   kind: 'data', columns: [name], columnTypes: ['integer'], rows,
