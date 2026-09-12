@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { getPool } from '../pools.js'
+import { getCatalogPool } from '../pools.js'
 import { tableDdl, viewDdl, functionDdl, indexDdl, constraintDdl, triggerDdl, typeDdl } from '../catalog/ddl.js'
 
 export async function ddlRoutes(app: FastifyInstance) {
@@ -12,7 +12,7 @@ export async function ddlRoutes(app: FastifyInstance) {
       oid?: string
       parent?: string
     }
-    const pool = getPool(id)
+    const pool = getCatalogPool(id)
     let ddl: string
     if (type === 'table') ddl = await tableDdl(pool, oid ?? '', schema, name)
     else if (type === 'view') ddl = await viewDdl(pool, oid ?? '', schema, name)

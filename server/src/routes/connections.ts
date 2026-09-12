@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { Pool } from 'pg'
 import { randomUUID } from 'node:crypto'
-import { setPool, removePool } from '../pools.js'
+import { setPool, setCatalogPool, removePool } from '../pools.js'
 import { pgErrorMessage } from '../pgerror.js'
 import { closeSessionsForConnection, closeSessionsForClient } from '../sessions.js'
+import { cancelConnection } from '../queryexec.js'
 
 interface ConnectBody {
   connectionString?: string
@@ -60,6 +61,7 @@ export async function connectionRoutes(app: FastifyInstance) {
       console.error(`pg pool error: ${pgErrorMessage(err, 'Database connection error')}`)
       if (client) void closeSessionsForClient(client)
     })
+    let catalogPool: Pool | null = null
     try {
       const client = await pool.connect()
       // Cosmetic: the dialog shows "Connected • PostgreSQL x.y" next to the
@@ -72,10 +74,18 @@ export async function connectionRoutes(app: FastifyInstance) {
         // ignore — version display is optional
       }
       client.release()
+      // Catalog/DDL queries get their own small pool so a handful of paged
+      // cursor sessions (which pin main-pool clients) cannot starve them.
+      catalogPool = new Pool({ ...config, max: 4 })
+      catalogPool.on('error', (err) => {
+        console.error(`pg catalog pool error: ${pgErrorMessage(err, 'Database connection error')}`)
+      })
       const id = randomUUID()
       setPool(id, pool)
+      setCatalogPool(id, catalogPool)
       return { id, pgVersion }
     } catch (err) {
+      await catalogPool?.end().catch(() => {})
       await pool.end().catch(() => {})
       return reply.code(400).send({ error: pgErrorMessage(err) })
     }
@@ -83,8 +93,11 @@ export async function connectionRoutes(app: FastifyInstance) {
 
   app.delete('/api/connections/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    // Roll back open transactions and release session clients first —
-    // pool.end() would otherwise wait on the checked-out clients.
+    // A request-owned query holds a main-pool client and would otherwise make
+    // pool.end() wait for its statement timeout; cancel it first. Then roll
+    // back open transactions and release session clients, which pool.end()
+    // would also wait on.
+    cancelConnection(id)
     await closeSessionsForConnection(id)
     const removed = await removePool(id)
     if (!removed) return reply.code(404).send({ error: 'Unknown connection' })

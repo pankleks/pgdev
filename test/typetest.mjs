@@ -119,6 +119,17 @@ await roundTrip('domain with a quoted string default',
   'DROP DOMAIN d3 CASCADE',
   `SELECT pg_get_expr(t.typdefaultbin, 0) AS def FROM pg_type t WHERE t.typname=$1`, ['d3'])
 
+console.log('\n== domain with a collation ==')
+await roundTrip('domain COLLATE round-trips',
+  `CREATE DOMAIN d4 AS text COLLATE pg_catalog."C" NOT NULL`, 'type', 'd4',
+  'DROP DOMAIN d4 CASCADE',
+  `SELECT NULLIF(t.typcollation,0)::regcollation::text AS coll FROM pg_type t WHERE t.typname=$1`, ['d4'])
+{
+  const ddl = await typeDdl(pool, await oidOfType('d4'), 'public', 'd4')
+  ok('domain DDL carries its collation', /COLLATE pg_catalog\."C"/.test(ddl),
+    ddl.split('\n').find((l) => /COLLATE/.test(l))?.trim())
+}
+
 console.log('\n== sub-partitioned child ==')
 {
   await pool.query(`CREATE TABLE sp (a int NOT NULL, b int NOT NULL, PRIMARY KEY (a,b)) PARTITION BY RANGE (a)`)

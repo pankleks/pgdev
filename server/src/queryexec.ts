@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg'
-import { getPool, setRunning, getRunning, deleteRunning } from './pools.js'
+import { getPool, setRunning, getRunning, deleteRunning, runningKeysForConnection } from './pools.js'
 import { cancelClientQuery } from './pgcancel.js'
 import { guardCheckedOutClient } from './checkout.js'
 import { splitStatements } from './sqlsplit.js'
@@ -410,6 +410,18 @@ export function cancelRunning(connId: string, tabKey: string): boolean {
   if (!running) return false
   cancelClientQuery(running)
   return true
+}
+
+/**
+ * Cancel every query running on a connection, so disconnecting does not block
+ * `pool.end()` on a request-owned (non-session) client until its statement
+ * timeout fires. Sessions are handled separately by closeSessionsForConnection.
+ */
+export function cancelConnection(connId: string): void {
+  for (const key of runningKeysForConnection(connId)) {
+    const client = getRunning(key)
+    if (client) cancelClientQuery(client)
+  }
 }
 
 /**

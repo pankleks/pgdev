@@ -20,7 +20,6 @@ export function cancelClientQuery(poolClient: PoolClient): void {
   const params = client.connectionParameters
   const host = params?.host || 'localhost'
   const port = params?.port || 5432
-  const useSsl = Boolean(params?.ssl)
 
   const cancelBuf = Buffer.alloc(16)
   cancelBuf.writeInt32BE(16, 0)
@@ -28,6 +27,18 @@ export function cancelClientQuery(poolClient: PoolClient): void {
   cancelBuf.writeInt32BE(pid, 8)
   cancelBuf.writeInt32BE(secret, 12)
 
+  // A Unix-domain socket directory. The cancel request carries no startup
+  // parameters and needs no SSL negotiation, so it can be written as-is.
+  if (host.startsWith('/')) {
+    const socket = net.connect({ path: `${host}/.s.PGSQL.${port}` })
+    socket.once('error', () => socket.destroy())
+    socket.once('connect', () => {
+      socket.end(cancelBuf, () => socket.destroy())
+    })
+    return
+  }
+
+  const useSsl = Boolean(params?.ssl)
   const socket = net.connect({ host, port })
   socket.once('error', () => socket.destroy())
 

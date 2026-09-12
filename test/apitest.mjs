@@ -408,6 +408,52 @@ eq('DROP TABLE via query tool', rec.status, 200)
 const reapplied = await q(madeDdl.body.ddl, 'ddl4')
 eq('generated DDL re-executes through the API', reapplied.status, 200)
 
+console.log('\n== catalog queries survive paged sessions (separate pool) ==')
+{
+  const extra = await call('POST', '/api/connections', {
+    host: base.host, port: base.port, database: DB, user: base.user, password: base.password, ssl: false,
+  })
+  const pid = extra.body.id
+  const qid = (sql, tabKey, maxRows) =>
+    call('POST', `/api/connections/${pid}/query`, { sql, tabKey, maxRows })
+  // The main pool holds five clients; pin all of them with truncated cursors.
+  let pinned = 0
+  for (let i = 0; i < 5; i++) {
+    const r = await qid('SELECT id FROM big ORDER BY id', `pin${i}`, 50)
+    if (r.body?.results?.[0]?.truncated === true) pinned++
+  }
+  eq('all main-pool clients pinned by sessions', pinned, 5)
+  const t0 = Date.now()
+  const during = await call('GET', `/api/connections/${pid}/schema`)
+  const took = Date.now() - t0
+  eq('schema succeeds while sessions pin the main pool', during.status, 200)
+  ok('schema did not wait for a main-pool slot', took < 5000, `${took}ms`)
+  for (let i = 0; i < 5; i++) await call('POST', `/api/connections/${pid}/query/close`, { tabKey: `pin${i}` })
+  eq('paging connection closes', (await call('DELETE', `/api/connections/${pid}`)).status, 200)
+}
+
+console.log('\n== disconnect cancels in-flight queries ==')
+{
+  const extra = await call('POST', '/api/connections', {
+    host: base.host, port: base.port, database: DB, user: base.user, password: base.password, ssl: false,
+  })
+  eq('second connection opens', extra.status, 200)
+  const eid = extra.body.id
+  const running = app.inject({
+    method: 'POST', url: `/api/connections/${eid}/query`,
+    payload: { sql: 'SELECT pg_sleep(30)', tabKey: 'disconnect-cancel' }, headers: { origin: ORIGIN },
+  })
+  await new Promise((r) => setTimeout(r, 700))
+  const t0 = Date.now()
+  const del2 = await call('DELETE', `/api/connections/${eid}`)
+  const took = Date.now() - t0
+  eq('disconnect returns promptly', del2.status, 200)
+  ok('disconnect did not wait for the statement timeout', took < 5000, `${took}ms`)
+  const res = await running
+  ok('in-flight query was cancelled', res.statusCode === 400 && /cancel/i.test(res.json().error),
+    `${res.statusCode} ${res.json().error}`)
+}
+
 console.log('\n== disconnect ==')
 const del = await call('DELETE', `/api/connections/${id}`)
 eq('connection closes', del.status, 200)

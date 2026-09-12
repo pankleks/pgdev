@@ -160,6 +160,94 @@ await pool.query(`ALTER TABLE cons ADD CONSTRAINT cons_notvalid CHECK (b < 1000)
   ok('NOT VALID constraint is preserved', /NOT VALID/.test(text), text.trim().split('\n').pop())
 }
 
+console.log('\n== foreign key variants ==')
+{
+  const version = Number((await pool.query(`SELECT current_setting('server_version_num') AS v`)).rows[0].v)
+  const setNullCols = version >= 150000 ? ', CONSTRAINT fk_setnull FOREIGN KEY (r) REFERENCES cons(a) ON DELETE SET NULL (r)' : ''
+  await pool.query(`CREATE TABLE fk_variants (id integer PRIMARY KEY, p integer, q integer, r integer,
+    CONSTRAINT fk_match FOREIGN KEY (p) REFERENCES cons(a) MATCH FULL,
+    CONSTRAINT fk_ok FOREIGN KEY (q) REFERENCES cons(a)${setNullCols})`)
+  await pool.query(`ALTER TABLE fk_variants ADD CONSTRAINT fk_notvalid FOREIGN KEY (q) REFERENCES cons(a) NOT VALID`)
+  await roundTrip({
+    pool, eq, ok, params: ['fk_variants'],
+    create: [], drop: `DROP TABLE fk_variants`,
+    label: 'foreign key MATCH FULL / NOT VALID / SET NULL columns',
+    fingerprint: `SELECT con.conname, pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid
+      WHERE c.relname = $1 AND con.contype = 'f' ORDER BY con.conname`,
+    ddl: async () => ddl.tableDdl(pool, await oidOfRel('fk_variants'), 'public', 'fk_variants'),
+  })
+  const text = await ddl.tableDdl(pool, await oidOfRel('fk_variants'), 'public', 'fk_variants')
+  ok('table DDL keeps MATCH FULL', /MATCH FULL/.test(text))
+  ok('table DDL keeps NOT VALID', /NOT VALID/.test(text))
+  if (version >= 150000) {
+    ok('table DDL keeps the SET NULL column list', /ON DELETE SET NULL \(r\)/.test(text),
+      text.split('\n').find((l) => /fk_setnull/.test(l))?.trim())
+  }
+}
+
+console.log('\n== column collation ==')
+await pool.query(`CREATE TABLE collated (id integer, name text COLLATE "C", label text COLLATE "C" NOT NULL)`)
+await roundTrip({
+  pool, eq, ok, params: ['collated'], create: [], drop: `DROP TABLE collated`,
+  label: 'column COLLATE round-trips',
+  fingerprint: `SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull,
+      co.collname
+    FROM pg_attribute a
+    LEFT JOIN pg_collation co ON co.oid = a.attcollation AND a.attcollation <> 0
+    WHERE a.attrelid = format('public.%I', $1::text)::regclass AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('collated'), 'public', 'collated'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('collated'), 'public', 'collated')
+  ok('emits the column collation', /"name" text COLLATE pg_catalog\."C"/.test(text),
+    text.split('\n').find((l) => /"name"/.test(l))?.trim())
+}
+
+console.log('\n== primary key with INCLUDE ==')
+await pool.query(`CREATE TABLE pk_include (
+  a integer NOT NULL,
+  b integer NOT NULL,
+  CONSTRAINT pk_include_pk PRIMARY KEY (a) INCLUDE (b))`)
+await roundTrip({
+  pool, eq, ok, params: ['pk_include'], create: [], drop: `DROP TABLE pk_include`,
+  label: 'NOT NULL INCLUDE column survives the primary key',
+  fingerprint: `SELECT a.attname, a.attnotnull,
+      (SELECT pg_get_constraintdef(con.oid) FROM pg_constraint con
+       WHERE con.conrelid = a.attrelid AND con.contype = 'p') AS pk
+    FROM pg_attribute a
+    WHERE a.attrelid = format('public.%I', $1::text)::regclass AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('pk_include'), 'public', 'pk_include'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('pk_include'), 'public', 'pk_include')
+  ok('keeps NOT NULL on the INCLUDE column', /"b" integer NOT NULL/.test(text),
+    text.split('\n').find((l) => /"b"/.test(l))?.trim())
+}
+
+console.log('\n== table inheritance (INHERITS) ==')
+await pool.query(`CREATE TABLE inh_parent (id integer NOT NULL, note text,
+  CONSTRAINT inh_parent_chk CHECK (id > 0))`)
+await pool.query(`CREATE TABLE inh_child (extra text) INHERITS (inh_parent)`)
+await roundTrip({
+  pool, eq, ok, params: ['inh_child'], create: [], drop: `DROP TABLE inh_child`,
+  label: 'plain inheritance child rebuilds through INHERITS',
+  fingerprint: `SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS type,
+      a.attnotnull, a.attinhcount
+    FROM pg_attribute a
+    WHERE a.attrelid = format('public.%I', $1::text)::regclass AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('inh_child'), 'public', 'inh_child'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('inh_child'), 'public', 'inh_child')
+  ok('emits INHERITS with the parent', /INHERITS \(public\.inh_parent\)/.test(text),
+    text.split('\n').find((l) => /INHERITS/.test(l))?.trim())
+  ok('does not redeclare the inherited column', !/"id" integer/.test(text))
+}
+
 console.log('\n== composite and enum types ==')
 await roundTrip({
   pool, eq, ok, params: ['addr'], create: `CREATE TYPE addr AS (street text, city text, zip integer)`,
@@ -177,6 +265,81 @@ await roundTrip({
   drop: `DROP TYPE "odd labels"`, label: 'enum with awkward labels', fingerprint: typeFp,
   ddl: async () => ddl.typeDdl(pool, await oidOfType('odd labels'), 'public', 'odd labels'),
 })
+
+console.log('\n== catalog resolution guards ==')
+await pool.query(`CREATE VIEW guard_view AS SELECT 1 AS one`)
+{
+  const threw = async (fn) => { try { await fn(); return null } catch (e) { return e } }
+  // viewDdl must refuse a table oid rather than emit "AS null"
+  const viewErr = await threw(async () => ddl.viewDdl(pool, await oidOfRel('base'), 'public', 'base'))
+  ok('viewDdl rejects a table oid', viewErr && viewErr.statusCode === 404)
+  // tableDdl name fallback must ignore a view of the same name
+  const tableErr = await threw(() => ddl.tableDdl(pool, '', 'public', 'guard_view'))
+  ok('tableDdl name fallback ignores a view', tableErr && tableErr.statusCode === 404)
+  // A valid oid wins over a stale request name: the catalogue name is emitted.
+  const text = await ddl.tableDdl(pool, await oidOfRel('base'), 'public', 'not_base')
+  ok('table DDL uses the catalog name, not the request name',
+    /"public"\."base"/.test(text) && !/"not_base"/.test(text))
+}
+await pool.query(`DROP VIEW guard_view`)
+
+console.log('\n== view and materialized view attributes ==')
+await pool.query(`CREATE VIEW view_attrs WITH (security_barrier=true) AS SELECT id, label FROM base`)
+await pool.query(`COMMENT ON VIEW view_attrs IS 'a view'`)
+await pool.query(`CREATE MATERIALIZED VIEW mv_attrs AS SELECT id FROM base`)
+await pool.query(`CREATE INDEX mv_attrs_idx ON mv_attrs (id)`)
+await pool.query(`COMMENT ON MATERIALIZED VIEW mv_attrs IS 'a matview'`)
+await roundTrip({
+  pool, eq, ok, params: ['view_attrs'], create: [], drop: `DROP VIEW view_attrs`,
+  label: 'view WITH options and comment',
+  fingerprint: `SELECT c.reloptions, obj_description(c.oid) AS comment FROM pg_class c WHERE c.relname=$1`,
+  ddl: async () => ddl.viewDdl(pool, await oidOfRel('view_attrs'), 'public', 'view_attrs'),
+})
+await roundTrip({
+  pool, eq, ok, params: ['mv_attrs'], create: [], drop: `DROP MATERIALIZED VIEW mv_attrs`,
+  label: 'materialized view with index and comment',
+  fingerprint: `SELECT c.reloptions, obj_description(c.oid) AS comment,
+    (SELECT string_agg(indexdef, ' ' ORDER BY indexname) FROM pg_indexes
+       WHERE schemaname='public' AND tablename=$1) AS idx
+    FROM pg_class c WHERE c.relname=$1`,
+  ddl: async () => ddl.viewDdl(pool, await oidOfRel('mv_attrs'), 'public', 'mv_attrs'),
+})
+{
+  const viewText = await ddl.viewDdl(pool, await oidOfRel('view_attrs'), 'public', 'view_attrs')
+  ok('view keeps WITH options', /WITH \(security_barrier='true'\)|WITH \(security_barrier=true\)/.test(viewText),
+    viewText.split('\n').find((l) => /WITH/.test(l))?.trim())
+  ok('view keeps its comment', /COMMENT ON VIEW .* IS 'a view'/.test(viewText))
+  const mvText = await ddl.viewDdl(pool, await oidOfRel('mv_attrs'), 'public', 'mv_attrs')
+  ok('matview keeps its index', /CREATE INDEX .*mv_attrs_idx/.test(mvText))
+  ok('matview keeps its comment', /COMMENT ON MATERIALIZED VIEW .* IS 'a matview'/.test(mvText))
+}
+
+console.log('\n== foreign table options ==')
+await pool.query(`CREATE EXTENSION IF NOT EXISTS postgres_fdw`)
+await pool.query(`CREATE SERVER pgdev_fdw_srv FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (host 'localhost', port '5432', dbname 'postgres')`)
+await pool.query(`CREATE FOREIGN TABLE foreign_opts (
+  id integer OPTIONS (column_name 'remote_id'),
+  label text
+) SERVER pgdev_fdw_srv OPTIONS (schema_name 'public', table_name 'remote_table')`)
+await roundTrip({
+  pool, eq, ok, params: ['foreign_opts'], create: [], drop: `DROP FOREIGN TABLE foreign_opts`,
+  label: 'foreign table keeps table and column FDW options',
+  fingerprint: `SELECT c.relname, s.srvname,
+      (SELECT string_agg(o, ',' ORDER BY o) FROM unnest(ft.ftoptions) o) AS topts,
+      (SELECT string_agg(a.attname || ':' || array_to_string(a.attfdwoptions, ','), ',' ORDER BY a.attnum)
+         FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped) AS copts
+    FROM pg_class c JOIN pg_foreign_table ft ON ft.ftrelid=c.oid
+    JOIN pg_foreign_server s ON s.oid=ft.ftserver WHERE c.relname=$1`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('foreign_opts'), 'public', 'foreign_opts'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('foreign_opts'), 'public', 'foreign_opts')
+  ok('emits table-level FDW options', /OPTIONS \(schema_name 'public', table_name 'remote_table'\)/.test(text),
+    text.split('\n').find((l) => /schema_name/.test(l))?.trim())
+  ok('emits column-level FDW options', /"id" integer OPTIONS \(column_name 'remote_id'\)/.test(text),
+    text.split('\n').find((l) => /remote_id/.test(l))?.trim())
+}
 
 console.log('\n== metadata harvest still works over this schema ==')
 {

@@ -124,6 +124,22 @@ await roundTrip('SSPACE',
   `CREATE AGGREGATE a7(integer) (SFUNC=int4pl, STYPE=integer, SSPACE=64, INITCOND='0')`, 'a7',
   'DROP AGGREGATE a7(integer)')
 
+// An empty-string INITCOND is distinct from no initial condition; emitting it
+// as NULL would recreate the aggregate with a different initial state.
+await roundTrip('empty-string INITCOND',
+  `CREATE AGGREGATE a8(text) (SFUNC=textcat, STYPE=text, INITCOND='')`, 'a8',
+  'DROP AGGREGATE a8(text)')
+
+console.log('\n== schema-qualified function references ==')
+{
+  const a1ddl = await functionDdl(pool, await oidOf('a1'), 'public', 'a1')
+  ok('transition function is schema-qualified', /SFUNC = pg_catalog\.int4pl/.test(a1ddl),
+    a1ddl.split('\n').find((l) => /SFUNC/.test(l))?.trim())
+  const a2ddl = await functionDdl(pool, await oidOf('a2'), 'public', 'a2')
+  ok('SORTOP is a schema-qualified OPERATOR', /SORTOP = OPERATOR\(pg_catalog\.>\)/.test(a2ddl),
+    a2ddl.split('\n').find((l) => /SORTOP/.test(l))?.trim())
+}
+
 console.log('\n== built-in aggregates that must now be executable ==')
 for (const [name, args] of [['array_agg', 'anyarray'], ['sum', 'integer'], ['avg', 'bigint'], ['max', 'integer']]) {
   const r = await pool.query(

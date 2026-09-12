@@ -17,18 +17,20 @@ function notFound(): never {
   throw err
 }
 
-async function resolveOid(pool: Pool, schema: string, name: string): Promise<string> {
+async function resolveOid(pool: Pool, schema: string, name: string, relkinds: string[]): Promise<string> {
   const res = await pool.query(
     `SELECT c.oid::text AS oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = $1 AND c.relname = $2`,
-    [schema, name],
+     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind::text = ANY($3::text[])
+     ORDER BY c.oid
+     LIMIT 1`,
+    [schema, name, relkinds],
   )
   if (!res.rows[0]) notFound()
   return res.rows[0].oid
 }
 
 export async function tableDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
-  const relOid = oid || (await resolveOid(pool, schema, name))
+  const relOid = oid || (await resolveOid(pool, schema, name, ['r', 'p', 'f']))
 
   const [colsRes, consRes, idxRes, pkRes, relRes, policiesRes, foreignRes] = await Promise.all([
     pool.query(
@@ -36,52 +38,67 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
          a.attnotnull AS notnull,
          a.attidentity AS identity,
          a.attgenerated AS generated,
+         a.attinhcount AS inhcount,
          pg_get_expr(d.adbin, d.adrelid) AS default_value,
          pg_get_serial_sequence(format('%I.%I', n.nspname, c.relname), a.attname) AS sequence_name,
+         -- format_type does not carry a collation, so reattach it explicitly
+         -- (the default collation is implicit and can be omitted).
+         CASE WHEN co.collname IS NOT NULL AND co.collname <> 'default'
+              THEN ' COLLATE ' || quote_ident(cn.nspname) || '.' || quote_ident(co.collname)
+              ELSE '' END AS collation,
+         (SELECT string_agg(quote_ident(split_part(o, '=', 1)) || ' ' ||
+                   quote_literal(substr(o, strpos(o, '=') + 1)), ', ' ORDER BY ord)
+            FROM unnest(a.attfdwoptions) WITH ORDINALITY AS opt(o, ord)) AS fdw_options,
          quote_literal(col_description(a.attrelid, a.attnum)) AS comment
        FROM pg_attribute a
        JOIN pg_class c ON c.oid = a.attrelid
        JOIN pg_namespace n ON n.oid = c.relnamespace
        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       LEFT JOIN pg_collation co ON co.oid = a.attcollation AND a.attcollation <> 0
+       LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace
        WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
        ORDER BY a.attnum`,
       [relOid],
     ),
     pool.query(
-      // A foreign key pointing at a partitioned table is stored once per
-      // partition. Rewrite those to name the partitioned parent, in the usual
-      // clause order, so the duplicate rows collapse and the DDL never
-      // references a partition (which does not exist yet at that point).
-      `SELECT conname, contype, CASE
-         WHEN contype = 'f' THEN
-           'FOREIGN KEY (' ||
-             (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
-                FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
-                JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum)
-           || ') REFERENCES ' || format('%I.%I', COALESCE(pcn.nspname, rcn.nspname),
-                                         COALESCE(pc.relname, rc.relname)) || ' (' ||
-             (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
-                FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
-                JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum)
-           || ')'
-           || CASE con.confdeltype WHEN 'r' THEN ' ON DELETE RESTRICT' WHEN 'c' THEN ' ON DELETE CASCADE'
-                WHEN 'n' THEN ' ON DELETE SET NULL' WHEN 'd' THEN ' ON DELETE SET DEFAULT' ELSE '' END
-           || CASE con.confupdtype WHEN 'r' THEN ' ON UPDATE RESTRICT' WHEN 'c' THEN ' ON UPDATE CASCADE'
-                WHEN 'n' THEN ' ON UPDATE SET NULL' WHEN 'd' THEN ' ON UPDATE SET DEFAULT' ELSE '' END
-           || CASE WHEN con.condeferrable THEN ' DEFERRABLE' ELSE '' END
-           || CASE WHEN con.condeferred THEN ' INITIALLY DEFERRED' ELSE '' END
-         ELSE pg_get_constraintdef(con.oid)
-       END AS def
+      // A foreign key pointing at a partition of a partitioned table is stored
+      // once per partition. Those copies are rewritten to name the partitioned
+      // parent, in the usual clause order, so the duplicate rows collapse and
+      // the DDL never references a partition (which does not exist yet at that
+      // point). Every other constraint — ordinary foreign keys included — comes
+      // straight from pg_get_constraintdef, so MATCH, NOT VALID, deferred and
+      // SET NULL/DEFAULT options all round-trip.
+      `SELECT con.conname, con.contype,
+         (con.contype = 'f' AND pc.oid IS NOT NULL) AS is_clone,
+         CASE
+           WHEN con.contype = 'f' AND pc.oid IS NOT NULL THEN
+             'FOREIGN KEY (' ||
+               (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
+                  FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum)
+             || ') REFERENCES ' || format('%I.%I', pcn.nspname, pc.relname) || ' (' ||
+               (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
+                  FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                  JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum)
+             || ')'
+             || CASE con.confmatchtype WHEN 'f' THEN ' MATCH FULL' WHEN 'p' THEN ' MATCH PARTIAL' ELSE '' END
+             || CASE con.confdeltype WHEN 'r' THEN ' ON DELETE RESTRICT' WHEN 'c' THEN ' ON DELETE CASCADE'
+                  WHEN 'n' THEN ' ON DELETE SET NULL' WHEN 'd' THEN ' ON DELETE SET DEFAULT' ELSE '' END
+             || CASE con.confupdtype WHEN 'r' THEN ' ON UPDATE RESTRICT' WHEN 'c' THEN ' ON UPDATE CASCADE'
+                  WHEN 'n' THEN ' ON UPDATE SET NULL' WHEN 'd' THEN ' ON UPDATE SET DEFAULT' ELSE '' END
+             || CASE WHEN con.condeferrable THEN ' DEFERRABLE' ELSE '' END
+             || CASE WHEN con.condeferred THEN ' INITIALLY DEFERRED' ELSE '' END
+             || CASE WHEN NOT con.convalidated THEN ' NOT VALID' ELSE '' END
+           ELSE pg_get_constraintdef(con.oid)
+         END AS def
        FROM pg_constraint con
-       -- A foreign key to a partitioned table is stored once per partition
-       -- (confrelid = the partition, whose relkind is 'r'). Walk up the
-       -- inheritance chain so every copy is attributed to the same
+       -- Walk up the inheritance chain so every per-partition copy of a
+       -- foreign key referencing a partitioned table is attributed to the same
        -- partitioned ancestor; identical definitions then collapse.
        LEFT JOIN pg_class rc ON rc.oid = con.confrelid
        LEFT JOIN pg_inherits inh ON inh.inhrelid = rc.oid
        LEFT JOIN pg_class pc ON pc.oid = inh.inhparent AND pc.relkind = 'p'
        LEFT JOIN pg_namespace pcn ON pcn.oid = pc.relnamespace
-       LEFT JOIN pg_namespace rcn ON rcn.oid = rc.relnamespace
        WHERE con.conrelid = $1 AND con.contype IN ('p', 'u', 'f', 'c', 'x')
          -- Constraints cloned from a partitioned parent (conparentid) or
          -- plain-inherited ones (coninhcount) are recreated automatically by
@@ -108,22 +125,33 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       [relOid],
     ),
     pool.query(
-      `SELECT a.attname FROM pg_index i
-       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
-       WHERE i.indrelid = $1 AND i.indisprimary`,
+      // pg_constraint.conkey lists only the key columns; pg_index.indkey also
+      // carries INCLUDE columns, and treating a NOT NULL INCLUDE column as a
+      // primary-key member would wrongly suppress its NOT NULL clause.
+      `SELECT a.attname FROM pg_constraint con
+       JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+       WHERE con.conrelid = $1 AND con.contype = 'p'`,
       [relOid],
     ),
     pool.query(
       `SELECT c.relkind, c.relpersistence, c.relispartition,
          c.relrowsecurity, c.relforcerowsecurity,
+         n.nspname AS schema, c.relname AS name,
          pg_get_userbyid(c.relowner) AS owner,
          (SELECT spcname FROM pg_tablespace WHERE oid = c.reltablespace) AS tablespace,
          quote_literal(obj_description(c.oid)) AS comment,
          (SELECT pg_get_partkeydef(p.partrelid) FROM pg_partitioned_table p WHERE p.partrelid = c.oid) AS partkey,
          (SELECT pg_get_partkeydef(pp.partrelid) FROM pg_partitioned_table pp WHERE pp.partrelid = c.oid) AS own_partkey,
+         -- Plain (non-partition) inheritance parents, for an INHERITS clause.
+         (SELECT string_agg(format('%I.%I', pn.nspname, p.relname), ', ' ORDER BY i.inhseqno)
+            FROM pg_inherits i
+            JOIN pg_class p ON p.oid = i.inhparent
+            JOIN pg_namespace pn ON pn.oid = p.relnamespace
+            WHERE i.inhrelid = c.oid) AS inherits,
          pn.nspname AS part_schema, p.relname AS part_name,
          CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END AS partbound
        FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
        LEFT JOIN pg_inherits i ON i.inhrelid = c.oid AND c.relispartition
        LEFT JOIN pg_class p ON p.oid = i.inhparent
        LEFT JOIN pg_namespace pn ON pn.oid = p.relnamespace
@@ -132,17 +160,23 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     ),
     pool.query(
       `SELECT polname, polcmd, NOT polpermissive AS restrictive,
-          (SELECT string_agg(quote_ident(r.rolname), ', ' ORDER BY r.rolname)
-           FROM pg_roles r WHERE r.oid = ANY (p.polroles)) AS roles,
-         pg_get_expr(p.polqual, p.polrelid) AS qual,
-         pg_get_expr(p.polwithcheck, p.polrelid) AS withcheck
-       FROM pg_policy p
-       WHERE p.polrelid = $1
-       ORDER BY p.polname`,
+          (SELECT string_agg(CASE WHEN pol.role_oid = 0 THEN 'PUBLIC'
+                                  ELSE quote_ident(r.rolname) END, ', '
+                              ORDER BY (pol.role_oid <> 0), r.rolname)
+            FROM unnest(p.polroles) AS pol(role_oid)
+            LEFT JOIN pg_roles r ON r.oid = pol.role_oid) AS roles,
+          pg_get_expr(p.polqual, p.polrelid) AS qual,
+          pg_get_expr(p.polwithcheck, p.polrelid) AS withcheck
+        FROM pg_policy p
+        WHERE p.polrelid = $1
+        ORDER BY p.polname`,
       [relOid],
     ),
     pool.query(
-      `SELECT s.srvname AS server
+      `SELECT s.srvname AS server,
+         (SELECT string_agg(quote_ident(split_part(o, '=', 1)) || ' ' ||
+                   quote_literal(substr(o, strpos(o, '=') + 1)), ', ' ORDER BY ord)
+            FROM unnest(ft.ftoptions) WITH ORDINALITY AS opt(o, ord)) AS options
        FROM pg_foreign_table ft
        JOIN pg_foreign_server s ON s.oid = ft.ftserver
        WHERE ft.ftrelid = $1`,
@@ -152,7 +186,9 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
 
   const rel = relRes.rows[0]
   if (!rel) notFound()
-  const table = `${ident(schema)}.${ident(name)}`
+  // The object is resolved by oid, so the catalogue's own name is authoritative
+  // (the request's schema/name may be stale).
+  const table = `${ident(rel.schema)}.${ident(rel.name)}`
   const chunks: string[] = []
 
   if (rel.relispartition && rel.part_name) {
@@ -178,9 +214,15 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     if (localIndexes.length) chunks.push(localIndexes.join('\n'))
   } else {
     const pkCols = new Set(pkRes.rows.map((r) => r.attname as string))
-    const lines = colsRes.rows.map((r) => {
+    // For a plain inheritance child the inherited columns are recreated by the
+    // INHERITS clause, so only local columns (attinhcount = 0) are listed —
+    // the same shape pg_dump emits.
+    const inheritance = rel.relkind !== 'f' && !rel.partkey && rel.inherits ? (rel.inherits as string) : null
+    const columns = inheritance ? colsRes.rows.filter((r) => !r.inhcount) : colsRes.rows
+    const lines = columns.map((r) => {
       const serial = !r.identity && !r.generated && r.sequence_name ? serialType(r.type) : null
-      const parts = [`${ident(r.name)} ${serial ?? r.type}`]
+      const fdwOptions = r.fdw_options ? ` OPTIONS (${r.fdw_options})` : ''
+      const parts = [`${ident(r.name)} ${serial ?? r.type}${fdwOptions}${r.collation ?? ''}`]
       if (r.generated === 's' && r.default_value != null) {
         parts.push(`GENERATED ALWAYS AS (${r.default_value}) STORED`)
       } else if (r.identity === 'a') {
@@ -195,29 +237,40 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     })
 
     // A foreign key that references a partitioned table is stored once per
-    // partition, so the catalogue returns several rows with identical
+    // partition, so the catalogue returns several clone rows with identical
     // definitions (…_fkey, …_fkey1, …_fkey2). Emitting each as an inline
-    // CONSTRAINT makes the names collide, so collapse identical FK rows.
-    // Only FKs dedupe by definition: two same-shaped CHECK constraints are
-    // legal and distinct, and names are unique per relation anyway.
+    // CONSTRAINT makes the names collide, so collapse identical clone rows.
+    // Ordinary FKs are not deduped: two same-shaped foreign keys are legal and
+    // distinct, and names are unique per relation anyway.
     const seenFkDefs = new Set<string>()
+    const deferredConstraints: string[] = []
     for (const c of consRes.rows) {
       const def = String(c.def)
-      if (c.contype === 'f') {
+      if (c.is_clone) {
         if (seenFkDefs.has(def)) continue
         seenFkDefs.add(def)
       }
-      lines.push(`  CONSTRAINT ${ident(c.conname)} ${def}`)
+      // CREATE TABLE accepts but silently ignores NOT VALID, so an unvalidated
+      // constraint must be added afterwards with ALTER TABLE (as pg_dump does)
+      // or it is recreated as validated.
+      if (/\bNOT VALID$/i.test(def)) {
+        deferredConstraints.push(`ALTER TABLE ${table} ADD CONSTRAINT ${ident(c.conname)} ${def};`)
+      } else {
+        lines.push(`  CONSTRAINT ${ident(c.conname)} ${def}`)
+      }
     }
 
     const kind = rel.relkind === 'f' ? 'FOREIGN TABLE' : rel.relpersistence === 'u' ? 'UNLOGGED TABLE' : 'TABLE'
     let create = `CREATE ${kind} ${table} (\n${lines.join(',\n')}\n)`
     if (rel.relkind === 'f' && foreignRes.rows[0]) {
       create += `\n  SERVER ${ident(foreignRes.rows[0].server)}`
+      if (foreignRes.rows[0].options) create += `\n  OPTIONS (${foreignRes.rows[0].options})`
     }
     if (rel.partkey) create += `\n  PARTITION BY ${rel.partkey}`
+    else if (inheritance) create += `\n  INHERITS (${inheritance})`
     if (rel.tablespace) create += `\n  TABLESPACE ${ident(rel.tablespace)}`
     chunks.push(create + ';')
+    if (deferredConstraints.length) chunks.push(deferredConstraints.join('\n'))
 
     // Constraint-backed indexes are excluded by the query itself; whatever
     // remains is a standalone index for every relation kind.
@@ -256,18 +309,48 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
 }
 
 export async function viewDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
-  const relOid = oid || (await resolveOid(pool, schema, name))
-  const res = await pool.query(
-    `SELECT c.relkind, pg_get_viewdef(c.oid, true) AS def FROM pg_class c WHERE c.oid = $1`,
-    [relOid],
-  )
-  const row = res.rows[0]
-  if (!row) notFound()
+  const relOid = oid || (await resolveOid(pool, schema, name, ['v', 'm']))
+  const [viewRes, idxRes] = await Promise.all([
+    pool.query(
+      `SELECT c.relkind, n.nspname AS schema, c.relname AS name,
+         pg_get_viewdef(c.oid, true) AS def,
+         pg_get_userbyid(c.relowner) AS owner,
+         quote_literal(obj_description(c.oid)) AS comment,
+         (SELECT spcname FROM pg_tablespace WHERE oid = c.reltablespace) AS tablespace,
+         (SELECT string_agg(quote_ident(split_part(o, '=', 1)) || '=' ||
+                   quote_literal(substr(o, strpos(o, '=') + 1)), ', ' ORDER BY ord)
+            FROM unnest(c.reloptions) WITH ORDINALITY AS opt(o, ord)) AS reloptions
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1`,
+      [relOid],
+    ),
+    // Only materialized views can carry indexes; a plain view returns none.
+    pool.query(
+      `SELECT pg_get_indexdef(idx.oid) AS indexdef
+       FROM pg_index i JOIN pg_class idx ON idx.oid = i.indexrelid
+       WHERE i.indrelid = $1
+       ORDER BY idx.relname`,
+      [relOid],
+    ),
+  ])
+  const row = viewRes.rows[0]
+  // A non-view oid would make pg_get_viewdef NULL and emit "AS null"; fail
+  // cleanly instead.
+  if (!row || (row.relkind !== 'v' && row.relkind !== 'm')) notFound()
   const materialized = row.relkind === 'm'
-  const keyword = materialized ? 'CREATE MATERIALIZED VIEW' : 'CREATE OR REPLACE VIEW'
+  const target = `${ident(row.schema)}.${ident(row.name)}`
   const definition = String(row.def).trim().replace(/;$/, '')
-  const drop = `-- DROP ${materialized ? 'MATERIALIZED ' : ''}VIEW IF EXISTS ${ident(schema)}.${ident(name)};`
-  return `${drop}\n\n${keyword} ${ident(schema)}.${ident(name)} AS\n${definition};`
+  const withOptions = row.reloptions ? ` WITH (${row.reloptions})` : ''
+  const tablespace = materialized && row.tablespace ? `\n  TABLESPACE ${ident(row.tablespace)}` : ''
+  const keyword = materialized ? 'CREATE MATERIALIZED VIEW' : 'CREATE OR REPLACE VIEW'
+  const chunks = [`${keyword} ${target}${withOptions}${tablespace} AS\n${definition};`]
+  if (materialized && idxRes.rows.length) {
+    chunks.push(idxRes.rows.map((r) => `${r.indexdef};`).join('\n'))
+  }
+  const kind = materialized ? 'MATERIALIZED VIEW' : 'VIEW'
+  if (row.owner) chunks.push(`ALTER ${kind} ${target} OWNER TO ${ident(row.owner)};`)
+  if (row.comment) chunks.push(`COMMENT ON ${kind} ${target} IS ${row.comment};`)
+  const drop = `-- DROP ${materialized ? 'MATERIALIZED ' : ''}VIEW IF EXISTS ${target};`
+  return [drop, ...chunks].join('\n\n')
 }
 
 export async function functionDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
@@ -276,7 +359,7 @@ export async function functionDdl(pool: Pool, oid: string, schema: string, name:
     const fallback = await pool.query(
       `SELECT p.oid::text AS oid
        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = $1 AND p.proname = $2
+       WHERE n.nspname = $1 AND p.proname = $2 AND p.prokind IN ('f', 'p', 'w', 'a')
        ORDER BY pg_get_function_identity_arguments(p.oid), p.oid
        LIMIT 1`,
       [schema, name],
@@ -308,27 +391,45 @@ export async function functionDdl(pool: Pool, oid: string, schema: string, name:
 
 async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string> {
   const res = await pool.query(
-    `SELECT a.aggkind, a.aggtransfn::regproc::text AS sfunc,
+    // Every function/operator reference is schema-qualified. A bare regproc
+    // name resolves through search_path, so the generated script would bind a
+    // different object if re-run under a different search_path.
+    `SELECT a.aggkind,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggtransfn) AS sfunc,
             format_type(a.aggtranstype, NULL) AS stype,
             NULLIF(a.aggtransspace, 0) AS transspace,
-            NULLIF(a.aggfinalfn::regproc::text, '-') AS finalfn,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggfinalfn) AS finalfn,
             a.aggfinalextra,
             a.aggfinalmodify,
-            NULLIF(a.aggcombinefn::regproc::text, '-') AS combinefn,
-            NULLIF(a.aggserialfn::regproc::text, '-') AS serialfn,
-            NULLIF(a.aggdeserialfn::regproc::text, '-') AS deserialfn,
-            NULLIF(a.agginitval, '') AS initcond,
-            NULLIF(a.aggmtransfn::regproc::text, '-') AS msfunc,
-            NULLIF(a.aggminvtransfn::regproc::text, '-') AS minvfunc,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggcombinefn) AS combinefn,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggserialfn) AS serialfn,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggdeserialfn) AS deserialfn,
+            -- quote_literal, not NULLIF(..,''): an empty-string initial
+            -- condition is legitimate and must stay distinct from NULL, and
+            -- the server quoting is safe regardless of
+            -- standard_conforming_strings.
+            quote_literal(a.agginitval) AS initcond,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggmtransfn) AS msfunc,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggminvtransfn) AS minvfunc,
             CASE WHEN a.aggmtranstype <> 0 THEN format_type(a.aggmtranstype, NULL) END AS mstype,
             NULLIF(a.aggmtransspace, 0) AS mtransspace,
-            NULLIF(a.aggmfinalfn::regproc::text, '-') AS mfinalfn,
+            (SELECT format('%I.%I', n.nspname, pr.proname) FROM pg_proc pr
+               JOIN pg_namespace n ON n.oid = pr.pronamespace WHERE pr.oid = a.aggmfinalfn) AS mfinalfn,
             a.aggmfinalextra,
             a.aggmfinalmodify,
-            NULLIF(a.aggminitval, '') AS minitcond,
-            -- aggsortop is a plain oid and regoper renders 0 as "0" (only
-            -- regproc/regclass render "-"), so zero it out explicitly.
-            NULLIF(a.aggsortop, 0)::regoper::text AS sortop,
+            quote_literal(a.aggminitval) AS minitcond,
+            -- aggsortop is a plain oid; resolve it to a schema-qualified
+            -- OPERATOR(...) rather than a search_path-dependent regoper name.
+            (SELECT 'OPERATOR(' || quote_ident(opn.nspname) || '.' || op.oprname || ')'
+               FROM pg_operator op JOIN pg_namespace opn ON opn.oid = op.oprnamespace
+               WHERE op.oid = a.aggsortop) AS sortop,
             p.proparallel
      FROM pg_aggregate a
      JOIN pg_proc p ON p.oid = a.aggfnoid
@@ -355,7 +456,7 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
   if (row.combinefn) opts.push(`COMBINEFUNC = ${row.combinefn}`)
   if (row.serialfn) opts.push(`SERIALFUNC = ${row.serialfn}`)
   if (row.deserialfn) opts.push(`DESERIALFUNC = ${row.deserialfn}`)
-  if (row.initcond != null) opts.push(`INITCOND = '${String(row.initcond).replace(/'/g, "''")}'`)
+  if (row.initcond != null) opts.push(`INITCOND = ${row.initcond}`)
   if (row.msfunc) opts.push(`MSFUNC = ${row.msfunc}`)
   if (row.minvfunc) opts.push(`MINVFUNC = ${row.minvfunc}`)
   if (row.mstype) opts.push(`MSTYPE = ${row.mstype}`)
@@ -366,8 +467,8 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
     const kw = modifyKeyword(row.aggmfinalmodify)
     if (kw) opts.push(`MFINALFUNC_MODIFY = ${kw}`)
   }
-  if (row.minitcond != null) opts.push(`MINITCOND = '${String(row.minitcond).replace(/'/g, "''")}'`)
-  if (row.sortop) opts.push(`SORTOP = OPERATOR(${row.sortop})`)
+  if (row.minitcond != null) opts.push(`MINITCOND = ${row.minitcond}`)
+  if (row.sortop) opts.push(`SORTOP = ${row.sortop}`)
   if (row.proparallel === 's') opts.push('PARALLEL = SAFE')
   else if (row.proparallel === 'r') opts.push('PARALLEL = RESTRICTED')
   // HYPOTHETICAL is only meaningful for ordered-set aggregates and must be
@@ -432,7 +533,8 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
     const fallback = await pool.query(
       `SELECT t.oid::text AS oid
        FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-       WHERE n.nspname = $1 AND t.typname = $2
+       WHERE n.nspname = $1 AND t.typname = $2 AND t.typtype IN ('e', 'c', 'd', 'r')
+       ORDER BY t.oid
        LIMIT 1`,
       [schema, name],
     )
@@ -440,13 +542,18 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
     target = fallback.rows[0].oid
   }
   const res = await pool.query(
-    `SELECT t.typtype, t.typnotnull,
+    `SELECT t.typtype, t.typnotnull, n.nspname AS schema, t.typname AS name,
        -- typdefault is the *external* representation when typdefaultbin is
        -- set (e.g. 'abc' without its quotes for a text domain), so emitting it raw
        -- produces unrunnable DDL. pg_get_expr renders the parsed default
        -- back as executable SQL, same as the column-default path above.
        pg_get_expr(t.typdefaultbin, 0) AS typdefault,
        format_type(t.typbasetype, t.typtypmod) AS base,
+       -- format_type drops a domain's collation, so reattach it explicitly
+       -- (the default collation is implicit and can be omitted).
+       (SELECT quote_ident(dcn.nspname) || '.' || quote_ident(dc.collname)
+          FROM pg_collation dc JOIN pg_namespace dcn ON dcn.oid = dc.collnamespace
+          WHERE dc.oid = t.typcollation AND t.typcollation <> 0 AND dc.collname <> 'default') AS domain_collation,
        (SELECT string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder)
           FROM pg_enum e WHERE e.enumtypid = t.oid) AS labels,
         (SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod)
@@ -471,8 +578,11 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
           WHERE rc.oid = r.rngcollation AND r.rngcollation <> 0 AND rc.collname <> 'default') AS collation,
        -- PG names the multirange <range>_multirange. Only emit the option
        -- when the actual name differs, so the generated DDL works on the
-       -- server version it came from without probing.
-       (SELECT mt.typname FROM pg_type mt
+       -- server version it came from without probing. Schema-qualify it: the
+       -- option accepts a qualified name and the multirange may live elsewhere.
+       (SELECT format('%I.%I', mn.nspname, mt.typname)
+          FROM pg_type mt
+          JOIN pg_namespace mn ON mn.oid = mt.typnamespace
           WHERE mt.oid = (SELECT x.rngmultitypid FROM pg_range x WHERE x.rngtypid = t.oid)
             AND mt.typname <> t.typname || '_multirange'
             AND mt.typname <> '_' || t.typname) AS multirange_name,
@@ -489,7 +599,7 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
   )
   const row = res.rows[0]
   if (!row) notFound()
-  const q = `${ident(schema)}.${ident(name)}`
+  const q = `${ident(row.schema)}.${ident(row.name)}`
   let ddl: string
   if (row.typtype === 'e') {
     ddl = `CREATE TYPE ${q} AS ENUM (${row.labels ?? ''});`
@@ -497,6 +607,7 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
     ddl = `CREATE TYPE ${q} AS (${row.attrs ?? ''});`
   } else if (row.typtype === 'd') {
     const parts = [`CREATE DOMAIN ${q} AS ${row.base}`]
+    if (row.domain_collation) parts.push(`COLLATE ${row.domain_collation}`)
     if (row.typdefault != null) parts.push(`DEFAULT ${row.typdefault}`)
     if (row.typnotnull) parts.push('NOT NULL')
     if (row.cons) parts.push(String(row.cons).trim())
@@ -507,7 +618,7 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
     if (row.collation) opts.push(`COLLATION = ${row.collation}`)
     if (row.canonical && row.canonical !== '-') opts.push(`CANONICAL = ${row.canonical}`)
     if (row.subdiff && row.subdiff !== '-') opts.push(`SUBTYPE_DIFF = ${row.subdiff}`)
-    if (row.multirange_name) opts.push(`MULTIRANGE_TYPE_NAME = ${ident(String(row.multirange_name))}`)
+    if (row.multirange_name) opts.push(`MULTIRANGE_TYPE_NAME = ${row.multirange_name}`)
     ddl = `CREATE TYPE ${q} AS RANGE (\n  ${opts.join(',\n  ')}\n);`
   } else {
     notFound()
