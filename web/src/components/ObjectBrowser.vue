@@ -19,6 +19,7 @@ import {
   FolderOpen,
   Grid2x2,
   KeyRound,
+  Layers,
   Link,
   ListTree,
   LoaderCircle,
@@ -530,13 +531,14 @@ const INDEX_ICONS: Record<IndexType, LucideIcon> = {
   normal: ListTree,
 }
 
-type FunctionKind = 'function' | 'procedure' | 'window' | 'trigger'
+type FunctionKind = 'function' | 'procedure' | 'window' | 'trigger' | 'aggregate'
 
 const FUNCTION_ICONS: Record<FunctionKind, LucideIcon> = {
   function: SquareFunction,
   procedure: SquareTerminal,
   window: Sigma,
   trigger: Zap,
+  aggregate: Layers,
 }
 
 const FUNCTION_LABELS: Record<FunctionKind, string> = {
@@ -544,6 +546,7 @@ const FUNCTION_LABELS: Record<FunctionKind, string> = {
   procedure: 'procedure',
   window: 'window function',
   trigger: 'trigger function',
+  aggregate: 'aggregate',
 }
 
 function functionIcon(kind: string | undefined): LucideIcon {

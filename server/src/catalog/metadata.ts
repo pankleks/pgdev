@@ -51,7 +51,7 @@ export interface FunctionInfo {
   args: string
   returns: string
   typeSig: string
-  kind: 'function' | 'procedure' | 'window' | 'trigger'
+  kind: 'function' | 'procedure' | 'window' | 'trigger' | 'aggregate'
   oid: string
 }
 
@@ -159,13 +159,14 @@ SELECT n.nspname AS schema, p.proname AS name,
     WHEN pg_get_function_result(p.oid) = 'trigger' THEN 'trigger'
     WHEN p.prokind = 'p' THEN 'procedure'
     WHEN p.prokind = 'w' THEN 'window'
+    WHEN p.prokind = 'a' THEN 'aggregate'
     ELSE 'function'
   END AS kind,
   p.oid::text AS oid
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND p.prokind IN ('f', 'p', 'w')
+  AND p.prokind IN ('f', 'p', 'w', 'a')
 ORDER BY n.nspname, p.proname`
 
 const TYPES_SQL = `

@@ -48,10 +48,42 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       [relOid],
     ),
     pool.query(
-      `SELECT conname, contype, pg_get_constraintdef(oid) AS def
-       FROM pg_constraint
-       WHERE conrelid = $1 AND contype IN ('p', 'u', 'f', 'c', 'x')
-       ORDER BY contype, conname`,
+      // A foreign key pointing at a partitioned table is stored once per
+      // partition. Rewrite those to name the partitioned parent, in the usual
+      // clause order, so the duplicate rows collapse and the DDL never
+      // references a partition (which does not exist yet at that point).
+      `SELECT conname, contype, CASE
+         WHEN contype = 'f' THEN
+           'FOREIGN KEY (' ||
+             (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
+                FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum)
+           || ') REFERENCES ' || format('%I.%I', COALESCE(pcn.nspname, rcn.nspname),
+                                         COALESCE(pc.relname, rc.relname)) || ' (' ||
+             (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY k.ord)
+                FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum)
+           || ')'
+           || CASE con.confdeltype WHEN 'r' THEN ' ON DELETE RESTRICT' WHEN 'c' THEN ' ON DELETE CASCADE'
+                WHEN 'n' THEN ' ON DELETE SET NULL' WHEN 'd' THEN ' ON DELETE SET DEFAULT' ELSE '' END
+           || CASE con.confupdtype WHEN 'r' THEN ' ON UPDATE RESTRICT' WHEN 'c' THEN ' ON UPDATE CASCADE'
+                WHEN 'n' THEN ' ON UPDATE SET NULL' WHEN 'd' THEN ' ON UPDATE SET DEFAULT' ELSE '' END
+           || CASE WHEN con.condeferrable THEN ' DEFERRABLE' ELSE '' END
+           || CASE WHEN con.condeferred THEN ' INITIALLY DEFERRED' ELSE '' END
+         ELSE pg_get_constraintdef(con.oid)
+       END AS def
+       FROM pg_constraint con
+       -- A foreign key to a partitioned table is stored once per partition
+       -- (confrelid = the partition, whose relkind is 'r'). Walk up the
+       -- inheritance chain so every copy is attributed to the same
+       -- partitioned ancestor; identical definitions then collapse.
+       LEFT JOIN pg_class rc ON rc.oid = con.confrelid
+       LEFT JOIN pg_inherits inh ON inh.inhrelid = rc.oid
+       LEFT JOIN pg_class pc ON pc.oid = inh.inhparent AND pc.relkind = 'p'
+       LEFT JOIN pg_namespace pcn ON pcn.oid = pc.relnamespace
+       LEFT JOIN pg_namespace rcn ON rcn.oid = rc.relnamespace
+       WHERE con.conrelid = $1 AND con.contype IN ('p', 'u', 'f', 'c', 'x')
+       ORDER BY con.contype, conname`,
       [relOid],
     ),
     pool.query(
@@ -111,7 +143,10 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     // Partitions inherit columns/constraints/indexes from the parent —
     // only the attachment bound is per-partition DDL.
     const bound = String(rel.partbound ?? '').trim()
-    const partitionBound = /^FOR\s+VALUES\b/i.test(bound) ? bound : `FOR VALUES ${bound}`
+    // pg_get_expr returns bounds in their final form: list/range bounds read
+    // "FOR VALUES …", a default partition reads "DEFAULT" (which must NOT be
+    // prefixed with FOR VALUES). Only hash bounds need the wrapper.
+    const partitionBound = /^(FOR\s+VALUES|DEFAULT)\b/i.test(bound) ? bound : `FOR VALUES ${bound}`
     chunks.push(
       `CREATE TABLE ${table}\n  PARTITION OF ${ident(rel.part_schema)}.${ident(rel.part_name)}\n  ${partitionBound};`,
     )
@@ -133,9 +168,17 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       return `  ${parts.join(' ')}`
     })
 
+    // A foreign key that references a partitioned table is stored once per
+    // partition, so the catalogue returns several rows with identical
+    // definitions (…_fkey, …_fkey1, …_fkey2). Emitting each as an inline
+    // CONSTRAINT makes the names collide, so collapse identical definitions.
     const constraintNames = new Set(consRes.rows.map((r) => r.conname as string))
+    const seenDefs = new Set<string>()
     for (const c of consRes.rows) {
-      lines.push(`  CONSTRAINT ${ident(c.conname)} ${c.def}`)
+      const def = String(c.def)
+      if (seenDefs.has(def)) continue
+      seenDefs.add(def)
+      lines.push(`  CONSTRAINT ${ident(c.conname)} ${def}`)
     }
 
     const kind = rel.relkind === 'f' ? 'FOREIGN TABLE' : rel.relpersistence === 'u' ? 'UNLOGGED TABLE' : 'TABLE'
@@ -239,7 +282,9 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
             NULLIF(a.aggserialfn::regproc::text, '-') AS serialfn,
             NULLIF(a.aggdeserialfn::regproc::text, '-') AS deserialfn,
             NULLIF(a.agginitval, '') AS initcond,
-            NULLIF(a.aggsortop::regoper::text, '-') AS sortop,
+            -- aggsortop is a plain oid and regoper renders 0 as "0" (only
+            -- regproc/regclass render "-"), so zero it out explicitly.
+            NULLIF(a.aggsortop, 0)::regoper::text AS sortop,
             p.proparallel
      FROM pg_aggregate a
      JOIN pg_proc p ON p.oid = a.aggfnoid
@@ -254,7 +299,7 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
   if (row.serialfn) opts.push(`SERIALFUNC = ${row.serialfn}`)
   if (row.deserialfn) opts.push(`DESERIALFUNC = ${row.deserialfn}`)
   if (row.initcond != null) opts.push(`INITCOND = '${String(row.initcond).replace(/'/g, "''")}'`)
-  if (row.sortop) opts.push(`SORTOP = ${row.sortop}`)
+  if (row.sortop) opts.push(`SORTOP = OPERATOR(${row.sortop})`)
   if (row.proparallel === 's') opts.push('PARALLEL = SAFE')
   else if (row.proparallel === 'r') opts.push('PARALLEL = RESTRICTED')
   const header =
@@ -332,9 +377,17 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
        (SELECT string_agg(pg_get_constraintdef(c.oid), ' ' ORDER BY c.oid)
           FROM pg_constraint c WHERE c.contypid = t.oid) AS cons,
        format_type(r.rngsubtype, NULL) AS subtype,
-       r.rngsubopc::regclass::text AS subopc,
-       r.rngcanonical::text AS canonical,
-       r.rngsubdiff::text AS subdiff
+       -- rngsubopc is a plain oid, not a regclass: casting it straight to
+       -- ::regclass::text renders the numeric oid, which SUBTYPE_OPCLASS
+       -- rejects. Resolve the name from pg_opclass instead.
+       (SELECT quote_ident(ocn.nspname) || '.' || quote_ident(oc.opcname)
+          FROM pg_opclass oc JOIN pg_namespace ocn ON ocn.oid = oc.opcnamespace
+          WHERE oc.oid = r.rngsubopc) AS subopc,
+       -- regproc/regclass render oid 0 as "-", not NULL, so NULLIF it away
+       -- here: a truthiness check downstream would otherwise emit
+       -- "CANONICAL = -", which no CREATE TYPE can accept.
+       NULLIF(r.rngcanonical, 0)::regproc::text AS canonical,
+       NULLIF(r.rngsubdiff, 0)::regproc::text AS subdiff
      FROM pg_type t
      JOIN pg_namespace n ON n.oid = t.typnamespace
      LEFT JOIN pg_range r ON r.rngtypid = t.oid
