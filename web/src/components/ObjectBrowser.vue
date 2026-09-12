@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronRight,
+  ChevronsUp,
   CircleAlert,
   CircleCheck,
   CircleSlash,
@@ -22,6 +23,7 @@ import {
   ListTree,
   LoaderCircle,
   Pin,
+  PinOff,
   RotateCw,
   ShieldCheck,
   Shapes,
@@ -999,7 +1001,7 @@ async function refresh() {
           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
           @click.stop
         >
-          <button @click="collapseContextNode">Collapse</button>
+          <button @click="collapseContextNode"><ChevronsUp :size="14" /> Collapse</button>
         </div>
       </template>
     </div>
@@ -1025,7 +1027,7 @@ async function refresh() {
       :style="{ left: pinnedContextMenu.x + 'px', top: pinnedContextMenu.y + 'px' }"
       @click.stop
     >
-      <button @click="unpinContextFile">Unpin</button>
+      <button @click="unpinContextFile"><PinOff :size="14" /> Unpin</button>
     </div>
   </div>
 </template>

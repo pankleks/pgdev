@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { X } from 'lucide-vue-next'
+import { ListX, PanelRightClose, PanelTopClose, Pin, PinOff, X } from 'lucide-vue-next'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useConnection } from '../composables/connection'
 import { useResults } from '../composables/results'
@@ -125,14 +125,17 @@ const menuTab = computed(() =>
       @click.stop
     >
       <button v-if="menuTab?.source === 'file'" @click="menuItem(() => togglePin(menu!.tabKey))">
+        <PinOff v-if="menuTab.pinnedId && tabs.isPinned(menuTab.key)" :size="14" />
+        <Pin v-else :size="14" />
         {{ menuTab.pinnedId && tabs.isPinned(menuTab.key) ? 'Unpin' : 'Pin' }}
       </button>
-      <button @click="menuItem(() => closeTab(menu!.tabKey))">Close</button>
-      <button @click="menuItem(() => closeAllTabs())">Close all</button>
+      <button @click="menuItem(() => closeAllTabs())"><ListX :size="14" /> Close all</button>
       <button :disabled="tabs.state.tabs.length <= 1" @click="menuItem(() => closeOtherTabs(menu!.tabKey))">
+        <PanelTopClose :size="14" />
         Close all except this
       </button>
       <button :disabled="menuIndex >= tabs.state.tabs.length - 1" @click="menuItem(() => closeRightTabs(menu!.tabKey))">
+        <PanelRightClose :size="14" />
         Close all on the right
       </button>
     </div>
