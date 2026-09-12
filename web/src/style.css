@@ -815,6 +815,15 @@ input {
     }
   }
 
+  .stale-ddl {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    background: rgba(244, 135, 113, 0.12);
+    border-bottom: 1px solid var(--border);
+    color: var(--error);
+    font-size: 12px;
+  }
+
   .editor-host {
     flex: 1;
     min-height: 0;

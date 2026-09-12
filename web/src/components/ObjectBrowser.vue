@@ -105,11 +105,27 @@ function browserNode(type: BrowserNodeType, key: string, collapseKeys = [key], g
   return { type, key, collapseKeys, groupState }
 }
 
-function openNodeMenu(e: MouseEvent, node: BrowserNode) {
+// True when a node has something to collapse: an open section, its own
+// expansion state, or descendants present in `expanded`.
+function nodeHasChildren(node: BrowserNode): boolean {
+  if (node.type === 'section' && node.section) return true
+  if ((node.groupKeys?.length ?? 0) > 0) return true
+  return node.collapseKeys.some((root) => {
+    for (const key of expanded) if (key === root || key.startsWith(`${root}-`)) return true
+    return false
+  })
+}
+
+function openNodeMenu(e: MouseEvent, node: BrowserNode, openable = true) {
   e.preventDefault()
   e.stopPropagation()
   cancelPendingToggle()
   pinnedContextMenu.value = null
+  // A leaf has nothing to collapse, so its menu would only offer a no-op.
+  if (!openable || !nodeHasChildren(node)) {
+    contextMenu.value = null
+    return
+  }
 
   const width = 150
   const height = 36
@@ -138,10 +154,14 @@ function openPinnedMenu(e: MouseEvent, id: string) {
 function collapseNode(node: BrowserNode) {
   node.groupState?.delete(node.key)
   if (node.type === 'section' && node.section) open[node.section] = false
-  for (const key of node.groupKeys ?? []) (node.groupState ?? expandedTableGroups).delete(key)
+  for (const key of node.groupKeys ?? []) {
+    // Only group nodes carry their own state set; a section's group keys live
+    // in whichever set rendered them (see sectionNode).
+    node.groupState?.delete(key)
+  }
 
   for (const root of node.collapseKeys) {
-    for (const key of expanded) {
+    for (const key of [...expanded]) {
       if (key === root || key.startsWith(`${root}-`)) expanded.delete(key)
     }
   }
@@ -615,7 +635,7 @@ async function openObject(
     // refreshes content.
     const editable = type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type'
     const identity = oid ? `--${oid}` : identitySuffix
-    tabs.openDdl(type, schemaName, name, ddl, identity, editable, parent ?? '')
+    tabs.openDdl(type, schemaName, name, ddl, identity, editable, parent ?? '', connectionId)
   } catch (e) {
     toast.show((e as Error).message)
   }
@@ -684,7 +704,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: tableOpen(t) }"
                       title="Expand"
-                      @click.stop="toggleChildren('t-' + t.oid)"
+                      @dblclick.stop @click.stop="toggleChildren('t-' + t.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon">
                       <Table2 :size="14" />
@@ -706,7 +726,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: catOpen(t, 'cols') }"
-                        @click.stop="toggleChildren(`t-${t.oid}-cols`)"
+                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-cols`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><Columns3 :size="13" /></span>
                       <span class="obj-name">Columns</span>
@@ -719,7 +739,7 @@ async function refresh() {
                         :key="c.name"
                         class="node cat-child typed-row"
                         :title="`${c.name} · ${c.type}`"
-                        @contextmenu="openNodeMenu($event, browserNode('table-column', `t-${t.oid}-cols-${c.name}`, []))"
+                        @contextmenu="openNodeMenu($event, browserNode('table-column', `t-${t.oid}-cols-${c.name}`, []), false)"
                       >
                         <span class="obj-name" v-html="highlightText(c.name)" />
                         <span class="node-badges"><span v-if="isTbd(c.name)" class="void-badge tbd-badge">tbd</span></span>
@@ -732,7 +752,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-idx`) }"
-                        @click.stop="toggleChildren(`t-${t.oid}-idx`)"
+                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-idx`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><ListTree :size="13" /></span>
                       <span class="obj-name">Indexes</span>
@@ -746,7 +766,7 @@ async function refresh() {
                         class="node cat-child typed-row"
                         :title="`${ix.type} index · ${ix.method} · double-click to open DDL`"
                         @dblclick="openObject('index', t.schema, ix.name, undefined, '', t.name)"
-                        @contextmenu="openNodeMenu($event, browserNode('table-index', `t-${t.oid}-idx-${ix.name}`, []))"
+                        @contextmenu="openNodeMenu($event, browserNode('table-index', `t-${t.oid}-idx-${ix.name}`, []), false)"
                       >
                         <span class="idx-icon" :class="ix.type"><component :is="INDEX_ICONS[ix.type]" :size="13" /></span>
                         <span class="obj-name" v-html="highlightText(ix.name)" />
@@ -760,7 +780,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-con`) }"
-                        @click.stop="toggleChildren(`t-${t.oid}-con`)"
+                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-con`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><KeyRound :size="13" /></span>
                       <span class="obj-name">Constraints</span>
@@ -774,7 +794,7 @@ async function refresh() {
                         class="node cat-child"
                         :title="`${constraintMeta(con.type).label}: ${con.definition} · double-click to open DDL`"
                         @dblclick="openObject('constraint', t.schema, con.name, undefined, '', t.name)"
-                        @contextmenu="openNodeMenu($event, browserNode('table-constraint', `t-${t.oid}-con-${con.name}`, []))"
+                        @contextmenu="openNodeMenu($event, browserNode('table-constraint', `t-${t.oid}-con-${con.name}`, []), false)"
                       >
                         <span class="con-icon" :class="constraintMeta(con.type).cls"><component :is="constraintMeta(con.type).icon" :size="13" /></span>
                         <span class="obj-name" v-html="highlightText(con.name)" />
@@ -787,7 +807,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-trg`) }"
-                        @click.stop="toggleChildren(`t-${t.oid}-trg`)"
+                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-trg`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><Zap :size="13" /></span>
                       <span class="obj-name">Triggers</span>
@@ -801,7 +821,7 @@ async function refresh() {
                         class="node cat-child"
                         title="Double-click to open DDL"
                         @dblclick="openObject('trigger', t.schema, trg.name, undefined, '', t.name)"
-                        @contextmenu="openNodeMenu($event, browserNode('table-trigger', `t-${t.oid}-trg-${trg.name}`, []))"
+                        @contextmenu="openNodeMenu($event, browserNode('table-trigger', `t-${t.oid}-trg-${trg.name}`, []), false)"
                       >
                         <span class="obj-name" v-html="highlightText(trg.name)" />
                         <span class="node-badges"><span v-if="isTbd(trg.name)" class="void-badge tbd-badge">tbd</span></span>
@@ -846,7 +866,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
                       title="Toggle columns"
-                      @click.stop="toggleChildren('v-' + v.oid)"
+                      @dblclick.stop @click.stop="toggleChildren('v-' + v.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Eye :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(v.schema, v.name))" />
@@ -858,7 +878,7 @@ async function refresh() {
                       :key="c.name"
                       class="node child typed-row"
                       :title="`${c.name} · ${c.type}`"
-                      @contextmenu="openNodeMenu($event, browserNode('view-column', `v-${v.oid}-${c.name}`, []))"
+                      @contextmenu="openNodeMenu($event, browserNode('view-column', `v-${v.oid}-${c.name}`, []), false)"
                     >
                       <span class="obj-name" v-html="highlightText(c.name)" />
                       <span class="node-badges"></span>
@@ -908,14 +928,14 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('ty-' + t.oid) }"
                       title="Toggle detail"
-                      @click.stop="toggleChildren('ty-' + t.oid)"
+                      @dblclick.stop @click.stop="toggleChildren('ty-' + t.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Shapes :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(t.schema, t.name))" />
                     <span class="node-badges"><span class="void-badge">{{ t.kind }}</span><span v-if="isTbd(t.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('ty-' + t.oid)">
-                    <div class="node child" :title="t.detail" @contextmenu="openNodeMenu($event, browserNode('type-detail', `ty-${t.oid}-detail`, []))">
+                    <div class="node child" :title="t.detail" @contextmenu="openNodeMenu($event, browserNode('type-detail', `ty-${t.oid}-detail`, []), false)">
                       <span class="obj-name" v-html="highlightText(t.detail || '—')" />
                       <span class="node-badges"></span>
                     </div>
@@ -963,7 +983,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args) }"
                       title="Toggle signature"
-                      @click.stop="toggleChildren('f-' + f.oid)"
+                      @dblclick.stop @click.stop="toggleChildren('f-' + f.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(f.schema, f.name))" />
@@ -975,7 +995,7 @@ async function refresh() {
                       :key="'p-' + i"
                       class="node child typed-row"
                       :title="p.rest ? `${p.name} ${p.rest}` : p.name"
-                      @contextmenu="openNodeMenu($event, browserNode('function-parameter', `f-${f.oid}-param-${i}`, []))"
+                      @contextmenu="openNodeMenu($event, browserNode('function-parameter', `f-${f.oid}-param-${i}`), false)"
                     >
                       <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
                       <span class="obj-name" v-html="highlightText(p.name)" />

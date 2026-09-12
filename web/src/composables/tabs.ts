@@ -12,6 +12,8 @@ export interface EditorTab {
   savedContent: string | null
   readOnly: boolean
   pinnedId?: string
+  /** Connection a DDL tab was generated from (absent for query/file tabs). */
+  connectionId?: string
 }
 
 export interface PinnedFile {
@@ -97,9 +99,15 @@ export function useTabs() {
     identity = '',
     editable = false,
     parent = '',
+    connectionId = '',
   ) {
     const parentKey = parent ? `--${parent}` : ''
-    const key = `ddl-${type}-${schema}-${name}${identity}${parentKey}`
+    // Scoping the key to the connection keeps DDL from two databases apart.
+    // Without it a stale tab is silently reused (and run) against whichever
+    // database is connected now, and oids are only unique per database.
+    const connKey = connectionId ? `--${connectionId.slice(0, 8)}` : ''
+    const baseKey = `ddl-${type}-${schema}-${name}${identity}${parentKey}`
+    const key = `${baseKey}${connKey}`
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
       // Re-opening refreshes the tab from the database, which would discard
@@ -116,6 +124,7 @@ export function useTabs() {
       if (existing.content !== ddl) existing.content = ddl
       existing.savedContent = ddl
       existing.readOnly = !editable
+      existing.connectionId = connectionId || existing.connectionId
       state.activeKey = key
       return
     }
@@ -128,6 +137,7 @@ export function useTabs() {
       content: ddl,
       savedContent: ddl,
       readOnly: !editable,
+      connectionId: connectionId || undefined,
     })
     state.activeKey = key
   }

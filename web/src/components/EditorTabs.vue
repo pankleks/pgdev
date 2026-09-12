@@ -95,6 +95,11 @@ const menuIndex = computed(() =>
 const menuTab = computed(() =>
   menu.value ? tabs.state.tabs.find((t) => t.key === menu.value!.tabKey) ?? null : null,
 )
+// DDL generated on a connection that is no longer the active one.
+const staleDdl = computed(() => {
+  const tab = active.value
+  return !!tab?.connectionId && !!conn.state.id && tab.connectionId !== conn.state.id
+})
 </script>
 
 <template>
@@ -111,6 +116,10 @@ const menuTab = computed(() =>
         <span class="tab-title" :title="tabs.displayTitle(t)">{{ tabs.displayTitle(t) }}</span>
         <button class="tab-close" title="Close tab" @click.stop="closeTab(t.key)"><X :size="14" /></button>
       </div>
+    </div>
+    <div v-if="staleDdl" class="stale-ddl">
+      This DDL was generated from a different database connection. Re-open the object to
+      refresh it; running it here is disabled.
     </div>
     <QueryEditor v-if="active" :tab="active" />
     <div v-else class="editor-empty">
