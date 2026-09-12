@@ -19,11 +19,22 @@ const menu = ref<{ x: number; y: number; tabKey: string } | null>(null)
 function openMenu(e: MouseEvent, tabKey: string) {
   e.preventDefault()
   const w = 190
-  const h = 120
+  const tab = tabs.state.tabs.find((t) => t.key === tabKey)
+  const h = tab?.source === 'file' ? 150 : 120
   menu.value = {
     x: Math.min(e.clientX, window.innerWidth - w - 8),
     y: Math.min(e.clientY, window.innerHeight - h - 8),
     tabKey,
+  }
+}
+
+function togglePin(key: string) {
+  const tab = tabs.state.tabs.find((entry) => entry.key === key)
+  if (!tab || tab.source !== 'file') return
+  if (tab.pinnedId && tabs.isPinned(key)) {
+    void tabs.unpinFile(tab.pinnedId)
+  } else {
+    void tabs.pinTab(key)
   }
 }
 
@@ -81,6 +92,9 @@ onBeforeUnmount(() => window.removeEventListener('click', onGlobalClick))
 const menuIndex = computed(() =>
   menu.value ? tabs.state.tabs.findIndex((t) => t.key === menu.value!.tabKey) : -1,
 )
+const menuTab = computed(() =>
+  menu.value ? tabs.state.tabs.find((t) => t.key === menu.value!.tabKey) ?? null : null,
+)
 </script>
 
 <template>
@@ -110,6 +124,9 @@ const menuIndex = computed(() =>
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
       @click.stop
     >
+      <button v-if="menuTab?.source === 'file'" @click="menuItem(() => togglePin(menu!.tabKey))">
+        {{ menuTab.pinnedId && tabs.isPinned(menuTab.key) ? 'Unpin' : 'Pin' }}
+      </button>
       <button @click="menuItem(() => closeTab(menu!.tabKey))">Close</button>
       <button @click="menuItem(() => closeAllTabs())">Close all</button>
       <button :disabled="tabs.state.tabs.length <= 1" @click="menuItem(() => closeOtherTabs(menu!.tabKey))">

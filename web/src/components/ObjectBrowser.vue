@@ -13,6 +13,7 @@ import {
   CornerDownRight,
   Ellipsis,
   Eye,
+  FileText,
   Folder,
   FolderOpen,
   Grid2x2,
@@ -20,6 +21,7 @@ import {
   Link,
   ListTree,
   LoaderCircle,
+  Pin,
   RotateCw,
   ShieldCheck,
   Shapes,
@@ -88,7 +90,14 @@ interface BrowserContextMenu {
   node: BrowserNode
 }
 
+interface PinnedContextMenu {
+  x: number
+  y: number
+  id: string
+}
+
 const contextMenu = ref<BrowserContextMenu | null>(null)
+const pinnedContextMenu = ref<PinnedContextMenu | null>(null)
 
 function browserNode(type: BrowserNodeType, key: string, collapseKeys = [key], groupState?: Set<string>): BrowserNode {
   return { type, key, collapseKeys, groupState }
@@ -98,6 +107,7 @@ function openNodeMenu(e: MouseEvent, node: BrowserNode) {
   e.preventDefault()
   e.stopPropagation()
   cancelPendingToggle()
+  pinnedContextMenu.value = null
 
   const width = 150
   const height = 36
@@ -105,6 +115,21 @@ function openNodeMenu(e: MouseEvent, node: BrowserNode) {
     x: Math.min(e.clientX, Math.max(8, window.innerWidth - width - 8)),
     y: Math.min(e.clientY, Math.max(8, window.innerHeight - height - 8)),
     node,
+  }
+}
+
+function openPinnedMenu(e: MouseEvent, id: string) {
+  e.preventDefault()
+  e.stopPropagation()
+  cancelPendingToggle()
+  contextMenu.value = null
+
+  const width = 150
+  const height = 36
+  pinnedContextMenu.value = {
+    x: Math.min(e.clientX, Math.max(8, window.innerWidth - width - 8)),
+    y: Math.min(e.clientY, Math.max(8, window.innerHeight - height - 8)),
+    id,
   }
 }
 
@@ -126,21 +151,36 @@ function collapseContextNode() {
   contextMenu.value = null
 }
 
-function closeContextMenu() {
+function unpinContextFile() {
+  const id = pinnedContextMenu.value?.id
+  pinnedContextMenu.value = null
+  if (id) void tabs.unpinFile(id)
+}
+
+async function openPinnedFile(id: string) {
+  const result = await tabs.openPinned(id)
+  if (result === 'fallback') {
+    const pin = tabs.state.pinnedFiles.find((entry) => entry.id === id)
+    toast.show(`Could not read "${pin?.fileName ?? 'pinned file'}"; opened its last saved copy`)
+  }
+}
+
+function closeContextMenus() {
   contextMenu.value = null
+  pinnedContextMenu.value = null
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeContextMenu()
+  if (e.key === 'Escape') closeContextMenus()
 }
 
 onMounted(() => {
-  window.addEventListener('click', closeContextMenu)
+  window.addEventListener('click', closeContextMenus)
   window.addEventListener('keydown', onGlobalKeydown)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('click', closeContextMenus)
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 
@@ -178,7 +218,7 @@ const parsed = computed(() => {
   }
   return { term: q, type: null }
 })
-const query = computed(() => parsed.value.term)
+const queryTerms = computed(() => parsed.value.term.split(/[+\s]+/).filter(Boolean))
 const searchType = computed(() => parsed.value.type)
 const isFiltering = computed(() => filter.value.trim().length > 0)
 
@@ -187,10 +227,10 @@ function escapeHtml(value: string): string {
 }
 
 function highlightText(value: string): string {
-  const term = query.value
-  if (!term) return escapeHtml(value)
+  const terms = [...new Set(queryTerms.value)].sort((a, b) => b.length - a.length)
+  if (!terms.length) return escapeHtml(value)
 
-  const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  const pattern = new RegExp(terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi')
   let result = ''
   let lastIndex = 0
   for (const match of value.matchAll(pattern)) {
@@ -202,16 +242,23 @@ function highlightText(value: string): string {
   return result + escapeHtml(value.slice(lastIndex))
 }
 
+function matchesAll(value: string): boolean {
+  const candidate = value.toLowerCase()
+  return queryTerms.value.every((term) => candidate.includes(term))
+}
+
 function nameMatched(name: string, schema: string): boolean {
-  return name.toLowerCase().includes(query.value) || schema.toLowerCase().includes(query.value)
+  const nameText = name.toLowerCase()
+  const schemaText = schema.toLowerCase()
+  return queryTerms.value.every((term) => nameText.includes(term) || schemaText.includes(term))
 }
 
 function colsMatched(cols: { name: string }[]): boolean {
-  return cols.some((c) => c.name.toLowerCase().includes(query.value))
+  return cols.some((c) => matchesAll(c.name))
 }
 
 function paramsMatched(args: string): boolean {
-  return paramRows(args, '').some((p) => p.kind !== 'returns' && p.name.toLowerCase().includes(query.value))
+  return paramRows(args, '').some((p) => p.kind !== 'returns' && matchesAll(p.name))
 }
 
 function autoExpandRel(name: string, schema: string, cols: { name: string }[]): boolean {
@@ -222,7 +269,7 @@ function autoExpandFunc(name: string, schema: string, typeSig: string, args: str
   return (
     isFiltering.value &&
     !nameMatched(name, schema) &&
-    (typeSig.toLowerCase().includes(query.value) || paramsMatched(args))
+    (matchesAll(typeSig) || paramsMatched(args))
   )
 }
 
@@ -280,7 +327,7 @@ const filteredFunctions = computed(() =>
           (searchType.value === 'parameter'
             ? paramsMatched(f.args)
             : nameMatched(f.name, f.schema) ||
-              f.typeSig.toLowerCase().includes(query.value) ||
+              matchesAll(f.typeSig) ||
               (searchType.value === null && paramsMatched(f.args))),
       )
     : [],
@@ -290,9 +337,9 @@ const filteredTypes = computed(() =>
   showTypes.value
     ? types.value.filter(
         (t) =>
-          !isFiltering.value ||
-          nameMatched(t.name, t.schema) ||
-          t.detail.toLowerCase().includes(query.value),
+           !isFiltering.value ||
+           nameMatched(t.name, t.schema) ||
+           matchesAll(t.detail),
       )
     : [],
 )
@@ -578,25 +625,26 @@ async function refresh() {
 
 <template>
   <div class="browser">
-    <div v-if="!conn.state.id" class="browser-empty">
-      Not connected.<br />Click “Connect” in the top bar.
-    </div>
-
-    <template v-else>
-      <div class="browser-search">
-        <input v-model="filter" placeholder='Search… e.g. "unit table", "id col", "user param"' />
-        <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
-        <button
-          class="icon"
-          :disabled="!conn.state.id || schema.state.loading"
-          title="Refresh schema"
-          @click="refresh()"
-        >
-          <LoaderCircle v-if="schema.state.loading" :size="14" class="spin" />
-          <RotateCw v-else :size="14" />
-        </button>
+    <div class="browser-main">
+      <div v-if="!conn.state.id" class="browser-empty">
+        Not connected.<br />Click “Connect” in the top bar.
       </div>
-      <div v-if="schema.state.error" class="browser-error">{{ schema.state.error }}</div>
+
+      <template v-else>
+        <div class="browser-search">
+          <input v-model="filter" placeholder='Search… e.g. "unit table", "id col", "user param"' />
+          <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
+          <button
+            class="icon"
+            :disabled="!conn.state.id || schema.state.loading"
+            title="Refresh schema"
+            @click="refresh()"
+          >
+            <LoaderCircle v-if="schema.state.loading" :size="14" class="spin" />
+            <RotateCw v-else :size="14" />
+          </button>
+        </div>
+        <div v-if="schema.state.error" class="browser-error">{{ schema.state.error }}</div>
 
       <section v-if="showTables" class="group">
         <h3 @click="open.tables = !open.tables" @contextmenu="openNodeMenu($event, sectionNode('tables'))">
@@ -944,14 +992,39 @@ async function refresh() {
         No objects match “{{ filter }}”
       </div>
 
+        <div
+          v-if="contextMenu"
+          class="browser-node-menu"
+          :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+          @click.stop
+        >
+          <button @click="collapseContextNode">Collapse</button>
+        </div>
+      </template>
+    </div>
+
+    <section class="pinned-files">
+      <h3><Pin :size="13" /> Pinned files <span class="count">{{ tabs.state.pinnedFiles.length }}</span></h3>
       <div
-        v-if="contextMenu"
-        class="browser-node-menu"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
-        @click.stop
+        v-for="pin in tabs.state.pinnedFiles"
+        :key="pin.id"
+        class="pinned-file"
+        :title="`${pin.fileName} · double-click to open in a new tab`"
+        @dblclick="openPinnedFile(pin.id)"
+        @contextmenu="openPinnedMenu($event, pin.id)"
       >
-        <button @click="collapseContextNode">Collapse</button>
+        <span class="obj-icon"><FileText :size="14" /></span>
+        <span class="obj-name">{{ pin.fileName }}</span>
       </div>
-    </template>
+    </section>
+
+    <div
+      v-if="pinnedContextMenu"
+      class="browser-node-menu"
+      :style="{ left: pinnedContextMenu.x + 'px', top: pinnedContextMenu.y + 'px' }"
+      @click.stop
+    >
+      <button @click="unpinContextFile">Unpin</button>
+    </div>
   </div>
 </template>

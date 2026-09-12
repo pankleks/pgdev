@@ -3,9 +3,16 @@ export interface WritableFileStream {
   close(): Promise<void>
 }
 
+export interface FilePermissionDescriptor {
+  mode?: 'read' | 'readwrite'
+}
+
 export interface FileHandle {
   readonly name: string
   createWritable(): Promise<WritableFileStream>
+  getFile?: () => Promise<File>
+  queryPermission?: (descriptor?: FilePermissionDescriptor) => Promise<PermissionState>
+  requestPermission?: (descriptor?: FilePermissionDescriptor) => Promise<PermissionState>
 }
 
 export interface OpenFileHandle extends FileHandle {
@@ -96,4 +103,20 @@ export async function openTextFiles(): Promise<{ file: File; handle?: OpenFileHa
   }
 
   return Promise.all(handles.map(async (handle) => ({ file: await handle.getFile(), handle })))
+}
+
+export async function readTextFileHandle(handle: FileHandle): Promise<{ fileName: string; content: string }> {
+  if (!handle.getFile) throw new Error(`Cannot read "${handle.name}" in this browser`)
+
+  if (handle.queryPermission) {
+    const permission = await handle.queryPermission({ mode: 'read' })
+    if (permission !== 'granted') {
+      if (!handle.requestPermission) throw new Error(`Read permission for "${handle.name}" is unavailable`)
+      const requested = await handle.requestPermission({ mode: 'read' })
+      if (requested !== 'granted') throw new Error(`Read permission for "${handle.name}" was denied`)
+    }
+  }
+
+  const file = await handle.getFile()
+  return { fileName: file.name || handle.name, content: await file.text() }
 }

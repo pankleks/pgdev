@@ -1,6 +1,5 @@
 import { reactive } from 'vue'
-
-const SETTINGS_KEY = 'pgdev.settings'
+import { saveSettings, storageReady } from '../lib/storage'
 
 interface SettingsState {
   groupObjects: boolean
@@ -10,37 +9,35 @@ const state = reactive<SettingsState>({
   groupObjects: true,
 })
 
-let loaded = false
+let readyPromise: Promise<void> | null = null
+let locallyChanged = false
 
-function load() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY)
-    if (!raw) return
-    const saved = JSON.parse(raw) as Partial<SettingsState>
-    if (typeof saved.groupObjects === 'boolean') state.groupObjects = saved.groupObjects
-  } catch {
-    // Ignore malformed or unavailable browser storage.
+function ensureReady(): Promise<void> {
+  if (!readyPromise) {
+    readyPromise = storageReady
+      .then(({ settings }) => {
+        if (locallyChanged || !settings || typeof settings !== 'object') return
+        const saved = settings as Partial<SettingsState>
+        if (typeof saved.groupObjects === 'boolean') state.groupObjects = saved.groupObjects
+      })
+      .catch(() => undefined)
   }
+  return readyPromise
 }
 
 function persist() {
-  try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(state))
-  } catch {
-    // Ignore unavailable browser storage.
-  }
+  const value = { groupObjects: state.groupObjects }
+  void ensureReady().then(() => saveSettings(value)).catch(() => undefined)
 }
 
 export function useSettings() {
-  if (!loaded) {
-    load()
-    loaded = true
-  }
+  const ready = ensureReady()
 
   function setGroupObjects(enabled: boolean) {
+    locallyChanged = true
     state.groupObjects = enabled
     persist()
   }
 
-  return { state, setGroupObjects }
+  return { state, setGroupObjects, ready }
 }

@@ -9,6 +9,7 @@ import ResultsPanel from './components/ResultsPanel.vue'
 import { useConnection } from './composables/connection'
 import { useTabs, type EditorTab } from './composables/tabs'
 import { useResults } from './composables/results'
+import { useSettings } from './composables/settings'
 import { useToast } from './composables/toast'
 import { getActiveSelection, triggerFormat } from './lib/formatbridge'
 import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
@@ -16,6 +17,7 @@ import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
 const conn = useConnection()
 const tabs = useTabs()
 const results = useResults()
+const settings = useSettings()
 const toast = useToast()
 const settingsOpen = ref(false)
 const saving = ref(false)
@@ -59,6 +61,7 @@ async function saveActive(saveAs = false) {
   const tab = activeTab.value
   if (!tab || saving.value) return
   const key = tab.key
+  const pinnedId = tab.pinnedId
   const content = tab.content
   const fileName = suggestedFileName(tab)
   const handle = tabs.fileHandle(key)
@@ -66,7 +69,13 @@ async function saveActive(saveAs = false) {
   saving.value = true
   try {
     const saved = await saveTextFile(content, fileName, handle, pickName)
-    if (saved) tabs.markSaved(key, saved.fileName, saved.handle, content)
+    if (saved) {
+      if (tabs.state.tabs.some((entry) => entry.key === key)) {
+        tabs.markSaved(key, saved.fileName, saved.handle, content)
+      } else if (pinnedId) {
+        tabs.markPinnedSaved(pinnedId, saved.fileName, content, saved.handle)
+      }
+    }
   } catch (e) {
     if (!isPickerCancelled(e)) toast.show(`Save failed: ${(e as Error).message}`)
   } finally {
@@ -113,7 +122,7 @@ onMounted(() => {
   // Capture editor shortcuts before Monaco or the browser handles them.
   window.addEventListener('keydown', onKeyDown, true)
   if (!tabs.state.tabs.length) tabs.newQuery()
-  conn.autoConnect()
+  void Promise.all([conn.ready, settings.ready, tabs.pinsReady]).then(() => conn.autoConnect())
 })
 
 onBeforeUnmount(() => {

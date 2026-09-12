@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { api } from '../api'
 import type { ConnectionConfig } from '../types'
+import { saveConnections, storageReady } from '../lib/storage'
 import { useSchema } from './schema'
 import { useToast } from './toast'
 
@@ -12,8 +13,10 @@ const state = reactive({
   error: '',
 })
 
-const SAVED_KEY = 'pgdev.savedConnections'
-const LAST_KEY = 'pgdev.lastConnection'
+const savedConnections = reactive<SavedConnection[]>([])
+let lastConnection: ConnectionConfig | null = null
+let readyPromise: Promise<void> | null = null
+let locallyChanged = false
 let connectionAttempt = 0
 
 export interface SavedConnection extends ConnectionConfig {
@@ -27,52 +30,86 @@ function labelOf(cfg: ConnectionConfig): string {
   return `${cfg.user ?? 'postgres'}@${cfg.host ?? 'localhost'}:${cfg.port ?? 5432}/${cfg.database ?? ''}`
 }
 
+function isConnectionConfig(value: unknown): value is ConnectionConfig {
+  if (!value || typeof value !== 'object') return false
+  const cfg = value as Record<string, unknown>
+  return (
+    (cfg.connectionString === undefined || typeof cfg.connectionString === 'string') &&
+    (cfg.host === undefined || typeof cfg.host === 'string') &&
+    (cfg.port === undefined || typeof cfg.port === 'number') &&
+    (cfg.database === undefined || typeof cfg.database === 'string') &&
+    (cfg.user === undefined || typeof cfg.user === 'string') &&
+    (cfg.password === undefined || typeof cfg.password === 'string') &&
+    (cfg.ssl === undefined || typeof cfg.ssl === 'boolean')
+  )
+}
+
+function parseSavedConnections(value: unknown): SavedConnection[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is SavedConnection => {
+    if (!entry || typeof entry !== 'object') return false
+    const saved = entry as Record<string, unknown>
+    return typeof saved.label === 'string' && isConnectionConfig(entry)
+  })
+}
+
+function ensureReady(): Promise<void> {
+  if (!readyPromise) {
+    readyPromise = storageReady
+      .then(({ connections }) => {
+        if (locallyChanged || !connections) return
+        savedConnections.splice(0, savedConnections.length, ...parseSavedConnections(connections.saved))
+        lastConnection = isConnectionConfig(connections.last) ? { ...connections.last } : null
+      })
+      .catch(() => undefined)
+  }
+  return readyPromise
+}
+
+function persist() {
+  const saved = savedConnections.map((connection) => ({ ...connection }))
+  const last = lastConnection ? { ...lastConnection } : null
+  void ensureReady().then(() => saveConnections(saved, last)).catch(() => undefined)
+}
+
 export function useConnection() {
   function saved(): SavedConnection[] {
-    try {
-      const raw = localStorage.getItem(SAVED_KEY)
-      return raw ? (JSON.parse(raw) as SavedConnection[]) : []
-    } catch {
-      return []
-    }
+    void ensureReady()
+    return savedConnections
   }
 
   function remember(cfg: ConnectionConfig) {
     const label = labelOf(cfg)
-    const list = saved().filter((c) => c.label !== label)
-    list.unshift({ ...cfg, label })
-    localStorage.setItem(SAVED_KEY, JSON.stringify(list.slice(0, 10)))
+    const list = savedConnections.filter((c) => c.label !== label)
+    savedConnections.splice(0, savedConnections.length, { ...cfg, label }, ...list.slice(0, 9))
   }
 
   function rememberLast(cfg: ConnectionConfig) {
-    localStorage.setItem(LAST_KEY, JSON.stringify(cfg))
+    lastConnection = { ...cfg }
   }
 
   function lastConfig(): ConnectionConfig | null {
-    try {
-      const raw = localStorage.getItem(LAST_KEY)
-      if (raw) return JSON.parse(raw) as ConnectionConfig
-      const list = saved()
-      return list.length ? ({ ...list[0] } as ConnectionConfig) : null
-    } catch {
-      return null
-    }
+    if (lastConnection) return { ...lastConnection }
+    return savedConnections.length ? { ...savedConnections[0] } : null
   }
 
   function forget(label: string) {
-    localStorage.setItem(SAVED_KEY, JSON.stringify(saved().filter((c) => c.label !== label)))
-    try {
-      const raw = localStorage.getItem(LAST_KEY)
-      if (raw && labelOf(JSON.parse(raw) as ConnectionConfig) === label) localStorage.removeItem(LAST_KEY)
-    } catch {
-      // Ignore malformed old storage.
-    }
+    locallyChanged = true
+    savedConnections.splice(
+      0,
+      savedConnections.length,
+      ...savedConnections.filter((connection) => connection.label !== label),
+    )
+    if (lastConnection && labelOf(lastConnection) === label) lastConnection = null
+    persist()
   }
 
   async function connect(cfg: ConnectionConfig, save: boolean, preserveLast = false) {
+    if (state.connecting) return
     const attempt = ++connectionAttempt
     state.connecting = true
     state.error = ''
+    await ensureReady()
     try {
       const prevId = state.id
       const { id } = await api.connect(cfg)
@@ -101,10 +138,14 @@ export function useConnection() {
       state.label = labelOf(cfg)
       state.dialog = false
       if (save) {
+        locallyChanged = true
         remember(cfg)
         rememberLast(cfg)
+        persist()
       } else if (!preserveLast) {
-        localStorage.removeItem(LAST_KEY)
+        locallyChanged = true
+        lastConnection = null
+        persist()
       }
       await useSchema().load(id)
     } catch (e) {
@@ -115,6 +156,7 @@ export function useConnection() {
   }
 
   async function autoConnect() {
+    await ensureReady()
     const cfg = lastConfig()
     if (!cfg || state.id || state.connecting) return
     await connect(cfg, false, true)
@@ -151,5 +193,5 @@ export function useConnection() {
     useSchema().reset()
   }
 
-  return { state, connect, disconnect, autoConnect, saved, forget }
+  return { state, connect, disconnect, autoConnect, saved, forget, ready: ensureReady() }
 }

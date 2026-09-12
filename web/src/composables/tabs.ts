@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
-import type { FileHandle } from '../lib/files'
+import { readTextFileHandle, type FileHandle } from '../lib/files'
+import { savePinnedFiles, storageReady, type StoredPinnedFile } from '../lib/storage'
 
 export interface EditorTab {
   key: string
@@ -10,14 +11,62 @@ export interface EditorTab {
   content: string
   savedContent: string | null
   readOnly: boolean
+  pinnedId?: string
+}
+
+export interface PinnedFile {
+  id: string
+  order: number
+  fileName: string
+  content: string
 }
 
 const state = reactive({
   tabs: [] as EditorTab[],
   activeKey: '',
   counter: 1,
+  pinnedFiles: [] as PinnedFile[],
 })
 const fileHandles = new Map<string, FileHandle>()
+const pinnedHandles = new Map<string, FileHandle>()
+let pinWrite = Promise.resolve()
+
+const pinsReady = storageReady
+  .then(({ pinnedFiles }) => {
+    pinnedHandles.clear()
+    state.pinnedFiles.splice(0, state.pinnedFiles.length)
+    for (const { handle, ...pin } of [...pinnedFiles].sort((a, b) => a.order - b.order)) {
+      state.pinnedFiles.push(pin)
+      if (handle) pinnedHandles.set(pin.id, handle)
+    }
+  })
+  .catch(() => undefined)
+
+function persistPins() {
+  const snapshot: StoredPinnedFile[] = state.pinnedFiles.map((pin) => ({
+    ...pin,
+    handle: pinnedHandles.get(pin.id),
+  }))
+  pinWrite = pinWrite
+    .then(() => storageReady)
+    .then(() => savePinnedFiles(snapshot).then(() => undefined))
+    .catch(() => undefined)
+}
+
+function newPinId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `pin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function updatePinnedFile(id: string, fileName: string, content: string, handle?: FileHandle) {
+  const pin = state.pinnedFiles.find((entry) => entry.id === id)
+  if (!pin) return
+  pin.fileName = fileName
+  pin.content = content
+  if (handle) pinnedHandles.set(id, handle)
+  else pinnedHandles.delete(id)
+  persistPins()
+}
 
 export function useTabs() {
   function activate(key: string) {
@@ -54,6 +103,7 @@ export function useTabs() {
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
       if (existing.content !== ddl) existing.content = ddl
+      existing.savedContent = ddl
       existing.readOnly = !editable
       state.activeKey = key
       return
@@ -65,13 +115,13 @@ export function useTabs() {
       title: suffix ? `${name} ${suffix}` : `${name} (${type})`,
       fileName: null,
       content: ddl,
-      savedContent: null,
+      savedContent: ddl,
       readOnly: !editable,
     })
     state.activeKey = key
   }
 
-  function openFile(name: string, content: string, handle?: FileHandle) {
+  function openFile(name: string, content: string, handle?: FileHandle, pinnedId?: string) {
     const key = `file-${state.counter}`
     state.tabs.push({
       key,
@@ -82,6 +132,7 @@ export function useTabs() {
       content,
       savedContent: content,
       readOnly: false,
+      pinnedId,
     })
     if (handle) fileHandles.set(key, handle)
     state.counter++
@@ -137,18 +188,92 @@ export function useTabs() {
     tab.savedContent = savedContent ?? tab.content
     if (handle) fileHandles.set(key, handle)
     else fileHandles.delete(key)
+
+    if (tab.pinnedId) updatePinnedFile(tab.pinnedId, fileName, tab.savedContent, handle)
+  }
+
+  function markPinnedSaved(id: string, fileName: string, content: string, handle?: FileHandle) {
+    updatePinnedFile(id, fileName, content, handle)
   }
 
   function fileHandle(key: string): FileHandle | undefined {
     return fileHandles.get(key)
   }
 
+  function normalizedContent(content: string): string {
+    return content.replace(/\r\n?/g, '\n')
+  }
+
   function isDirty(tab: EditorTab): boolean {
-    return tab.savedContent === null ? tab.content.length > 0 : tab.content !== tab.savedContent
+    if (tab.savedContent === null) return tab.kind === 'ddl' ? false : tab.content.length > 0
+    return normalizedContent(tab.content) !== normalizedContent(tab.savedContent)
   }
 
   function displayTitle(tab: EditorTab): string {
     return isDirty(tab) ? `${tab.title} *` : tab.title
+  }
+
+  async function pinTab(key: string) {
+    await pinsReady
+    const tab = state.tabs.find((entry) => entry.key === key)
+    if (!tab || tab.source !== 'file') return
+    if (tab.pinnedId && state.pinnedFiles.some((pin) => pin.id === tab.pinnedId)) return
+
+    const id = newPinId()
+    const pin: PinnedFile = {
+      id,
+      order: state.pinnedFiles.reduce((max, entry) => Math.max(max, entry.order), -1) + 1,
+      fileName: tab.fileName ?? tab.title,
+      content: tab.savedContent ?? tab.content,
+    }
+    state.pinnedFiles.push(pin)
+    tab.pinnedId = id
+    const handle = fileHandles.get(key)
+    if (handle) pinnedHandles.set(id, handle)
+    persistPins()
+  }
+
+  async function unpinFile(id: string) {
+    await pinsReady
+    const index = state.pinnedFiles.findIndex((pin) => pin.id === id)
+    if (index === -1) return
+    state.pinnedFiles.splice(index, 1)
+    pinnedHandles.delete(id)
+    for (const tab of state.tabs) {
+      if (tab.pinnedId === id) tab.pinnedId = undefined
+    }
+    persistPins()
+  }
+
+  function isPinned(key: string): boolean {
+    const tab = state.tabs.find((entry) => entry.key === key)
+    return !!tab?.pinnedId && state.pinnedFiles.some((pin) => pin.id === tab.pinnedId)
+  }
+
+  async function openPinned(id: string): Promise<'handle' | 'snapshot' | 'fallback' | null> {
+    await pinsReady
+    const pin = state.pinnedFiles.find((entry) => entry.id === id)
+    if (!pin) return null
+
+    const handle = pinnedHandles.get(id)
+    if (!handle) {
+      openFile(pin.fileName, pin.content, undefined, id)
+      return 'snapshot'
+    }
+
+    try {
+      const opened = await readTextFileHandle(handle)
+      if (!state.pinnedFiles.some((entry) => entry.id === id)) return null
+      pin.fileName = opened.fileName
+      pin.content = opened.content
+      persistPins()
+      openFile(opened.fileName, opened.content, handle, id)
+      return 'handle'
+    } catch {
+      if (!state.pinnedFiles.some((entry) => entry.id === id)) return null
+      openFile(pin.fileName, pin.content, handle, id)
+      return 'fallback'
+    }
   }
 
   return {
@@ -163,8 +288,14 @@ export function useTabs() {
     closeRight,
     updateContent,
     markSaved,
+    markPinnedSaved,
     fileHandle,
     isDirty,
     displayTitle,
+    pinsReady,
+    pinTab,
+    unpinFile,
+    isPinned,
+    openPinned,
   }
 }

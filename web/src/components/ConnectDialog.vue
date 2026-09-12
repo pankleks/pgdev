@@ -4,7 +4,7 @@ import { useConnection, type SavedConnection } from '../composables/connection'
 import type { ConnectionConfig } from '../types'
 
 const conn = useConnection()
-const saved = ref<SavedConnection[]>(conn.saved())
+const saved = conn.saved()
 const mode = ref<'params' | 'url'>('params')
 const remember = ref(true)
 
@@ -36,7 +36,6 @@ function pick(c: SavedConnection) {
 
 function drop(label: string) {
   conn.forget(label)
-  saved.value = conn.saved()
 }
 
 async function submit() {
@@ -49,8 +48,6 @@ async function submit() {
       ? { connectionString: url.value.trim() }
       : { ...form, port: Number(form.port) || 5432 }
   await conn.connect(cfg, remember.value)
-  // Refresh the list so a newly saved connection shows without reopening.
-  saved.value = conn.saved()
 }
 </script>
 
