@@ -102,6 +102,17 @@ export function useTabs() {
     const key = `ddl-${type}-${schema}-${name}${identity}${parentKey}`
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
+      // Re-opening refreshes the tab from the database, which would discard
+      // unsaved edits. Ask first (mirrors canClose in EditorTabs): declining
+      // keeps the local edits and just focuses the tab.
+      if (
+        existing.content !== ddl &&
+        isDirty(existing) &&
+        !window.confirm(`Discard unsaved changes in "${existing.title}" and reload from the database?`)
+      ) {
+        state.activeKey = key
+        return
+      }
       if (existing.content !== ddl) existing.content = ddl
       existing.savedContent = ddl
       existing.readOnly = !editable

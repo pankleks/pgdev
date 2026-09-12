@@ -116,7 +116,11 @@ function withoutLeadingComments(sql: string): string {
 }
 
 function canUseCursor(stmt: string): boolean {
-  return /^(SELECT|VALUES|SHOW|EXPLAIN|TABLE|SET|RESET|DISCARD|BEGIN|START|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|CLOSE|FETCH)\b/i.test(
+  // WITH is included so CTE queries (`WITH … SELECT …`) are paged instead of
+  // being materialized in full. DECLARE only accepts SELECT/VALUES, so a
+  // data-modifying CTE (`WITH … INSERT/UPDATE/DELETE …`) still fails at
+  // DECLARE and falls back to direct execution via the savepoint below.
+  return /^(SELECT|VALUES|WITH|SHOW|EXPLAIN|TABLE|SET|RESET|DISCARD|BEGIN|START|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|CLOSE|FETCH)\b/i.test(
     withoutLeadingComments(stmt),
   )
 }
