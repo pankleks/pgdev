@@ -273,10 +273,9 @@ try {
     await page.evaluate(`
       document.querySelector('.conn-badge')?.click()
     `)
-    await page.waitFor(`!!document.querySelector('.current-conn')`, { timeout: 10000 }).catch(() => {})
+    await page.waitFor(`!!document.querySelector('.saved-item.current')`, { timeout: 10000 }).catch(() => {})
     await page.evaluate(`
-      const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Disconnect')
-      btn?.click()
+      document.querySelector('.connect-modal button[title="Disconnect"]')?.click()
     `)
     const off = await page.waitFor(
       `document.querySelector('.conn-badge')?.classList.contains('off')`,

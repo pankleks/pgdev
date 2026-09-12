@@ -62,15 +62,23 @@ export async function connectionRoutes(app: FastifyInstance) {
     })
     try {
       const client = await pool.connect()
+      // Cosmetic: the dialog shows "Connected • PostgreSQL x.y" next to the
+      // status dot. Failure here must never block a working connection.
+      let pgVersion = ''
+      try {
+        const vres = await client.query('SHOW server_version')
+        pgVersion = String(vres.rows[0]?.server_version ?? '').trim().split(/\s+/)[0] ?? ''
+      } catch {
+        // ignore — version display is optional
+      }
       client.release()
+      const id = randomUUID()
+      setPool(id, pool)
+      return { id, pgVersion }
     } catch (err) {
       await pool.end().catch(() => {})
       return reply.code(400).send({ error: pgErrorMessage(err) })
     }
-
-    const id = randomUUID()
-    setPool(id, pool)
-    return { id }
   })
 
   app.delete('/api/connections/:id', async (req, reply) => {

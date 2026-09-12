@@ -9,6 +9,7 @@ import { useToast } from './toast'
 const state = reactive({
   id: null as string | null,
   label: '',
+  pgVersion: '',
   dialog: false,
   connecting: false,
   error: '',
@@ -105,6 +106,13 @@ export function useConnection() {
     persist()
   }
 
+  function forgetAll() {
+    locallyChanged = true
+    savedConnections.splice(0, savedConnections.length)
+    lastConnection = null
+    persist()
+  }
+
   async function connect(cfg: ConnectionConfig, save: boolean, preserveLast = false) {
     if (state.connecting) return
     const attempt = ++connectionAttempt
@@ -117,7 +125,7 @@ export function useConnection() {
       // remembered config) applied when the pool opens: changing it in
       // Settings takes effect on the next connect.
       const body: ConnectionConfig = { ...cfg, statementTimeout: useSettings().state.statementTimeout }
-      const { id } = await api.connect(body)
+      const { id, pgVersion } = await api.connect(body)
       if (attempt !== connectionAttempt) {
         await api.disconnect(id).catch(() => {})
         return
@@ -149,6 +157,7 @@ export function useConnection() {
       useSchema().reset()
       state.id = id
       state.label = labelOf(cfg)
+      state.pgVersion = pgVersion ?? ''
       state.dialog = false
       if (save) {
         locallyChanged = true
@@ -203,8 +212,9 @@ export function useConnection() {
     if (attempt !== connectionAttempt) return
     state.id = null
     state.label = ''
+    state.pgVersion = ''
     useSchema().reset()
   }
 
-  return { state, connect, disconnect, autoConnect, saved, forget, ready: ensureReady() }
+  return { state, connect, disconnect, autoConnect, saved, forget, forgetAll, ready: ensureReady() }
 }

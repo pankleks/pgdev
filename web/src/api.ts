@@ -18,12 +18,12 @@ export const api = {
       .then((b) => b.version)
   },
 
-  connect(config: ConnectionConfig): Promise<{ id: string }> {
+  connect(config: ConnectionConfig): Promise<{ id: string; pgVersion?: string }> {
     return fetch('/api/connections', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(config),
-    }).then((r) => unwrap<{ id: string }>(r))
+    }).then((r) => unwrap<{ id: string; pgVersion?: string }>(r))
   },
 
   disconnect(id: string): Promise<void> {
