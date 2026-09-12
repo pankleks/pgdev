@@ -105,6 +105,7 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
          (SELECT spcname FROM pg_tablespace WHERE oid = c.reltablespace) AS tablespace,
          quote_literal(obj_description(c.oid)) AS comment,
          (SELECT pg_get_partkeydef(p.partrelid) FROM pg_partitioned_table p WHERE p.partrelid = c.oid) AS partkey,
+         (SELECT pg_get_partkeydef(pp.partrelid) FROM pg_partitioned_table pp WHERE pp.partrelid = c.oid) AS own_partkey,
          pn.nspname AS part_schema, p.relname AS part_name,
          CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END AS partbound
        FROM pg_class c
@@ -147,8 +148,11 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     // "FOR VALUES …", a default partition reads "DEFAULT" (which must NOT be
     // prefixed with FOR VALUES). Only hash bounds need the wrapper.
     const partitionBound = /^(FOR\s+VALUES|DEFAULT)\b/i.test(bound) ? bound : `FOR VALUES ${bound}`
+    // A partition can itself be partitioned; without its own PARTITION BY it
+    // would be recreated as a plain table, breaking its own children.
+    const subPartition = rel.own_partkey ? `\n  PARTITION BY ${rel.own_partkey}` : ''
     chunks.push(
-      `CREATE TABLE ${table}\n  PARTITION OF ${ident(rel.part_schema)}.${ident(rel.part_name)}\n  ${partitionBound};`,
+      `CREATE TABLE ${table}\n  PARTITION OF ${ident(rel.part_schema)}.${ident(rel.part_name)}\n  ${partitionBound}${subPartition};`,
     )
   } else {
     const pkCols = new Set(pkRes.rows.map((r) => r.attname as string))
@@ -277,11 +281,22 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
   const res = await pool.query(
     `SELECT a.aggkind, a.aggtransfn::regproc::text AS sfunc,
             format_type(a.aggtranstype, NULL) AS stype,
+            NULLIF(a.aggtransspace, 0) AS transspace,
             NULLIF(a.aggfinalfn::regproc::text, '-') AS finalfn,
+            a.aggfinalextra,
+            a.aggfinalmodify,
             NULLIF(a.aggcombinefn::regproc::text, '-') AS combinefn,
             NULLIF(a.aggserialfn::regproc::text, '-') AS serialfn,
             NULLIF(a.aggdeserialfn::regproc::text, '-') AS deserialfn,
             NULLIF(a.agginitval, '') AS initcond,
+            NULLIF(a.aggmtransfn::regproc::text, '-') AS msfunc,
+            NULLIF(a.aggminvtransfn::regproc::text, '-') AS minvfunc,
+            CASE WHEN a.aggmtranstype <> 0 THEN format_type(a.aggmtranstype, NULL) END AS mstype,
+            NULLIF(a.aggmtransspace, 0) AS mtransspace,
+            NULLIF(a.aggmfinalfn::regproc::text, '-') AS mfinalfn,
+            a.aggmfinalextra,
+            a.aggmfinalmodify,
+            NULLIF(a.aggminitval, '') AS minitcond,
             -- aggsortop is a plain oid and regoper renders 0 as "0" (only
             -- regproc/regclass render "-"), so zero it out explicitly.
             NULLIF(a.aggsortop, 0)::regoper::text AS sortop,
@@ -293,15 +308,43 @@ async function aggregateDdl(pool: Pool, oid: string, q: string): Promise<string>
   )
   const row = res.rows[0]
   if (!row) notFound()
+  // The catalog's finalfuncmodify is a char: r/s/w. The DDL keyword is only
+  // written when it differs from the default for this aggregate kind, which is
+  // READ_ONLY for ordinary aggregates and READ_WRITE for ordered-set ones.
+  const modifyKeyword = (v: unknown): string | null =>
+    v === 'r' ? 'READ_ONLY' : v === 's' ? 'SHAREABLE' : v === 'w' ? 'READ_WRITE' : null
+  const defaultModify = row.aggkind === 'n' ? 'r' : 'w'
+
   const opts = [`SFUNC = ${row.sfunc}`, `STYPE = ${row.stype}`]
+  if (row.transspace != null) opts.push(`SSPACE = ${row.transspace}`)
   if (row.finalfn) opts.push(`FINALFUNC = ${row.finalfn}`)
+  if (row.aggfinalextra) opts.push('FINALFUNC_EXTRA')
+  if (row.finalfn && row.aggfinalmodify !== defaultModify) {
+    const kw = modifyKeyword(row.aggfinalmodify)
+    if (kw) opts.push(`FINALFUNC_MODIFY = ${kw}`)
+  }
   if (row.combinefn) opts.push(`COMBINEFUNC = ${row.combinefn}`)
   if (row.serialfn) opts.push(`SERIALFUNC = ${row.serialfn}`)
   if (row.deserialfn) opts.push(`DESERIALFUNC = ${row.deserialfn}`)
   if (row.initcond != null) opts.push(`INITCOND = '${String(row.initcond).replace(/'/g, "''")}'`)
+  if (row.msfunc) opts.push(`MSFUNC = ${row.msfunc}`)
+  if (row.minvfunc) opts.push(`MINVFUNC = ${row.minvfunc}`)
+  if (row.mstype) opts.push(`MSTYPE = ${row.mstype}`)
+  if (row.mtransspace != null) opts.push(`MSSPACE = ${row.mtransspace}`)
+  if (row.mfinalfn) opts.push(`MFINALFUNC = ${row.mfinalfn}`)
+  if (row.aggmfinalextra) opts.push('MFINALFUNC_EXTRA')
+  if (row.mfinalfn && row.aggmfinalmodify !== defaultModify) {
+    const kw = modifyKeyword(row.aggmfinalmodify)
+    if (kw) opts.push(`MFINALFUNC_MODIFY = ${kw}`)
+  }
+  if (row.minitcond != null) opts.push(`MINITCOND = '${String(row.minitcond).replace(/'/g, "''")}'`)
   if (row.sortop) opts.push(`SORTOP = OPERATOR(${row.sortop})`)
   if (row.proparallel === 's') opts.push('PARALLEL = SAFE')
   else if (row.proparallel === 'r') opts.push('PARALLEL = RESTRICTED')
+  // HYPOTHETICAL is only meaningful for ordered-set aggregates and must be
+  // emitted, otherwise PostgreSQL recreates them as ordinary ordered-set ones.
+  if (row.aggkind === 'h') opts.push('HYPOTHETICAL')
+
   const header =
     row.aggkind === 'n'
       ? `CREATE AGGREGATE ${q} (`
@@ -372,9 +415,15 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
        format_type(t.typbasetype, t.typtypmod) AS base,
        (SELECT string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder)
           FROM pg_enum e WHERE e.enumtypid = t.oid) AS labels,
-        (SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum)
-          FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) AS attrs,
-       (SELECT string_agg(pg_get_constraintdef(c.oid), ' ' ORDER BY c.oid)
+        (SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod)
+             || CASE WHEN co.collname IS NOT NULL AND co.collname <> 'default'
+                     THEN ' COLLATE ' || quote_ident(cn.nspname) || '.' || quote_ident(co.collname)
+                     ELSE '' END, ', ' ORDER BY a.attnum)
+          FROM pg_attribute a
+          LEFT JOIN pg_collation co ON co.oid = a.attcollation AND a.attcollation <> 0
+          LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace
+          WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) AS attrs,
+       (SELECT string_agg('CONSTRAINT ' || quote_ident(c.conname) || ' ' || pg_get_constraintdef(c.oid), ' ' ORDER BY c.oid)
           FROM pg_constraint c WHERE c.contypid = t.oid) AS cons,
        format_type(r.rngsubtype, NULL) AS subtype,
        -- rngsubopc is a plain oid, not a regclass: casting it straight to
@@ -383,6 +432,17 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
        (SELECT quote_ident(ocn.nspname) || '.' || quote_ident(oc.opcname)
           FROM pg_opclass oc JOIN pg_namespace ocn ON ocn.oid = oc.opcnamespace
           WHERE oc.oid = r.rngsubopc) AS subopc,
+       (SELECT quote_ident(rcn.nspname) || '.' || quote_ident(rc.collname)
+          FROM pg_collation rc JOIN pg_namespace rcn ON rcn.oid = rc.collnamespace
+          WHERE rc.oid = r.rngcollation AND r.rngcollation <> 0 AND rc.collname <> 'default') AS collation,
+       -- PG14+ names the multirange <range>_multirange. Only emit the option
+       -- when the actual name differs, so the generated DDL works on the
+       -- server version it came from without probing for rngmultitypid
+       -- (absent before PG14).
+       (SELECT mt.typname FROM pg_type mt
+          WHERE mt.oid = (SELECT x.rngmultitypid FROM pg_range x WHERE x.rngtypid = t.oid)
+            AND mt.typname <> t.typname || '_multirange'
+            AND mt.typname <> '_' || t.typname) AS multirange_name,
        -- regproc/regclass render oid 0 as "-", not NULL, so NULLIF it away
        -- here: a truthiness check downstream would otherwise emit
        -- "CANONICAL = -", which no CREATE TYPE can accept.
@@ -411,8 +471,10 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
   } else if (row.typtype === 'r') {
     const opts = [`SUBTYPE = ${row.subtype}`]
     if (row.subopc) opts.push(`SUBTYPE_OPCLASS = ${row.subopc}`)
+    if (row.collation) opts.push(`COLLATION = ${row.collation}`)
     if (row.canonical && row.canonical !== '-') opts.push(`CANONICAL = ${row.canonical}`)
     if (row.subdiff && row.subdiff !== '-') opts.push(`SUBTYPE_DIFF = ${row.subdiff}`)
+    if (row.multirange_name) opts.push(`MULTIRANGE_TYPE_NAME = ${ident(String(row.multirange_name))}`)
     ddl = `CREATE TYPE ${q} AS RANGE (\n  ${opts.join(',\n  ')}\n);`
   } else {
     notFound()
