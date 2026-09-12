@@ -1,74 +1,15 @@
 import type { Pool } from 'pg'
-
-export interface ColumnInfo {
-  name: string
-  type: string
-  nullable: boolean
-  defaultValue: string | null
-}
-
-export interface IndexInfo {
-  name: string
-  type: 'primary' | 'unique' | 'exclusion' | 'normal'
-  method: string
-}
-
-export interface ConstraintInfo {
-  name: string
-  type: string
-  definition: string
-}
-
-export interface TriggerInfo {
-  name: string
-  definition: string
-}
-
-export interface TableInfo {
-  schema: string
-  name: string
-  oid: string
-  columns: ColumnInfo[]
-  indexes: IndexInfo[]
-  constraints: ConstraintInfo[]
-  triggers: TriggerInfo[]
-  isPartition: boolean
-  isPartitioned: boolean
-  parents: string
-}
-
-export interface ViewInfo {
-  schema: string
-  name: string
-  oid: string
-  materialized: boolean
-  columns: ColumnInfo[]
-}
-
-export interface FunctionInfo {
-  schema: string
-  name: string
-  args: string
-  returns: string
-  typeSig: string
-  kind: 'function' | 'procedure' | 'window' | 'trigger' | 'aggregate'
-  oid: string
-}
-
-export interface TypeInfo {
-  schema: string
-  name: string
-  oid: string
-  kind: 'enum' | 'composite' | 'domain' | 'range'
-  detail: string
-}
-
-export interface SchemaData {
-  tables: TableInfo[]
-  views: ViewInfo[]
-  functions: FunctionInfo[]
-  types: TypeInfo[]
-}
+import type {
+  ColumnInfo,
+  ConstraintInfo,
+  FunctionInfo,
+  IndexInfo,
+  SchemaData,
+  TableInfo,
+  TriggerInfo,
+  TypeInfo,
+  ViewInfo,
+} from '../schema-types.js'
 
 // Schemas the browser never shows: system catalogs, TOAST, and other
 // sessions' temporary tables. Interpolated into every catalog query so the
@@ -195,6 +136,23 @@ WHERE t.typtype IN ('e', 'c', 'd', 'r')
   AND (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_class c WHERE c.oid = t.typrelid))
 ORDER BY n.nspname, t.typname`
 
+/** Group rows by an explicit key, projecting each row into the stored shape. */
+function groupBy<Row, T>(
+  rows: Row[],
+  keyOf: (row: Row) => string,
+  project: (row: Row) => T,
+): Map<string, T[]> {
+  const map = new Map<string, T[]>()
+  for (const row of rows) {
+    const key = keyOf(row)
+    const list = map.get(key)
+    const item = project(row)
+    if (list) list.push(item)
+    else map.set(key, [item])
+  }
+  return map
+}
+
 export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
   const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, indexesRes, constraintsRes, triggersRes] =
     await Promise.all([
@@ -208,56 +166,36 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
       pool.query(TRIGGERS_SQL),
     ])
 
-  const columnsByRel = new Map<string, ColumnInfo[]>()
-  for (const row of columnsRes.rows) {
-    const key = `${row.schema}\u0000${row.rel}`
-    let list = columnsByRel.get(key)
-    if (!list) {
-      list = []
-      columnsByRel.set(key, list)
-    }
-    list.push({
+  const relKey = (schema: string, name: string) => `${schema}\u0000${name}`
+
+  const columnsByRel = groupBy(
+    columnsRes.rows,
+    (r) => relKey(r.schema, r.rel),
+    (row) => ({
       name: row.name,
       type: row.type,
       nullable: row.nullable,
       defaultValue: row.default_value ?? null,
-    })
-  }
+    }),
+  )
 
-  const indexesByRel = new Map<string, IndexInfo[]>()
-  for (const row of indexesRes.rows) {
-    const key = `${row.schema}\u0000${row.table}`
-    let list = indexesByRel.get(key)
-    if (!list) {
-      list = []
-      indexesByRel.set(key, list)
-    }
-    list.push({ name: row.name, type: row.type, method: row.method })
-  }
+  const indexesByRel = groupBy(
+    indexesRes.rows,
+    (r) => relKey(r.schema, r.table),
+    (row) => ({ name: row.name, type: row.type, method: row.method }),
+  )
 
-  const constraintsByRel = new Map<string, ConstraintInfo[]>()
-  for (const row of constraintsRes.rows) {
-    const key = `${row.schema}\u0000${row.table}`
-    let list = constraintsByRel.get(key)
-    if (!list) {
-      list = []
-      constraintsByRel.set(key, list)
-    }
-    list.push({ name: row.name, type: row.type, definition: row.definition })
-  }
+  const constraintsByRel = groupBy(
+    constraintsRes.rows,
+    (r) => relKey(r.schema, r.table),
+    (row) => ({ name: row.name, type: row.type, definition: row.definition }),
+  )
 
-  const triggersByRel = new Map<string, TriggerInfo[]>()
-  for (const row of triggersRes.rows) {
-    const key = `${row.schema}\u0000${row.table}`
-    let list = triggersByRel.get(key)
-    if (!list) {
-      list = []
-      triggersByRel.set(key, list)
-    }
-    list.push({ name: row.name, definition: row.definition })
-  }
-
-  const relKey = (schema: string, name: string) => `${schema}\u0000${name}`
+  const triggersByRel = groupBy(
+    triggersRes.rows,
+    (r) => relKey(r.schema, r.table),
+    (row) => ({ name: row.name, definition: row.definition }),
+  )
 
   const tables: TableInfo[] = tablesRes.rows.map((r) => ({
     schema: r.schema,
