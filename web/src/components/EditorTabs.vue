@@ -43,6 +43,57 @@ function menuItem(action: () => void) {
   menu.value = null
 }
 
+// --- drag-and-drop reordering ---------------------------------------------
+const dragKey = ref<string | null>(null)
+/** Insertion position 0..length in the current order (null when not dragging). */
+const dropIndex = ref<number | null>(null)
+// Set on dragstart and cleared on the next mousedown: some browsers fire a
+// click after a drag, which must not re-activate the dragged tab.
+const suppressClick = ref(false)
+
+function onTabClick(key: string) {
+  if (suppressClick.value) return
+  tabs.activate(key)
+}
+
+function onDragStart(e: DragEvent, key: string) {
+  dragKey.value = key
+  dropIndex.value = null
+  suppressClick.value = true
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox needs data set on the transfer for a drag to begin at all.
+    e.dataTransfer.setData('text/plain', key)
+  }
+}
+
+function onDragOverTab(e: DragEvent, index: number) {
+  if (dragKey.value === null) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  dropIndex.value = e.clientX < rect.left + rect.width / 2 ? index : index + 1
+}
+
+function onDragOverStrip(e: DragEvent) {
+  if (dragKey.value === null) return
+  e.preventDefault()
+  dropIndex.value = tabs.state.tabs.length
+}
+
+function onDrop(e: DragEvent) {
+  e.preventDefault()
+  if (dragKey.value !== null && dropIndex.value !== null) {
+    tabs.moveTabToIndex(dragKey.value, dropIndex.value)
+  }
+  onDragEnd()
+}
+
+function onDragEnd() {
+  dragKey.value = null
+  dropIndex.value = null
+}
+
 function closeSession(key: string) {
   results.drop(key)
   if (conn.state.id) void api.closeSession(conn.state.id, key).catch(() => undefined)
@@ -104,17 +155,27 @@ const staleDdl = computed(() => {
 
 <template>
   <div class="editor-tabs">
-    <div class="tabstrip">
+    <div class="tabstrip" @dragover.self="onDragOverStrip($event)" @drop="onDrop($event)">
       <div
-        v-for="t in tabs.state.tabs"
+        v-for="(t, index) in tabs.state.tabs"
         :key="t.key"
         class="tab"
-        :class="{ active: t.key === tabs.state.activeKey }"
-        @click="tabs.activate(t.key)"
+        :class="{
+          active: t.key === tabs.state.activeKey,
+          dragging: dragKey === t.key,
+          'drop-before': dropIndex === index,
+          'drop-after': dropIndex === index + 1,
+        }"
+        draggable="true"
+        @mousedown="suppressClick = false"
+        @click="onTabClick(t.key)"
         @contextmenu="openMenu($event, t.key)"
+        @dragstart="onDragStart($event, t.key)"
+        @dragover="onDragOverTab($event, index)"
+        @dragend="onDragEnd"
       >
         <span class="tab-title" :title="tabs.displayTitle(t)">{{ tabs.displayTitle(t) }}</span>
-        <button class="tab-close" title="Close tab" @click.stop="closeTab(t.key)"><X :size="14" /></button>
+        <button class="tab-close" title="Close tab" draggable="false" @click.stop="closeTab(t.key)"><X :size="14" /></button>
       </div>
     </div>
     <div v-if="staleDdl" class="stale-ddl">

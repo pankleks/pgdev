@@ -44,7 +44,7 @@ The primary design goals are:
 - `web/src/App.vue` provides the application shell, global run action, file opening, resizing, and connection state integration.
 - `web/src/components/ConnectDialog.vue` handles parameter-based and connection-string connections.
 - `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs.
-- `web/src/components/EditorTabs.vue` manages tab display and closes associated backend sessions.
+- `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.
 - `web/src/components/QueryEditor.vue` hosts Monaco models and editor commands.
 - `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, and cancellation controls.
 - `web/src/components/SettingsDialog.vue` exposes the object-browser grouping preference.

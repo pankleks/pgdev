@@ -201,6 +201,21 @@ export function useTabs() {
     if (!state.tabs.some((t) => t.key === state.activeKey)) state.activeKey = key
   }
 
+  /**
+   * Move a tab to an insertion position in the current order (0 = front,
+   * `state.tabs.length` = end). Dropping in place is a no-op; the active tab is
+   * independent of order, so it does not change.
+   */
+  function moveTabToIndex(key: string, index: number) {
+    const from = state.tabs.findIndex((t) => t.key === key)
+    if (from === -1) return
+    const to = Math.max(0, Math.min(state.tabs.length, index))
+    if (to === from || to === from + 1) return
+    const tab = state.tabs[from]
+    state.tabs.splice(from, 1)
+    state.tabs.splice(from < to ? to - 1 : to, 0, tab)
+  }
+
   function updateContent(key: string, content: string) {
     const tab = state.tabs.find((t) => t.key === key)
     if (tab) tab.content = content
@@ -313,6 +328,7 @@ export function useTabs() {
     closeAll,
     closeOthers,
     closeRight,
+    moveTabToIndex,
     updateContent,
     markSaved,
     markPinnedSaved,

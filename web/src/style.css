@@ -793,12 +793,38 @@ body.dragging-results {
     cursor: pointer;
     white-space: nowrap;
     user-select: none;
+    position: relative;
 
     &.active {
       background: var(--bg);
       color: var(--text);
       border-top: 2px solid transparent;
       box-shadow: inset 0 2px 0 var(--accent);
+    }
+
+    // Drag-and-drop reordering: dim the source and show the insertion line at
+    // the boundary. Pseudo-elements are used so the active tab's box-shadow is
+    // not overwritten.
+    &.dragging {
+      opacity: 0.5;
+    }
+
+    &.drop-before::before,
+    &.drop-after::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent);
+    }
+
+    &.drop-before::before {
+      left: -1px;
+    }
+
+    &.drop-after::after {
+      right: -1px;
     }
 
     .tab-title {
