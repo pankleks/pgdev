@@ -117,9 +117,8 @@ try {
 
   console.log('\n== connect through the real dialog ==')
   await page.evaluate(`
-    const badge = document.querySelector('.conn-badge')
-    if (badge && badge.classList.contains('off')) document.querySelector('.topbar button.primary')?.click()
-    else document.querySelector('.conn-badge')?.click()
+    // Both the connected and the not-connected badge open the dialog.
+    document.querySelector('.conn-badge')?.click()
   `)
   await page.waitFor(`document.querySelector('.modal') !== null`, { timeout: 10000 })
   ok('connect dialog opens', true)
@@ -258,6 +257,11 @@ try {
 
   console.log('\n== disconnecting disables running ==')
   {
+    // Disconnect lives in the connection dialog since the top-bar button moved.
+    await page.evaluate(`
+      document.querySelector('.conn-badge')?.click()
+    `)
+    await page.waitFor(`!!document.querySelector('.current-conn')`, { timeout: 10000 }).catch(() => {})
     await page.evaluate(`
       const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Disconnect')
       btn?.click()

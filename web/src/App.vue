@@ -187,10 +187,10 @@ provide('pgdev:run', runActive)
       <button
         v-if="conn.state.id"
         class="conn-badge"
-        title="Switch connection"
+        title="Connection details, disconnect, or switch"
         @click="conn.state.dialog = true"
       >{{ conn.state.label }}</button>
-      <span v-else class="conn-badge off">not connected</span>
+      <button v-else class="conn-badge off" title="Open the connection dialog" @click="conn.state.dialog = true">not connected</button>
       <span class="spacer" />
       <button
         class="icon"
@@ -214,8 +214,6 @@ provide('pgdev:run', runActive)
         aria-label="Save active tab as a new SQL file"
         @click="saveActive(true)"
       ><FileOutput :size="15" /></button>
-      <button v-if="conn.state.id" @click="conn.disconnect()">Disconnect</button>
-      <button v-else class="primary" @click="conn.state.dialog = true">Connect</button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
       <span v-if="version" class="app-version" :title="`pgDEV ${version}`">v{{ version }}</span>
     </header>

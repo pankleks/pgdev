@@ -581,7 +581,7 @@ async function refresh() {
   <div class="browser">
     <div class="browser-main">
       <div v-if="!conn.state.id" class="browser-empty">
-        Not connected.<br />Click “Connect” in the top bar.
+        Not connected.<br />Click the connection badge in the top bar.
       </div>
 
       <template v-else>

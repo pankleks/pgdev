@@ -56,6 +56,13 @@ async function submit() {
     <div class="modal">
       <h2>Connect to PostgreSQL</h2>
 
+      <!-- Current connection: Disconnect lives here now instead of the top
+           bar, next to the form used to reconnect or switch. -->
+      <div v-if="conn.state.id" class="current-conn">
+        <span class="current-label" :title="conn.state.label">{{ conn.state.label }}</span>
+        <button class="danger" :disabled="conn.state.connecting" @click="conn.disconnect()">Disconnect</button>
+      </div>
+
       <div v-if="saved.length" class="saved">
         <div v-for="c in saved" :key="c.label" class="saved-item" @click="pick(c)">
           <span>{{ c.label }}</span>

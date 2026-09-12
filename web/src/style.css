@@ -1095,6 +1095,25 @@ input {
       margin-bottom: 14px;
     }
 
+    .current-conn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel-2);
+
+      .current-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+    }
+
     .settings-section {
       h3 {
         font-size: 12px;

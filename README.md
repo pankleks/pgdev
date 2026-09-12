@@ -32,8 +32,10 @@ settings and pinned files live in your browser and are kept.
 ## Use
 
 1. Start pgDEV and open the URL it prints.
-2. Click **Connect** and enter your host, port, database, user and password — or
-   paste a connection string. Tick *Remember in this browser* to keep it.
+2. Click **not connected** (or the connection name) in the top bar and enter
+   your host, port, database, user and password — or paste a connection string.
+   Tick *Remember in this browser* to keep it. Disconnecting works from the
+   same dialog.
 3. Browse objects on the left, or write SQL in the editor and press
    `Ctrl/Cmd+Enter` to run it.
 
@@ -77,7 +79,7 @@ or pin a file to keep it across restarts. Unsaved changes are protected on close
 Right-click a tab to close all, close others, or close everything to the right.
 
 **Connections** — parameter form or connection string, SSL toggle, several saved
-connections, switch between them from the badge in the top bar.
+connections, switch between them or disconnect from the badge in the top bar.
 
 ## Limits worth knowing
 
