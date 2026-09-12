@@ -1,8 +1,12 @@
 // Shared plumbing for the live-database suites: credential resolution, the
 // scratch-database lifecycle, assertions, and the DDL round-trip helper.
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 const require = createRequire(new URL('../../server/', import.meta.url))
 const { Client, Pool } = require('pg')
+
+// Re-exported so suites do not each need their own createRequire shim.
+export { Client, Pool }
 
 /**
  * Credentials from PGDEV_TEST_URL, or a JSON object piped on stdin.
@@ -12,6 +16,13 @@ const { Client, Pool } = require('pg')
  * first reader would consume it and the rest would block.
  */
 export async function credentials() {
+  // Loaded here rather than in the runner so a single suite can be run
+  // directly (`node test/aggtest.mjs`) and still find the credentials.
+  try {
+    process.loadEnvFile(fileURLToPath(new URL('../../.env', import.meta.url)))
+  } catch {
+    // no .env: fall through to the environment, then to the notice below
+  }
   let stdinText = ''
   if (!process.stdin.isTTY) {
     const chunks = []

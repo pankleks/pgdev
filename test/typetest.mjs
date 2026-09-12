@@ -1,34 +1,9 @@
 // Round-trips the remaining DDL paths (ranges, composites, domains,
 // sub-partitioning) inside a database this harness owns.
-import { createRequire } from 'node:module'
-const require = createRequire(new URL('../server/', import.meta.url))
-const { Pool, Client } = require('pg')
 
-// Credentials come from PGDEV_TEST_URL (e.g. postgres://user:pass@host:5432/postgres)
-// or, failing that, from a JSON object on stdin. Nothing is hard-coded.
-const chunks = []
-for await (const c of process.stdin) chunks.push(c)
-const stdinText = Buffer.concat(chunks).toString('utf8').trim()
-const base = stdinText
-  ? JSON.parse(stdinText)
-  : (() => {
-      const raw = process.env.PGDEV_TEST_URL
-      if (!raw) {
-        console.error('PGDEV_TEST_URL is not set.')
-        console.error('Point it at a PostgreSQL server the tests may create databases on, e.g.:')
-        console.error('  PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test')
-        console.error('These tests CREATE and DROP their own pgdev_* databases; never aim them at a database you care about.')
-        process.exit(2)
-      }
-      const u = new URL(raw)
-      return {
-        host: u.hostname,
-        port: Number(u.port || 5432),
-        user: decodeURIComponent(u.username),
-        password: decodeURIComponent(u.password),
-        ssl: false,
-      }
-    })()
+// Credentials: PGDEV_TEST_URL from the environment or the repo .env.
+import { credentials, Client, Pool } from './lib/db.mjs'
+const base = await credentials()
 
 const DB = 'pgdev_typetest'
 

@@ -11,13 +11,12 @@ import { readdirSync } from 'node:fs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-// Pick up PGDEV_TEST_URL from the repository .env when it is not already in the
-// environment, so `npm test` works without exporting anything. A real
-// environment variable always wins.
+// Needed here to decide whether the database suites can run at all; the suites
+// load it themselves too, so a single suite works when run directly.
 try {
-  process.loadEnvFile(join(HERE, '..', '.env'))
+  process.loadEnvFile(fileURLToPath(new URL('../.env', import.meta.url)))
 } catch {
-  // no .env, or an unreadable one: the notice below still explains what to set
+  // no .env: the skip notice below explains what to set
 }
 
 function run(file, args = []) {
