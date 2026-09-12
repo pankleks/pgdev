@@ -19,7 +19,10 @@ The primary design goals are:
 
 ### Backend
 
-- `server/src/index.ts` creates the Fastify application, registers routes, serves the production SPA, and applies the API origin guard.
+- `server/src/index.ts` starts the application: it calls `createApp()` and listens on a port.
+- `server/src/app.ts` builds the Fastify application, registers routes, serves the production SPA, and applies the API origin guard.
+- `server/src/version.ts` reads the version from the root manifest for `/api/version`.
+- `bin/pgdev.mjs` is the launcher: picks a free port, starts the server, opens the browser, and shuts down on Ctrl+C.
 - `server/src/pools.ts` stores in-memory PostgreSQL pools and tracks running clients by connection and tab.
 - `server/src/routes/connections.ts` creates and closes pools.
 - `server/src/routes/metadata.ts` exposes schema metadata.
@@ -184,35 +187,30 @@ The result grid is virtualized and supports column resizing, cell copying, TSV c
 
 The API has no authentication and can open arbitrary database connections, so `/api/*` requests are protected against drive-by browser requests.
 
-- Requests with an `Origin` header must match the request scheme, hostname, and effective port.
+- Requests with an `Origin` header must match the request scheme, hostname, and effective port. The three loopback spellings (`localhost`, `127.0.0.1`, `::1`) are treated as the same host, because browsers and the launcher choose between them inconsistently; both sides must still be loopback.
 - The Vite development origin on port 5173 is explicitly allowed to proxy to the backend on port 3000 when both hosts are loopback addresses.
 - Same-origin browser GET requests that omit `Origin` may use the browser-controlled `Sec-Fetch-Site: same-origin` signal.
 - Other requests without `Origin`, invalid origins, cross-origin hosts, schemes, or ports are rejected.
 
 This is not a replacement for authentication or network access control. The application is intended for local or trusted environments.
 
-## Progressive Web App
+## Distribution
 
-The frontend uses `vite-plugin-pwa` to generate a web app manifest and a Workbox service worker during the Vite production build. The service worker is registered from `web/src/main.ts` with prompt-based updates so a new build does not reload the IDE without user confirmation and risk losing editor state.
+The package ships a launcher, `bin/pgdev.mjs`, exposed as the `pgdev` command.
+It picks a free port (walking upward from 3000 if the requested one is taken),
+starts the server, waits until `/api/version` answers, opens the default
+browser, and forwards SIGINT/SIGTERM to the server for a clean shutdown. It
+takes `--port`, `--no-open`, `--version` and `--help`.
 
-The manifest defines:
+The server serves its own frontend, so there is nothing to deploy separately:
+the built SPA and the API share one origin, which is what the API origin guard
+requires. The intended deployment is a single machine — the launcher binds
+loopback only.
 
-- `pgDEV` as the application name and short name.
-- `/` as the start URL, scope, and application ID.
-- Standalone display mode with the existing dark theme colors.
-- Transparent `any` icons at 192x192 and 512x512.
-- An opaque dark-navy 512x512 maskable icon for platform-shaped icon containers.
-
-The supplied robot artwork is retained at `web/assets/pwa/robot-source.png`. Generated icon files are stored under `web/public/icons/`:
-
-- `pgdev-192.png`
-- `pgdev-512.png`
-- `pgdev-maskable-512.png`
-- `apple-touch-icon.png`
-
-The Workbox precache includes the application shell and static build assets. The `/api/` runtime route uses `NetworkOnly`, so query results, metadata, connection responses, and cancellation requests are never served from a stale service-worker cache. Offline startup can display the cached IDE shell, but PostgreSQL operations still require the backend and database.
-
-PWA installation works on `localhost` and on HTTPS origins. A non-local HTTP deployment cannot be installed because service workers require a secure context.
+`web/public/icons/` holds the favicon and the Apple touch icon referenced by
+`web/index.html`. There is no web app manifest and no service worker: the
+browser loads the build fresh each time, so an upgrade is a server restart
+followed by a page refresh.
 
 ## Verification
 
@@ -234,7 +232,6 @@ This runs `vue-tsc --noEmit`, the Vite production build, and the server TypeScri
 - Dollar-body formatter preservation.
 - CSV formula protection.
 - Same-origin, Vite proxy, missing-origin, and wrong-port behavior.
-- PWA manifest generation, icon dimensions, service-worker generation, and API network-only routing.
 
 There is currently no automated test runner in the repository. Live PostgreSQL integration testing requires a local PostgreSQL instance or Docker.
 
@@ -252,10 +249,10 @@ Those suites live in `test/` and run with `PGDEV_TEST_URL=postgres://… npm tes
 
 ### Testing
 
-- Add a repository test runner with unit tests for `sqlsplit`, `sqlformat`, `gridio`, sessions, query routing, origin validation, and DDL generation.
+- Extend the unit suites to `sqlformat` and to the session/tab state machines, which the current `node:test` files do not cover.
 - Extend `test/` to cover the object shapes not yet asserted there: tables with list/hash/default partitions, RLS policies, serial columns, and enum types. Aggregate, range, composite, domain and sub-partitioned cases already run.
 - Wire `test/` into CI once there is one; today it runs only when invoked by hand with `PGDEV_TEST_URL` set.
-- Add end-to-end browser tests for connection switching, tab closure during queries, cancellation, pagination, export, and stale-response scenarios. The HTTP surface is covered against a live server, but nothing exercises Monaco, the object browser, or the result grid.
+- Extend the browser suite (`test/browser/app.mjs`, opt-in via `PGDEV_BROWSER=1`) to connection switching, tab closure during queries, cancellation, pagination, export, the result grid, and stale-response scenarios. It currently covers connecting, the DDL tab read-only rules, completion duplicates, and inert collapse while filtering.
 - Remove or resolve the Vite warning caused by `results.ts` being both statically and dynamically imported.
 
 ### Remaining product and deployment work
@@ -265,4 +262,3 @@ Those suites live in `test/` and run with `PGDEV_TEST_URL=postgres://… npm tes
 - Add authentication or an explicit deployment-time access-control mechanism for non-local deployments.
 - Note that remembered connections are stored unencrypted in the browser's IndexedDB (plain `localStorage` is only read once to migrate legacy data). Replace that with an operating-system or external secret store where deployment requirements justify it.
 - Make editor tab width and formatting preferences configurable instead of fixed at four columns.
-- Add a repeatable icon-generation script if the robot artwork needs to be updated regularly.

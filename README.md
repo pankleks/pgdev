@@ -1,68 +1,85 @@
-# pgDEV — a web IDE for PostgreSQL
+# pgDEV
 
-Minimal IDE for Postgres in the browser:
+A PostgreSQL IDE that runs on your own machine and opens in your browser.
 
-- **Object browser** (left): tables, views and functions with columns/types; double-click an object to open its DDL script in a new editor tab (read-only preview, except function/view/index/trigger/type DDL which is editable and runnable — uncomment the leading `-- DROP …` line first where a plain `CREATE` would collide). Search box filters by object or column name.
-- **Query tool**: Monaco editor (VS Code) with schema-aware intellisense — tables, views, columns (`alias.` + `Ctrl+Space`), functions and keywords. `Ctrl/Cmd+Enter` runs the query.
-- **Results panel**: virtualized data grids (one per result set) plus a Messages tab with row counts, durations and errors. SELECTs show a grid; writes/DDL show affected-row counts.
-- **Connection manager**: connect via parameters or connection string; saved connections live in your browser's localStorage. Pools are kept in-memory on the server per session.
+It is a single local server plus a web UI: you start it, it opens a browser tab,
+you point it at a database and work. Nothing is sent anywhere else, and there is
+no account to create.
 
-## Run (development)
+## Install
 
-```bash
-npm install
-docker compose up -d      # optional: demo Postgres on localhost:5433 (user/pass: postgres/pgdev, db: pgdev)
-npm run dev               # starts Fastify (port 3000) + Vite (port 5173)
-```
-
-Open http://localhost:5173, click **Connect** and point it at any Postgres (demo DB: host `localhost`, port `5433`, db `pgdev`, user `postgres`, password `pgdev`).
-
-## Run (production)
+Needs Node.js 20+ and a PostgreSQL server (11 or newer).
 
 ```bash
-npm run build   # builds web/dist and server/dist
-npm start       # Fastify serves the SPA + API on http://localhost:3000
+npm install -g pgdev-ide
+pgdev
 ```
 
-## Tests
-
-```bash
-PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test
-```
-
-Without `PGDEV_TEST_URL` only the suite that needs no database runs; the rest are skipped with a notice. The database suites round-trip generated DDL against a live PostgreSQL server and exercise the HTTP API end to end. They create and drop their own `pgdev_*` databases, so point `PGDEV_TEST_URL` at a server where that is allowed — never at a database you care about. Nothing here drives a browser. See `test/README.md`.
-
-## Production notes
-
-The production web build is installable as a PWA. Open the app from `localhost` or an HTTPS deployment and use the browser's install action. The service worker caches the application shell and static assets, but `/api/*` requests remain network-only because queries and schema data must be live.
-
-## Project layout
+`pgdev` starts the server and opens your browser. Press `Ctrl+C` to stop.
 
 ```
-server/   Fastify + node-postgres
-  src/routes/        connections, metadata, ddl, query endpoints
-  src/catalog/       pg_catalog queries: metadata harvesting, DDL reconstruction
-web/      Vue 3 + Vite + Monaco
-  src/components/    ConnectDialog, ObjectBrowser, EditorTabs, QueryEditor, ResultsPanel
-  src/composables/   connection / schema / tabs / results state
-  src/monaco/        SQL completion provider fed with live schema metadata
-sample/   demo schema (tables, view, functions, indexes)
+--port <n>     listen on this port (default 3000)
+--no-open      don't open a browser
+--version      print the version
+--help         usage
 ```
 
-## API
+If port 3000 is taken it moves to the next free port and prints the URL it used.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/api/connections` | open a pool, returns `connectionId` |
-| DELETE | `/api/connections/:id` | close the pool |
-| GET | `/api/connections/:id/schema` | tables/views/functions + columns (drives browser + intellisense) |
-| GET | `/api/connections/:id/ddl?type=&schema=&name=` | DDL script for an object |
-| POST | `/api/connections/:id/query` | execute SQL, returns result sets or affected-row counts |
+**Upgrading:** `npm install -g pgdev-ide@latest`, then restart. Connections,
+settings and pinned files live in your browser and are kept.
 
-## Notes / MVP caveats
+## Use
 
-- DDL is reconstructed from `pg_catalog` (no `pg_dump` dependency). Tables cover columns, defaults, NOT NULL, PK/unique/FK/check/exclusion constraints, indexes, partitioning (`PARTITION BY` + partition bounds, including default and sub-partitioned children), RLS + policies, owner/comments, tablespaces and foreign servers; a foreign key inherited from a partitioned parent is attributed to that parent rather than repeated per partition. Still skipped: extended statistics, replica identity, FDW options. Functions resolve the exact overload from the browser (name-only fallback: first by signature); aggregates are reconstructed, but `array_agg`-style aggregates that need `FINALFUNC_EXTRA` and hypothetical-set aggregates are not yet reproduced faithfully (see the TODO in `implementation.md`).
-- Results stream in 500-row pages via server-side cursors (`Load more` / CSV export drains all); statement timeout is 30s per statement.
-- Saved connections (including password, if you opt in) are stored unencrypted in the browser's IndexedDB — intended for local/trusted use only. There is no server-side auth, but `/api/*` rejects cross-origin browser requests (same-host `Origin` required) so random websites can't drive your local server.
-- Requires PostgreSQL 11+ (tested against 18).
-- PWA installation requires HTTPS outside localhost. Offline mode covers the application shell only; PostgreSQL connections and queries still require the Fastify server and database.
+1. Start pgDEV and open the URL it prints.
+2. Click **Connect** and enter your host, port, database, user and password — or
+   paste a connection string. Tick *Remember in this browser* to keep it.
+3. Browse objects on the left, or write SQL in the editor and press
+   `Ctrl/Cmd+Enter` to run it.
+
+## Features
+
+**Object browser** — tables, views, materialized views, functions, aggregates,
+types, indexes, constraints and triggers, with columns and types. Search filters
+by object *or* column name (`id col`, `user table`). Double-click an object to
+open its DDL.
+
+**DDL preview and editing** — DDL is reconstructed from `pg_catalog`, no
+`pg_dump` needed. Functions and views are editable and re-runnable; index,
+trigger and type scripts ship with a commented `-- DROP` line. Tables and
+constraints are read-only previews, since re-running them would collide with the
+existing object.
+
+**Query editor** — Monaco (the editor from VS Code) with completions drawn from
+your live schema: tables, views, columns after `alias.`, functions and keywords.
+`Ctrl/Cmd+Enter` runs the current selection, or the whole tab if nothing is
+selected. `Ctrl/Cmd+Shift+F` formats.
+
+Keyboard: `Ctrl/Cmd+Enter` run · `Ctrl/Cmd+Shift+F` format · `Ctrl/Cmd+N` new
+query · `Ctrl/Cmd+O` open file · `Ctrl/Cmd+S` save.
+
+**Results** — a grid per result set, plus a Messages tab with row counts,
+timings and errors. Large results stream in 500-row pages (**Load more**), and
+CSV export drains every page. Click a column edge to resize; double-click a cell
+to copy it; **COPY** copies the loaded rows as TSV.
+
+**Tabs and files** — one tab per query or DDL object. Open and save `.sql` files,
+or pin a file to keep it across restarts. Unsaved changes are protected on close.
+Right-click a tab to close all, close others, or close everything to the right.
+
+**Connections** — parameter form or connection string, SSL toggle, several saved
+connections, switch between them from the badge in the top bar.
+
+## Limits worth knowing
+
+- **Local single user.** There is no login, and the server listens on loopback
+  only. Don't expose it to a network.
+- **Saved passwords are stored unencrypted** in your browser's IndexedDB if you
+  ask it to remember them. Fine for a trusted machine, not for a shared one.
+- **30-second statement timeout** per statement, and results are capped at
+  10,000 rows per page request.
+- **DDL reconstruction is not complete.** Skipped: extended statistics, replica
+  identity, foreign-table options, sequence options (start/increment/cache).
+  A few aggregate kinds are not reproduced faithfully.
+- Cross-origin browser requests to the API are rejected, so a random website
+  can't drive your local server.
