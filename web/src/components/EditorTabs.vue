@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { X } from 'lucide-vue-next'
-import { useTabs } from '../composables/tabs'
+import { useTabs, type EditorTab } from '../composables/tabs'
 import { useConnection } from '../composables/connection'
 import { useResults } from '../composables/results'
 import { api } from '../api'
@@ -37,27 +37,37 @@ function closeSession(key: string) {
   if (conn.state.id) void api.closeSession(conn.state.id, key).catch(() => undefined)
 }
 
+function canClose(tab: EditorTab): boolean {
+  return !tabs.isDirty(tab) || window.confirm(`Close unsaved changes in "${tab.title}"?`)
+}
+
 function closeTab(key: string) {
+  const tab = tabs.state.tabs.find((t) => t.key === key)
+  if (!tab || !canClose(tab)) return
   closeSession(key)
   tabs.close(key)
 }
 
 function closeAllTabs() {
-  for (const tab of tabs.state.tabs) closeSession(tab.key)
+  const openTabs = [...tabs.state.tabs]
+  if (openTabs.some((tab) => !canClose(tab))) return
+  for (const tab of openTabs) closeSession(tab.key)
   tabs.closeAll()
 }
 
 function closeOtherTabs(key: string) {
-  for (const tab of tabs.state.tabs) {
-    if (tab.key !== key) closeSession(tab.key)
-  }
+  const toClose = tabs.state.tabs.filter((tab) => tab.key !== key)
+  if (toClose.some((tab) => !canClose(tab))) return
+  for (const tab of toClose) closeSession(tab.key)
   tabs.closeOthers(key)
 }
 
 function closeRightTabs(key: string) {
   const index = tabs.state.tabs.findIndex((tab) => tab.key === key)
   if (index === -1) return
-  for (const tab of tabs.state.tabs.slice(index + 1)) closeSession(tab.key)
+  const toClose = tabs.state.tabs.slice(index + 1)
+  if (toClose.some((tab) => !canClose(tab))) return
+  for (const tab of toClose) closeSession(tab.key)
   tabs.closeRight(key)
 }
 
@@ -84,7 +94,7 @@ const menuIndex = computed(() =>
         @click="tabs.activate(t.key)"
         @contextmenu="openMenu($event, t.key)"
       >
-        <span class="tab-title">{{ t.title }}</span>
+        <span class="tab-title" :title="tabs.displayTitle(t)">{{ tabs.displayTitle(t) }}</span>
         <button class="tab-close" title="Close tab" @click.stop="closeTab(t.key)"><X :size="14" /></button>
       </div>
     </div>

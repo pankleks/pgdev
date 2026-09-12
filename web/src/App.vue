@@ -1,22 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
-import { Database, FilePlus2, FolderOpen, Settings, Wand2 } from 'lucide-vue-next'
+import { Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, Wand2 } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ResultsPanel from './components/ResultsPanel.vue'
 import { useConnection } from './composables/connection'
-import { useTabs } from './composables/tabs'
+import { useTabs, type EditorTab } from './composables/tabs'
 import { useResults } from './composables/results'
 import { useToast } from './composables/toast'
 import { getActiveSelection, triggerFormat } from './lib/formatbridge'
+import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
 
 const conn = useConnection()
 const tabs = useTabs()
 const results = useResults()
 const toast = useToast()
 const settingsOpen = ref(false)
+const saving = ref(false)
 
 const activeTab = computed(() =>
   tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
@@ -24,12 +26,52 @@ const activeTab = computed(() =>
 
 const fileInput = ref<HTMLInputElement | null>(null)
 
+function suggestedFileName(tab: EditorTab): string {
+  const base = (tab.fileName ?? tab.title)
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .replace(/[. ]+$/, '') || 'query'
+  return /\.[^./\\]+$/.test(base) ? base : `${base}.sql`
+}
+
 async function onFilesChosen(e: Event) {
   const input = e.target as HTMLInputElement
   for (const file of [...(input.files ?? [])]) {
     tabs.openFile(file.name, await file.text())
   }
   input.value = ''
+}
+
+async function openFiles() {
+  try {
+    const picked = await openTextFiles()
+    if (picked === null) {
+      fileInput.value?.click()
+      return
+    }
+    for (const { file, handle } of picked) tabs.openFile(file.name, await file.text(), handle)
+  } catch (e) {
+    if (!isPickerCancelled(e)) toast.show(`Open failed: ${(e as Error).message}`)
+  }
+}
+
+async function saveActive(saveAs = false) {
+  const tab = activeTab.value
+  if (!tab || saving.value) return
+  const key = tab.key
+  const content = tab.content
+  const fileName = suggestedFileName(tab)
+  const handle = tabs.fileHandle(key)
+  const pickName = saveAs || tab.source === 'untitled'
+  saving.value = true
+  try {
+    const saved = await saveTextFile(content, fileName, handle, pickName)
+    if (saved) tabs.markSaved(key, saved.fileName, saved.handle, content)
+  } catch (e) {
+    if (!isPickerCancelled(e)) toast.show(`Save failed: ${(e as Error).message}`)
+  } finally {
+    saving.value = false
+  }
 }
 
 const sideW = ref(336)
@@ -49,16 +91,27 @@ function onMouseUp() {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyS') {
+    e.preventDefault()
+    void saveActive()
+    return
+  }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyO') {
     e.preventDefault()
-    fileInput.value?.click()
+    void openFiles()
+    return
+  }
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyN') {
+    e.preventDefault()
+    tabs.newQuery()
   }
 }
 
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
-  window.addEventListener('keydown', onKeyDown)
+  // Capture editor shortcuts before Monaco or the browser handles them.
+  window.addEventListener('keydown', onKeyDown, true)
   if (!tabs.state.tabs.length) tabs.newQuery()
   conn.autoConnect()
 })
@@ -66,7 +119,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
-  window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keydown', onKeyDown, true)
 })
 
 function runActive() {
@@ -125,8 +178,22 @@ provide('pgdev:run', runActive)
         :disabled="!activeTab || activeTab.readOnly"
         @click="triggerFormat()"
       ><Wand2 :size="15" /></button>
-      <button class="icon" title="Open .sql file (Ctrl+O)" @click="fileInput?.click()"><FolderOpen :size="15" /></button>
-      <button class="icon" title="New query tab" @click="tabs.newQuery()"><FilePlus2 :size="15" /></button>
+      <button class="icon" title="New query tab (Ctrl+N)" @click="tabs.newQuery()"><FilePlus2 :size="15" /></button>
+      <button class="icon" title="Open .sql file (Ctrl+O)" @click="openFiles()"><FolderOpen :size="15" /></button>
+      <button
+        class="icon"
+        :disabled="!activeTab || saving"
+        :title="saving ? 'Saving…' : 'Save active tab (Ctrl+S)'"
+        :aria-label="saving ? 'Saving' : 'Save active tab'"
+        @click="saveActive()"
+      ><Save :size="15" /></button>
+      <button
+        class="icon"
+        :disabled="!activeTab || saving"
+        title="Save active tab as a new SQL file"
+        aria-label="Save active tab as a new SQL file"
+        @click="saveActive(true)"
+      ><FileOutput :size="15" /></button>
       <button v-if="conn.state.id" @click="conn.disconnect()">Disconnect</button>
       <button v-else class="primary" @click="conn.state.dialog = true">Connect</button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>

@@ -50,7 +50,7 @@ const toast = useToast()
 const open = reactive({ tables: false, views: false, functions: false, types: false })
 const expanded = reactive(new Set<string>())
 
-type SearchType = 'table' | 'view' | 'function' | 'column' | 'type'
+type SearchType = 'table' | 'view' | 'function' | 'column' | 'parameter' | 'type'
 
 type BrowserNodeType =
   | 'section'
@@ -156,6 +156,10 @@ const TYPE_WORDS: Record<string, SearchType> = {
   column: 'column',
   columns: 'column',
   col: 'column',
+  param: 'parameter',
+  params: 'parameter',
+  parameter: 'parameter',
+  parameters: 'parameter',
   type: 'type',
   types: 'type',
 }
@@ -206,12 +210,20 @@ function colsMatched(cols: { name: string }[]): boolean {
   return cols.some((c) => c.name.toLowerCase().includes(query.value))
 }
 
+function paramsMatched(args: string): boolean {
+  return paramRows(args, '').some((p) => p.kind !== 'returns' && p.name.toLowerCase().includes(query.value))
+}
+
 function autoExpandRel(name: string, schema: string, cols: { name: string }[]): boolean {
   return isFiltering.value && !nameMatched(name, schema) && colsMatched(cols)
 }
 
-function autoExpandFunc(name: string, schema: string, typeSig: string): boolean {
-  return isFiltering.value && !nameMatched(name, schema) && typeSig.toLowerCase().includes(query.value)
+function autoExpandFunc(name: string, schema: string, typeSig: string, args: string): boolean {
+  return (
+    isFiltering.value &&
+    !nameMatched(name, schema) &&
+    (typeSig.toLowerCase().includes(query.value) || paramsMatched(args))
+  )
 }
 
 const showTables = computed(
@@ -229,7 +241,7 @@ const showViews = computed(
     searchType.value === 'column',
 )
 const showFunctions = computed(
-  () => !isFiltering.value || searchType.value === null || searchType.value === 'function',
+  () => !isFiltering.value || searchType.value === null || searchType.value === 'function' || searchType.value === 'parameter',
 )
 const showTypes = computed(
   () => !isFiltering.value || searchType.value === null || searchType.value === 'type',
@@ -265,8 +277,11 @@ const filteredFunctions = computed(() =>
     ? functions.value.filter(
         (f) =>
           !isFiltering.value ||
-          nameMatched(f.name, f.schema) ||
-          f.typeSig.toLowerCase().includes(query.value),
+          (searchType.value === 'parameter'
+            ? paramsMatched(f.args)
+            : nameMatched(f.name, f.schema) ||
+              f.typeSig.toLowerCase().includes(query.value) ||
+              (searchType.value === null && paramsMatched(f.args))),
       )
     : [],
 )
@@ -569,7 +584,7 @@ async function refresh() {
 
     <template v-else>
       <div class="browser-search">
-        <input v-model="filter" placeholder='Search… e.g. "unit table"' />
+        <input v-model="filter" placeholder='Search… e.g. "unit table", "id col", "user param"' />
         <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
         <button
           class="icon"
@@ -895,7 +910,7 @@ async function refresh() {
                   >
                     <span
                       class="caret"
-                      :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig) }"
+                      :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args) }"
                       title="Toggle signature"
                       @click.stop="toggleChildren('f-' + f.oid)"
                     ><ChevronRight :size="12" /></span>
@@ -903,7 +918,7 @@ async function refresh() {
                     <span class="obj-name" v-html="highlightText(displayName(f.schema, f.name))" />
                     <span class="node-badges"><span v-if="f.returns === 'void'" class="void-badge">void</span><span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span><span v-if="isTbd(f.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
-                  <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig)">
+                  <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args)">
                     <div
                       v-for="(p, i) in paramRows(f.args, f.returns)"
                       :key="'p-' + i"
