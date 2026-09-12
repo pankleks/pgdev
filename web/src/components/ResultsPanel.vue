@@ -279,7 +279,9 @@ async function exportCsv() {
         </div>
       </div>
       <div class="grid-foot">
-        {{ grid.g.rows.length }} row(s)
+        <!-- the result's own rowCount, not the virtualised slice actually
+             rendered: grid.g.rows is only the visible window -->
+        {{ result?.grid?.rowCount ?? 0 }} row(s)
         <span v-if="grid.g.truncated">· more available</span>
         <button
           v-if="grid.g.truncated"

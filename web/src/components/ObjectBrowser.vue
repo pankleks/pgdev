@@ -618,6 +618,10 @@ function catOpen(t: TableInfo, cat: TableCategory): boolean {
   )
 }
 
+// Monotonic token per object: two quick double-clicks must not let the slower
+// response win the active tab (schema loads use the same pattern).
+const ddlRequests = new Map<string, number>()
+
 async function openObject(
   type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type',
   schemaName: string,
@@ -629,18 +633,29 @@ async function openObject(
   cancelPendingToggle()
   const connectionId = conn.state.id
   if (!connectionId) return
+  const key = `${type}\u0000${schemaName}\u0000${name}\u0000${oid ?? ''}\u0000${parent ?? ''}`
+  const version = (ddlRequests.get(key) ?? 0) + 1
+  ddlRequests.set(key, version)
   try {
     const { ddl } = await api.ddl(connectionId, type, schemaName, name, oid, parent)
-    if (conn.state.id !== connectionId) return
-    // Function/view DDL is CREATE OR REPLACE (re-runnable), and index/
-    // trigger/type DDL ships with a commented DROP line, so those tabs are
-    // editable; tables and constraints stay read-only previews. Re-opening
-    // refreshes content.
-    const editable = type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type'
+    // A later double-click on the same object, or a connection switch, makes
+    // this response stale — discard it without touching the tab strip.
+    if (conn.state.id !== connectionId || ddlRequests.get(key) !== version) return
+    // CREATE OR REPLACE makes functions and plain views re-runnable, and the
+    // index/trigger/type scripts ship with a commented DROP line. Tables and
+    // constraints stay read-only previews, and so does a materialized view:
+    // PostgreSQL has no CREATE OR REPLACE MATERIALIZED VIEW, so its generated
+    // script cannot run over the existing object.
+    const materialized = type === 'view' && !!schema.state.data?.views.find(
+      (v) => v.schema === schemaName && v.name === name,
+    )?.materialized
+    const editable = !materialized &&
+      (type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type')
     const identity = oid ? `--${oid}` : identitySuffix
     tabs.openDdl(type, schemaName, name, ddl, identity, editable, parent ?? '', connectionId)
   } catch (e) {
-    toast.show((e as Error).message)
+    // Only surface the failure if it still belongs to the active connection.
+    if (conn.state.id === connectionId) toast.show((e as Error).message)
   }
 }
 
@@ -684,10 +699,10 @@ async function refresh() {
               v-if="entry.kind === 'group'"
               class="node object-group-node"
               :title="`${displayName(entry.schema, entry.name)} · ${entry.tables.length} tables`"
-              @click="toggleTableGroup(entry.key)"
-              @contextmenu="openNodeMenu($event, browserNode('table-group', entry.key, entry.tables.map((t) => 't-' + t.oid), expandedTableGroups))"
+              @click="!isFiltering && toggleTableGroup(entry.key)"
+              @contextmenu="openNodeMenu($event, browserNode('table-group', entry.key, entry.tables.map((t) => 't-' + t.oid), expandedTableGroups), false)"
             >
-              <span class="caret" :class="{ open: tableGroupOpen(entry) }"><ChevronRight :size="12" /></span>
+              <span class="caret" :class="{ open: tableGroupOpen(entry) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="tableGroupOpen(entry) ? FolderOpen : Folder" :size="14" /></span>
               <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
               <span class="node-badges"></span>
@@ -707,7 +722,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: tableOpen(t) }"
                       title="Expand"
-                      @dblclick.stop @click.stop="toggleChildren('t-' + t.oid)"
+                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('t-' + t.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon">
                       <Table2 :size="14" />
@@ -729,7 +744,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: catOpen(t, 'cols') }"
-                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-cols`)"
+                        @dblclick.stop @click.stop="!isFiltering && toggleChildren(`t-${t.oid}-cols`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><Columns3 :size="13" /></span>
                       <span class="obj-name">Columns</span>
@@ -755,7 +770,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-idx`) }"
-                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-idx`)"
+                        @dblclick.stop @click.stop="!isFiltering && toggleChildren(`t-${t.oid}-idx`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><ListTree :size="13" /></span>
                       <span class="obj-name">Indexes</span>
@@ -783,7 +798,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-con`) }"
-                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-con`)"
+                        @dblclick.stop @click.stop="!isFiltering && toggleChildren(`t-${t.oid}-con`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><KeyRound :size="13" /></span>
                       <span class="obj-name">Constraints</span>
@@ -810,7 +825,7 @@ async function refresh() {
                       <span
                         class="caret"
                         :class="{ open: expanded.has(`t-${t.oid}-trg`) }"
-                        @dblclick.stop @click.stop="toggleChildren(`t-${t.oid}-trg`)"
+                        @dblclick.stop @click.stop="!isFiltering && toggleChildren(`t-${t.oid}-trg`)"
                       ><ChevronRight :size="11" /></span>
                       <span class="obj-icon"><Zap :size="13" /></span>
                       <span class="obj-name">Triggers</span>
@@ -852,10 +867,10 @@ async function refresh() {
               v-if="entry.kind === 'group'"
               class="node object-group-node"
               :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} views`"
-              @click="toggleObjectGroup(entry.key, expandedViewGroups)"
-              @contextmenu="openNodeMenu($event, browserNode('view-group', entry.key, entry.objects.map((v) => 'v-' + v.oid), expandedViewGroups))"
+              @click="!isFiltering && toggleObjectGroup(entry.key, expandedViewGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('view-group', entry.key, entry.objects.map((v) => 'v-' + v.oid), expandedViewGroups), false)"
             >
-              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedViewGroups) }"><ChevronRight :size="12" /></span>
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedViewGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedViewGroups) ? FolderOpen : Folder" :size="14" /></span>
               <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
               <span class="node-badges"></span>
@@ -869,7 +884,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns) }"
                       title="Toggle columns"
-                      @dblclick.stop @click.stop="toggleChildren('v-' + v.oid)"
+                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('v-' + v.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Eye :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(v.schema, v.name))" />
@@ -908,10 +923,10 @@ async function refresh() {
               v-if="entry.kind === 'group'"
               class="node object-group-node"
               :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} types`"
-              @click="toggleObjectGroup(entry.key, expandedTypeGroups)"
-              @contextmenu="openNodeMenu($event, browserNode('type-group', entry.key, entry.objects.map((t) => 'ty-' + t.oid), expandedTypeGroups))"
+              @click="!isFiltering && toggleObjectGroup(entry.key, expandedTypeGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('type-group', entry.key, entry.objects.map((t) => 'ty-' + t.oid), expandedTypeGroups), false)"
             >
-              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedTypeGroups) }"><ChevronRight :size="12" /></span>
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedTypeGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedTypeGroups) ? FolderOpen : Folder" :size="14" /></span>
               <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
               <span class="node-badges"></span>
@@ -931,7 +946,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('ty-' + t.oid) }"
                       title="Toggle detail"
-                      @dblclick.stop @click.stop="toggleChildren('ty-' + t.oid)"
+                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('ty-' + t.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Shapes :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(t.schema, t.name))" />
@@ -963,10 +978,10 @@ async function refresh() {
               v-if="entry.kind === 'group'"
               class="node object-group-node"
               :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} functions`"
-              @click="toggleObjectGroup(entry.key, expandedFunctionGroups)"
-              @contextmenu="openNodeMenu($event, browserNode('function-group', entry.key, entry.objects.map((f) => 'f-' + f.oid), expandedFunctionGroups))"
+              @click="!isFiltering && toggleObjectGroup(entry.key, expandedFunctionGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('function-group', entry.key, entry.objects.map((f) => 'f-' + f.oid), expandedFunctionGroups), false)"
             >
-              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedFunctionGroups) }"><ChevronRight :size="12" /></span>
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedFunctionGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedFunctionGroups) ? FolderOpen : Folder" :size="14" /></span>
               <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
               <span class="node-badges"></span>
@@ -986,7 +1001,7 @@ async function refresh() {
                       class="caret"
                       :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args) }"
                       title="Toggle signature"
-                      @dblclick.stop @click.stop="toggleChildren('f-' + f.oid)"
+                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('f-' + f.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
                     <span class="obj-name" v-html="highlightText(displayName(f.schema, f.name))" />
