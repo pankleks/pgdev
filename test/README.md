@@ -34,8 +34,11 @@ PGDEV_TEST_URL=... node test/apitest.mjs
 
 ## Credentials
 
-The database suites read `PGDEV_TEST_URL` only; nothing is hard-coded and no
-password is stored in the repository. It should point at a maintenance database
+The database suites read `PGDEV_TEST_URL` from the environment, or from a
+`.env` file at the repository root when the variable is not already set — a real
+environment variable always wins. `.env` is gitignored, so no password is
+committed; copy the format from the comment in it, or export the variable
+directly. It should point at a maintenance database
 (`postgres` is fine) whose role may `CREATE DATABASE`.
 
 > **Never aim these at a database you care about.** The suites create and drop

@@ -11,6 +11,15 @@ import { readdirSync } from 'node:fs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+// Pick up PGDEV_TEST_URL from the repository .env when it is not already in the
+// environment, so `npm test` works without exporting anything. A real
+// environment variable always wins.
+try {
+  process.loadEnvFile(join(HERE, '..', '.env'))
+} catch {
+  // no .env, or an unreadable one: the notice below still explains what to set
+}
+
 function run(file, args = []) {
   console.log(`\n${'='.repeat(72)}\n${file}\n${'='.repeat(72)}`)
   const res = spawnSync(process.execPath, [join(HERE, file), ...args], { stdio: 'inherit' })
