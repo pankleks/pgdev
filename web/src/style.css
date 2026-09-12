@@ -741,7 +741,11 @@ input {
 .app-version {
   color: var(--text-dim);
   font-size: 11px;
-  padding: 0 2px;
+  line-height: 1;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  white-space: nowrap;
   user-select: text;
 }
 

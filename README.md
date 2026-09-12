@@ -11,7 +11,7 @@ no account to create.
 Needs Node.js 20+ and a PostgreSQL server (11 or newer).
 
 ```bash
-npm install -g pgdev-ide
+npm install -g @pankleks/pgdev
 pgdev
 ```
 
@@ -26,7 +26,7 @@ pgdev
 
 If port 3000 is taken it moves to the next free port and prints the URL it used.
 
-**Upgrading:** `npm install -g pgdev-ide@latest`, then restart. Connections,
+**Upgrading:** `npm install -g @pankleks/pgdev@latest`, then restart. Connections,
 settings and pinned files live in your browser and are kept.
 
 ## Use

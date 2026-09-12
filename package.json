@@ -1,33 +1,25 @@
 {
-  "name": "pgdev-ide",
-  "private": true,
+  "name": "@pankleks/pgdev",
   "version": "0.1.0",
-  "workspaces": [
-    "server",
-    "web"
-  ],
-  "scripts": {
-    "dev": "concurrently -k -n server,web -c blue,green \"cd server && npm run dev\" \"cd web && npm run dev\"",
-    "build": "npm run build:web && npm run build:server",
-    "start": "node bin/pgdev.mjs",
-    "test": "npm run build:server && node test/run.mjs",
-    "start:no-open": "node bin/pgdev.mjs --no-open",
-    "build:web": "cd web && vue-tsc --noEmit && vite build",
-    "build:server": "cd server && tsc"
-  },
-  "devDependencies": {
-    "concurrently": "^9.1.2",
-    "@vitejs/plugin-vue": "^5.2.1",
-    "vite": "^6.0.7",
-    "vue-tsc": "^2.2.0",
-    "typescript": "^5.7.3",
-    "@types/pg": "^8.11.10"
-  },
-  "allowScripts": {
-    "esbuild@0.28.2": true,
-    "esbuild@0.25.12": true
-  },
   "description": "A local web IDE for PostgreSQL: object browser, schema-aware editor and paged results, talking to your database from your own machine.",
+  "keywords": [
+    "postgresql",
+    "postgres",
+    "ide",
+    "sql",
+    "database",
+    "editor",
+    "monaco"
+  ],
+  "homepage": "https://github.com/pankleks/pgdev#readme",
+  "bugs": {
+    "url": "https://github.com/pankleks/pgdev/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pankleks/pgdev.git"
+  },
+  "author": "Krzysztof Heim <krzysztof.heim@gmail.com>",
   "license": "MIT",
   "bin": {
     "pgdev": "bin/pgdev.mjs"
@@ -38,12 +30,40 @@
     "web/dist/",
     "README.md"
   ],
+  "workspaces": [
+    "server",
+    "web"
+  ],
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,green \"cd server && npm run dev\" \"cd web && npm run dev\"",
+    "build": "npm run build:web && npm run build:server",
+    "start": "node bin/pgdev.mjs",
+    "test": "npm run build:server && node test/run.mjs",
+    "start:no-open": "node bin/pgdev.mjs --no-open",
+    "build:web": "cd web && vue-tsc --noEmit && vite build",
+    "build:server": "cd server && tsc"
+  },
   "dependencies": {
-    "@fastify/static": "^8.0.3",
+    "@fastify/static": "^10.1.3",
     "fastify": "^5.2.1",
     "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true
   }
 }
