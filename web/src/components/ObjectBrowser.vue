@@ -45,6 +45,19 @@ import { api } from '../api'
 import type { TableInfo } from '../types'
 import { groupTables, type TableEntry } from '../lib/tablegroups'
 import { groupNamedObjects } from '../lib/objectgroups'
+import {
+  autoExpandFunction,
+  autoExpandRelation,
+  columnsMatch,
+  highlightTerms,
+  matchesTerms,
+  nameMatches,
+  paramRows,
+  paramsMatch,
+  parseSearch,
+  searchTerms,
+  type ParamKind,
+} from '../lib/browserSearch'
 
 const conn = useConnection()
 const schema = useSchema()
@@ -54,8 +67,6 @@ const toast = useToast()
 
 const open = reactive({ tables: false, views: false, functions: false, types: false })
 const expanded = reactive(new Set<string>())
-
-type SearchType = 'table' | 'view' | 'function' | 'column' | 'parameter' | 'type'
 
 type BrowserNodeType =
   | 'section'
@@ -207,93 +218,40 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 
-const TYPE_WORDS: Record<string, SearchType> = {
-  table: 'table',
-  tables: 'table',
-  view: 'view',
-  views: 'view',
-  function: 'function',
-  functions: 'function',
-  func: 'function',
-  fn: 'function',
-  column: 'column',
-  columns: 'column',
-  col: 'column',
-  param: 'parameter',
-  params: 'parameter',
-  parameter: 'parameter',
-  parameters: 'parameter',
-  type: 'type',
-  types: 'type',
-}
-
 const filter = ref('')
-const parsed = computed(() => {
-  const q = filter.value.trim().toLowerCase()
-  if (!q) return { term: '', type: null as SearchType | null }
-  const tokens = q.split(/\s+/)
-  const last = tokens[tokens.length - 1]
-  if (tokens.length > 1 && TYPE_WORDS[last]) {
-    return { term: tokens.slice(0, -1).join(' '), type: TYPE_WORDS[last] }
-  }
-  if (TYPE_WORDS[tokens[0]]) {
-    return { term: tokens.slice(1).join(' '), type: TYPE_WORDS[tokens[0]] }
-  }
-  return { term: q, type: null }
-})
-const queryTerms = computed(() => parsed.value.term.split(/[+\s]+/).filter(Boolean))
+const parsed = computed(() => parseSearch(filter.value))
+const queryTerms = computed(() => searchTerms(parsed.value.term))
 const searchType = computed(() => parsed.value.type)
 const isFiltering = computed(() => filter.value.trim().length > 0)
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char)
-}
-
+// Thin bindings over lib/browserSearch.ts: the template and the filters keep
+// their original names while the pure logic lives in a unit-tested module.
 function highlightText(value: string): string {
-  const terms = [...new Set(queryTerms.value)].sort((a, b) => b.length - a.length)
-  if (!terms.length) return escapeHtml(value)
-
-  const pattern = new RegExp(terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi')
-  let result = ''
-  let lastIndex = 0
-  for (const match of value.matchAll(pattern)) {
-    const index = match.index ?? 0
-    result += escapeHtml(value.slice(lastIndex, index))
-    result += `<mark class="search-hit">${escapeHtml(match[0])}</mark>`
-    lastIndex = index + match[0].length
-  }
-  return result + escapeHtml(value.slice(lastIndex))
+  return highlightTerms(value, queryTerms.value)
 }
 
 function matchesAll(value: string): boolean {
-  const candidate = value.toLowerCase()
-  return queryTerms.value.every((term) => candidate.includes(term))
+  return matchesTerms(value, queryTerms.value)
 }
 
 function nameMatched(name: string, schema: string): boolean {
-  const nameText = name.toLowerCase()
-  const schemaText = schema.toLowerCase()
-  return queryTerms.value.every((term) => nameText.includes(term) || schemaText.includes(term))
+  return nameMatches(name, schema, queryTerms.value)
 }
 
 function colsMatched(cols: { name: string }[]): boolean {
-  return cols.some((c) => matchesAll(c.name))
+  return columnsMatch(cols, queryTerms.value)
 }
 
 function paramsMatched(args: string): boolean {
-  return paramRows(args, '').some((p) => p.kind !== 'returns' && matchesAll(p.name))
+  return paramsMatch(args, queryTerms.value)
 }
 
 function autoExpandRel(name: string, schema: string, cols: { name: string }[]): boolean {
-  return isFiltering.value && !nameMatched(name, schema) && colsMatched(cols)
+  return autoExpandRelation(name, schema, cols, isFiltering.value, queryTerms.value)
 }
 
 function autoExpandFunc(name: string, schema: string, typeSig: string, args: string): boolean {
-  return (
-    isFiltering.value &&
-    !nameMatched(name, schema) &&
-    (matchesAll(typeSig) || paramsMatched(args))
-  )
+  return autoExpandFunction(name, schema, typeSig, args, isFiltering.value, queryTerms.value)
 }
 
 const showTables = computed(
@@ -479,41 +437,6 @@ function isTbd(name: string): boolean {
   return name.includes('_tbd')
 }
 
-function splitArgs(args: string): string[] {
-  const trimmed = args.trim()
-  if (!trimmed) return []
-  const parts: string[] = []
-  let depth = 0
-  let quote: string | null = null
-  let cur = ''
-  for (const ch of trimmed) {
-    if (quote) {
-      cur += ch
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch
-      cur += ch
-      continue
-    }
-    if (ch === '(') depth++
-    else if (ch === ')') depth--
-    if (ch === ',' && depth === 0) {
-      parts.push(cur.trim())
-      cur = ''
-    } else {
-      cur += ch
-    }
-  }
-  if (cur.trim()) parts.push(cur.trim())
-  return parts
-}
-
-const PARAM_MODES = ['IN', 'OUT', 'INOUT', 'VARIADIC']
-
-type ParamKind = 'in' | 'out' | 'inout' | 'variadic' | 'returns'
-
 const PARAM_ICONS: Record<ParamKind, LucideIcon> = {
   in: ArrowRight,
   out: ArrowLeft,
@@ -578,31 +501,6 @@ function tableBadge(t: TableInfo): LucideIcon | null {
   if (t.isPartition || t.parents) return CornerDownRight
   if (t.isPartitioned) return Grid2x2
   return null
-}
-
-interface ParamRow {
-  kind: ParamKind
-  name: string
-  rest: string
-}
-
-function paramRows(args: string, returns: string): ParamRow[] {
-  const rows = splitArgs(args).map((a): ParamRow => {
-    const words = a.split(/\s+/)
-    let kind: ParamKind = 'in'
-    let i = 0
-    const first = words[0]?.toUpperCase()
-    if (words.length > 1 && PARAM_MODES.includes(first)) {
-      kind = first === 'OUT' ? 'out' : first === 'INOUT' ? 'inout' : first === 'VARIADIC' ? 'variadic' : 'in'
-      i = 1
-    }
-    if (words.length > i + 1) {
-      return { kind, name: words.slice(i, i + 1).join(' '), rest: words.slice(i + 1).join(' ') }
-    }
-    return { kind, name: words.length > i ? words.slice(i).join(' ') : a, rest: '' }
-  })
-  rows.push({ kind: 'returns', name: 'returns', rest: returns })
-  return rows
 }
 
 type TableCategory = 'cols' | 'idx' | 'con' | 'trg'
