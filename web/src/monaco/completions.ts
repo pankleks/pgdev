@@ -2,11 +2,11 @@ import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
 import {
   matchDotChain,
-  normIdent,
+  findRelation,
   parseAliases,
   quoteIdent,
   splitChain,
-  type RelRef,
+  resolveQualifier,
 } from './sqlrefs'
 
 const KEYWORDS =
@@ -92,34 +92,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       const chain = matchDotChain(lineBefore)
       if (chain) {
         const parts = splitChain(chain)
-        const findRel = (ref: RelRef) =>
-          relations.find((t) => {
-            if (ref.schema) {
-              return (
-                t.schema.toLowerCase() === ref.schema && t.name.toLowerCase() === ref.name
-              )
-            }
-            return t.name.toLowerCase() === ref.name
-          }) ??
-          // Prefer `public` when several schemas expose the same name.
-          relations.find(
-            (t) => t.name.toLowerCase() === ref.name && t.schema === 'public',
-          )
-
-          let match = null as null | (typeof relations)[number]
-          if (parts.length === 1) {
-            const key = normIdent(parts[0])
-            // 1. table alias (`FROM employees e` → `e.`)
-            const target = aliases.get(key)
-            if (target) match = findRel(target) ?? null
-          // 2. bare table / view name
-          if (!match) match = findRel({ schema: '', name: key }) ?? null
-        } else {
-          // schema-qualified (`sch.tbl.`); tolerate db.schema.table chains.
-          const rel = normIdent(parts[parts.length - 1])
-          const sch = normIdent(parts[parts.length - 2])
-          match = findRel({ schema: sch, name: rel }) ?? null
-        }
+        const match = resolveQualifier(relations, parts, aliases)
 
         if (match) {
           for (const c of match.columns) {
@@ -142,13 +115,10 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // Offer unqualified fields from relations in the current query. When
       // no relation is known yet, fall back to the loaded schema.
       const visibleRelations = aliases.size
-        ? relations.filter((relation) =>
-            [...aliases.values()].some((ref) =>
-              ref.schema
-                ? relation.schema.toLowerCase() === ref.schema && relation.name.toLowerCase() === ref.name
-                : relation.name.toLowerCase() === ref.name,
-            ),
-          )
+        ? [...new Set([...aliases.values()].flatMap((ref) => {
+            const relation = findRelation(relations, ref)
+            return relation ? [relation] : []
+          }))]
         : relations
       // The same column name commonly exists in several relations (`id` in
       // both employees and departments). Monaco would list one row per

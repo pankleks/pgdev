@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { unquoteIdent, normIdent, quoteIdent, splitChain, matchDotChain, parseAliases } =
+const { unquoteIdent, normIdent, quoteIdent, splitChain, matchDotChain, parseAliases, findRelation, resolveQualifier } =
   await load('web/monaco/sqlrefs.ts')
 
 test('unquoteIdent strips surrounding quotes and unescapes doubled ones', () => {
@@ -15,7 +15,7 @@ test('unquoteIdent strips surrounding quotes and unescapes doubled ones', () => 
 test('normIdent folds unquoted identifiers to lower case', () => {
   // PostgreSQL is case-insensitive for unquoted identifiers only.
   assert.equal(normIdent('MyCol'), 'mycol')
-  assert.equal(normIdent('"MyCol"'), 'mycol')
+  assert.equal(normIdent('"MyCol"'), 'MyCol')
 })
 
 test('quoteIdent quotes only when required', () => {
@@ -54,4 +54,56 @@ test('parseAliases bounds its work on very large inputs', () => {
   const filler = 'x'.repeat(9000)
   const a = parseAliases(`-- ${filler}\nSELECT * FROM employees e`)
   assert.deepEqual(a.get('e'), { schema: '', name: 'employees' })
+})
+
+const relations = [
+  { schema: 'audit', name: 'employees' },
+  { schema: 'public', name: 'employees' },
+  { schema: 'Audit', name: 'Employees' },
+  { schema: 'public', name: 'e' },
+  { schema: 'archive', name: 'events' },
+  { schema: 'audit', name: 'events' },
+  { schema: 'audit', name: 'unique_table' },
+]
+
+test('unqualified lookup prefers public regardless of catalog order', () => {
+  for (const list of [relations, [...relations].reverse()]) {
+    assert.deepEqual(findRelation(list, { schema: '', name: 'employees' }), relations[1])
+  }
+  assert.equal(findRelation(relations, { schema: '', name: 'events' }), undefined)
+  assert.equal(findRelation(relations, { schema: '', name: 'unique_table' }), relations[6])
+})
+
+test('qualified lookup is exact and never falls back to public', () => {
+  assert.equal(findRelation(relations, { schema: 'audit', name: 'employees' }), relations[0])
+  assert.equal(findRelation(relations, { schema: 'missing', name: 'employees' }), undefined)
+  assert.equal(resolveQualifier(relations, ['missing', 'employees'], new Map()), undefined)
+})
+
+test('aliases and bare qualifiers retain the schema of their FROM relation', () => {
+  const aliases = parseAliases('SELECT * FROM audit.employees e WHERE e.')
+  assert.equal(resolveQualifier(relations, ['e'], aliases), relations[0])
+  assert.equal(resolveQualifier(relations, ['employees'], aliases), relations[0])
+  const missing = parseAliases('SELECT * FROM missing.employees e WHERE e.')
+  assert.equal(resolveQualifier(relations, ['e'], missing), undefined)
+  assert.equal(resolveQualifier(relations, ['employees'], missing), undefined)
+})
+
+test('quoted schemas, relations and aliases preserve case', () => {
+  const aliases = parseAliases('SELECT * FROM "Audit"."Employees" AS "E" WHERE "E".')
+  assert.equal(resolveQualifier(relations, ['"E"'], aliases), relations[2])
+  assert.equal(resolveQualifier(relations, ['"Audit"', '"Employees"'], aliases), relations[2])
+  assert.equal(resolveQualifier(relations, ['AUDIT', 'EMPLOYEES'], new Map()), relations[0])
+  assert.equal(resolveQualifier(relations, ['"Audit"', 'employees'], new Map()), undefined)
+  assert.equal(resolveQualifier(relations, ['e'], aliases), relations[3])
+})
+
+test('quoted identifiers with escaped quotes resolve without splitting the name', () => {
+  const chain = '"a""b"."c""d"'
+  assert.equal(matchDotChain(`SELECT ${chain}.`), chain)
+  assert.deepEqual(splitChain(chain), ['"a""b"', '"c""d"'])
+  const quoted = [{ schema: 'a"b', name: 'c"d' }]
+  assert.equal(resolveQualifier(quoted, splitChain(chain), new Map()), quoted[0])
+  const aliases = parseAliases(`SELECT * FROM ${chain} AS "select" WHERE "select".`)
+  assert.equal(resolveQualifier(quoted, ['"select"'], aliases), quoted[0])
 })

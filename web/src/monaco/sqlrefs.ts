@@ -16,9 +16,39 @@ export function unquoteIdent(id: string): string {
   return t
 }
 
-/** Lower-cased comparison form (unquoted PG identifiers fold to lower). */
+/** Fold unquoted identifiers only; quoted PostgreSQL names are case-sensitive. */
 export function normIdent(id: string): string {
-  return unquoteIdent(id).toLowerCase()
+  const trimmed = id.trim()
+  return trimmed.startsWith('"') && trimmed.endsWith('"')
+    ? unquoteIdent(trimmed)
+    : trimmed.toLowerCase()
+}
+
+/** Resolve normalized references against the exact names from pg_catalog. */
+export function findRelation<T extends { schema: string; name: string }>(
+  relations: T[],
+  ref: RelRef,
+): T | undefined {
+  if (ref.schema) return relations.find((r) => r.schema === ref.schema && r.name === ref.name)
+  const matches = relations.filter((r) => r.name === ref.name)
+  // Completion metadata does not contain search_path. Prefer public, then a
+  // unique match; never guess among several non-public schemas.
+  return matches.find((r) => r.schema === 'public') ?? (matches.length === 1 ? matches[0] : undefined)
+}
+
+export function resolveQualifier<T extends { schema: string; name: string }>(
+  relations: T[],
+  parts: string[],
+  aliases: Map<string, RelRef>,
+): T | undefined {
+  if (!parts.length) return undefined
+  const name = normIdent(parts[parts.length - 1])
+  if (parts.length > 1) {
+    return findRelation(relations, { schema: normIdent(parts[parts.length - 2]), name })
+  }
+  // A known alias owns its qualifier even when its target is missing. Falling
+  // back to a same-named table would offer columns from an unrelated relation.
+  return findRelation(relations, aliases.get(name) ?? { schema: '', name })
 }
 
 /** Quote an identifier for insert text only when required. */
@@ -33,7 +63,7 @@ export function quoteIdent(name: string): string {
  */
 export function splitChain(chain: string): string[] {
   const parts: string[] = []
-  const re = /"[^"]*"|[A-Za-z_][A-Za-z0-9_]*/g
+  const re = /"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*/g
   let m: RegExpExecArray | null
   while ((m = re.exec(chain)) !== null) parts.push(m[0])
   return parts
@@ -42,7 +72,7 @@ export function splitChain(chain: string): string[] {
 /** Trailing dotted qualifier before the cursor, e.g. `f.` or `sch.tbl.`. */
 export function matchDotChain(lineBefore: string): string | null {
   const m =
-    /((?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*))*)\.\s*$/.exec(
+    /((?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*))*)\.\s*$/.exec(
       lineBefore,
     )
   return m ? m[1] : null
@@ -56,10 +86,10 @@ const NON_ALIAS = new Set(
 )
 
 const FROM_JOIN_RE =
-  /(?:FROM|JOIN)\s+((?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*))?)(?:\s+(?:AS\s+)?((?:"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)))?/gi
+  /(?:FROM|JOIN)\s+((?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*))?)(?:\s+(?:AS\s+)?((?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)))?/gi
 
 /**
- * Map lowercase alias (or bare table name used as self-reference) to the
+ * Map normalized alias (or bare table name used as self-reference) to the
  * referenced relation. `SELECT … FROM sch.tbl t JOIN foo …` yields
  * `t → sch.tbl`, `tbl → sch.tbl`, `foo → foo`.
  */
@@ -76,10 +106,10 @@ export function parseAliases(sql: string): Map<string, RelRef> {
       targetParts.length > 1
         ? { schema: targetParts[targetParts.length - 2], name: targetParts[targetParts.length - 1] }
         : { schema: '', name: targetParts[0] }
-    // Bare table name always resolves to itself (unless schema-qualified).
-    if (!target.schema) aliases.set(target.name, target)
+    // A bare qualifier can refer to a schema-qualified FROM relation too.
+    aliases.set(target.name, target)
     const rawAlias = m[2]
-    if (rawAlias && !NON_ALIAS.has(unquoteIdent(rawAlias).toUpperCase())) {
+    if (rawAlias && (rawAlias.startsWith('"') || !NON_ALIAS.has(rawAlias.toUpperCase()))) {
       aliases.set(normIdent(rawAlias), target)
     }
   }
