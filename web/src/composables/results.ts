@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { api } from '../api'
-import type { DataResult } from '../types'
+import type { DataResult, FetchMoreResponse } from '../types'
 
 export interface GridResult extends DataResult {
   key: string
@@ -12,10 +12,7 @@ export interface Message {
   level: 'info' | 'error'
 }
 
-export interface QueryErrorInfo {
-  text: string
-  level: 'info' | 'error'
-}
+export type QueryErrorInfo = Message
 
 // Statement timeouts surface as 57014 "canceling statement due to statement
 // timeout" — previously misreported as a user cancel. The pool runs with a
@@ -44,8 +41,11 @@ export interface TabResult {
   running: boolean
   cancelling: boolean
   loadingMore: boolean
-  grid: GridResult | null
   grids: GridResult[]
+  /** Which result the grid shows; `grid` derives from it, so a selection can
+   * never reference a result outside the current collection. */
+  selectedKey: string | null
+  readonly grid: GridResult | null
   messages: Message[]
   showMessages: boolean
 }
@@ -60,8 +60,11 @@ function ensure(key: string): TabResult {
       running: false,
       cancelling: false,
       loadingMore: false,
-      grid: null,
       grids: [],
+      selectedKey: null,
+      get grid(): GridResult | null {
+        return this.grids.find((g: GridResult) => g.key === this.selectedKey) ?? null
+      },
       messages: [],
       showMessages: false,
     })
@@ -70,12 +73,36 @@ function ensure(key: string): TabResult {
   return r
 }
 
+function isCurrent(key: string, result: TabResult, operation: number): boolean {
+  return state.byTab[key] === result && result.operation === operation
+}
+
+/**
+ * Fetch one more page and apply it to the explicitly captured grid. Returns
+ * null when the capture went stale (new run, selection change, dropped tab) —
+ * the page is then discarded without touching anything.
+ */
+async function fetchPageFor(
+  tabKey: string,
+  connectionId: string,
+  r: TabResult,
+  operation: number,
+  g: GridResult,
+): Promise<FetchMoreResponse | null> {
+  const res = await api.fetchMore(connectionId, tabKey)
+  if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return null
+  g.rows.push(...res.rows)
+  g.rowCount = g.rows.length
+  g.truncated = res.truncated
+  return res
+}
+
 export function useResults() {
   function selectGrid(tabKey: string, gridKey: string) {
     const r = state.byTab[tabKey]
     const grid = r?.grids.find((g) => g.key === gridKey)
     if (!r || !grid) return
-    r.grid = grid
+    r.selectedKey = gridKey
     r.showMessages = false
   }
 
@@ -85,17 +112,13 @@ export function useResults() {
     delete state.byTab[key]
   }
 
-  function isCurrent(key: string, result: TabResult, operation: number): boolean {
-    return state.byTab[key] === result && result.operation === operation
-  }
-
   async function run(tabKey: string, connectionId: string, sql: string) {
     const r = ensure(tabKey)
     if (!sql.trim() || r.running || r.loadingMore) return
     const operation = ++r.operation
     r.running = true
     r.cancelling = false
-    r.grid = null
+    r.selectedKey = null
     r.grids = []
     r.showMessages = false
     r.messages = [{ text: 'Running query…', level: 'info' }]
@@ -130,14 +153,14 @@ export function useResults() {
       }
       r.messages = messages
       r.grids = grids
-      r.grid = r.grids[0] ?? null
+      r.selectedKey = grids[0]?.key ?? null
       if (!r.grid) r.showMessages = true
     } catch (e) {
       if (!isCurrent(tabKey, r, operation)) return
       const err = e as Error & { code?: string | null }
       const info = describeQueryError(err.message, err.code, r.cancelling)
       r.messages = [{ text: info.text, level: info.level }]
-      r.grid = null
+      r.selectedKey = null
       r.grids = []
       r.showMessages = true
     } finally {
@@ -162,11 +185,8 @@ export function useResults() {
     const operation = r.operation
     r.loadingMore = true
     try {
-      const res = await api.fetchMore(connectionId, tabKey)
-      if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return
-      g.rows.push(...res.rows)
-      g.rowCount = g.rows.length
-      g.truncated = res.truncated
+      const res = await fetchPageFor(tabKey, connectionId, r, operation, g)
+      if (!res) return
       r.messages.push({
         text: res.truncated
           ? `Statement ${g.statementNumber}: loaded ${res.rows.length} more row(s) (${g.rows.length} total — more available).`
@@ -196,11 +216,8 @@ export function useResults() {
     r.loadingMore = true
     try {
       while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running) {
-        const res = await api.fetchMore(connectionId, tabKey)
-        if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
-        g.rows.push(...res.rows)
-        g.rowCount = g.rows.length
-        g.truncated = res.truncated
+        const res = await fetchPageFor(tabKey, connectionId, r, operation, g)
+        if (!res) return false
       }
       if (!isCurrent(tabKey, r, operation)) return false
       const complete = r.grids.includes(g) && !g.truncated
