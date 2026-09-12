@@ -6,6 +6,12 @@ import { pgErrorMessage } from '../pgerror.js'
 import { guardCheckedOutClient } from '../checkout.js'
 import { splitStatements } from '../sqlsplit.js'
 import {
+  withoutLeadingComments,
+  canUseCursor,
+  requiresAutocommit,
+  parseMaxRows,
+} from '../queryshape.js'
+import {
   sessionKey,
   getSession,
   setSession,
@@ -84,61 +90,6 @@ async function fetchPage(
     hasMore,
     pendingRow: hasMore ? fetched.rows[cap] : null,
   }
-}
-
-function withoutLeadingComments(sql: string): string {
-  let i = 0
-  while (i < sql.length) {
-    while (/\s/.test(sql[i] ?? '')) i++
-    if (sql[i] === '-' && sql[i + 1] === '-') {
-      const end = sql.indexOf('\n', i + 2)
-      i = end === -1 ? sql.length : end + 1
-      continue
-    }
-    if (sql[i] === '/' && sql[i + 1] === '*') {
-      let depth = 1
-      i += 2
-      while (i < sql.length && depth > 0) {
-        if (sql[i] === '/' && sql[i + 1] === '*') {
-          depth++
-          i += 2
-        } else if (sql[i] === '*' && sql[i + 1] === '/') {
-          depth--
-          i += 2
-        } else {
-          i++
-        }
-      }
-      continue
-    }
-    break
-  }
-  return sql.slice(i)
-}
-
-function canUseCursor(stmt: string): boolean {
-  // WITH is included so CTE queries (`WITH … SELECT …`) are paged instead of
-  // being materialized in full. DECLARE only accepts SELECT/VALUES, so a
-  // data-modifying CTE (`WITH … INSERT/UPDATE/DELETE …`) still fails at
-  // DECLARE and falls back to direct execution via the savepoint below.
-  return /^(SELECT|VALUES|WITH|SHOW|EXPLAIN|TABLE|SET|RESET|DISCARD|BEGIN|START|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|CLOSE|FETCH)\b/i.test(
-    withoutLeadingComments(stmt),
-  )
-}
-
-function requiresAutocommit(stmt: string): boolean {
-  const text = withoutLeadingComments(stmt)
-  if (/^(VACUUM|CLUSTER|CHECKPOINT|CREATE\s+DATABASE|DROP\s+DATABASE|ALTER\s+SYSTEM|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(text)) {
-    return true
-  }
-  if (/^(CREATE|DROP)\b[\s\S]*\bINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
-  if (/^REINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
-  return /^REFRESH\s+MATERIALIZED\s+VIEW\s+CONCURRENTLY\b/i.test(text)
-}
-
-function parseMaxRows(value: unknown): number | null {
-  if (value === undefined) return 500
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 10000 ? value : null
 }
 
 async function closeCursor(

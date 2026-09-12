@@ -6,8 +6,9 @@ the suite that needs no database, and runs the live-database suites only when
 it is not.
 
 ```bash
-npm test                                              # source suite only
-PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test   # everything
+npm test                                                          # unit + component only
+PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test    # + live database
+PGDEV_TEST_URL=... PGDEV_BROWSER=1 npm test                        # + browser
 ```
 
 `npm test` rebuilds `server/dist` first, because the database suites import the
@@ -26,7 +27,10 @@ PGDEV_TEST_URL=... node test/apitest.mjs
 | `p2verify.mjs` | no | Component logic and template guards: the DDL request ordering token (later click wins, superseded and post-switch responses discarded, distinct objects unaffected), materialized views staying read-only, collapse being inert while filtering, and the grid footer reporting loaded rows. |
 | `aggtest.mjs` | yes | Aggregate DDL round-trips: plain, `SORTOP`, moving-aggregate, ordered-set, hypothetical-set, `SSPACE`, plus the built-ins `array_agg`, `sum`, `avg` and `max`, which must re-apply from generated text. |
 | `typetest.mjs` | yes | Range types (plain, explicit multirange name, explicit collation), composite attribute `COLLATE`, domain constraint names, and sub-partitioned children including their grandchildren. |
-| `apitest.mjs` | yes | The documented HTTP surface end to end: connect, `/schema`, `/ddl` for every object type, query execution, multi-statement batches, cursor paging across a 2,500-row result, error and SQLSTATE reporting, the 30s statement timeout, cancellation, `VACUUM` autocommit handling, `maxRows` validation, DDL execution through the query tool, and disconnect. |
+| `apitest.mjs` | yes | The documented HTTP surface end to end: connect, `/schema`, `/ddl` for every object type, query execution, multi-statement batches, cursor paging across a 2,500-row result, error and SQLSTATE reporting, the 30s statement timeout, cancellation, `VACUUM` autocommit handling, `maxRows` validation, DDL execution through the query tool, disconnect, and the origin guard. |
+| `db/ddl.mjs` | yes | DDL round-trips for RLS (enable/force, permissive and restrictive, roles, `USING`/`WITH CHECK`), list and hash partitions including `DEFAULT`, index variants (partial, expression, `INCLUDE`, gin, brin, unique), constraint variants (`NOT VALID`, deferred, `ON DELETE`/`ON UPDATE`), composite and enum types, and regeneration over every harvested table. |
+| `unit/*.test.mjs` | no | `node:test` suites for the pure logic: the statement splitter, the query-shape helpers (`canUseCursor`, `requiresAutocommit`, `parseMaxRows`), CSV escaping, and the SQL reference helpers used by completions. |
+| `browser/app.mjs` | yes + Chrome | Opt-in (`PGDEV_BROWSER=1`). Drives real Chrome over the DevTools Protocol: connects through the dialog, opens DDL tabs and asserts the read-only rules (table and materialized view read-only, view and function editable), asks the completion provider for suggestions and asserts no duplicated labels, checks that collapse is inert while filtering, confirms a server error reaches the Messages tab, and that Run is disabled once disconnected. |
 
 ## Credentials
 
@@ -47,6 +51,11 @@ then compare catalog fingerprints (`pg_attribute`, `pg_get_constraintdef`,
 `pg_aggregate`) before and after. That is what catches a script that is
 syntactically plausible but does not faithfully reconstruct the object.
 
+The unit suites load the application sources through `test/lib/load.mjs`, which
+copies them into a scratch tree with module specifiers retargeted at the `.ts`
+files, because the sources use NodeNext `.js` specifiers (server) and
+extensionless ones (web) that plain Node cannot resolve.
+
 `p2verify.mjs` is a weaker kind of test: it drives the real request-ordering
 logic with stubbed promises, but its other assertions match component source,
 so a rewrite that preserves behaviour while changing wording could fail it.
@@ -60,9 +69,25 @@ A few cases cannot be constructed by a test and are therefore not covered:
 - A range type with a `CANONICAL` function needs a pre-created shell type and a
   C function, so it can never be recreated by a standalone script.
 
-## What is still untested
+## The browser suite
 
-Nothing here drives a browser, so Monaco, the object browser tree and the
-result grid are covered only by reading code. `implementation.md` lists the
-browser end-to-end tests in its TODO.
+`browser/app.mjs` starts the real server and the Vite dev server against a
+scratch database, launches Chrome and drives it through the DevTools Protocol —
+no test dependency is added, since Node's global `WebSocket` and `fetch` are
+enough. It is opt-in because it needs a Chrome binary (`CHROME_PATH` overrides
+the search) and, crucially, **a network path from Chrome to the dev servers**.
+
+It binds Vite to `127.0.0.1` explicitly: Vite otherwise listens on `[::1]`
+only, which Chrome cannot reach, and it uses ports 3000/5173 because the origin
+guard permits exactly that cross-port pair (the Vite dev proxy is the one
+exception in `allowedOrigin`). Those ports must therefore be free.
+
+Chrome needs `--no-sandbox` here, or its renderer never starts: page-level CDP
+commands then hang while browser-level ones still answer, which is a confusing
+way to fail. If Chrome has no network at all, every fetch inside the page fails
+and the suite reports a blank page; the diagnostic printed on failure includes
+the page URL (`chrome-error://chromewebdata/` is the giveaway).
+
+The dev-only hooks the suite relies on (`window.__pgdev` in `QueryEditor.vue`)
+are behind `import.meta.env.DEV` and are absent from a production build.
 

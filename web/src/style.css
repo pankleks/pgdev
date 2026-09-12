@@ -738,6 +738,13 @@ input {
   font-style: italic;
 }
 
+.app-version {
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 0 2px;
+  user-select: text;
+}
+
 .editor-tabs {
   display: flex;
   flex-direction: column;

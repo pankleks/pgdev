@@ -21,13 +21,19 @@ function qualified(schema: string, name: string): string {
 
 let registered = false
 
+/**
+ * The registered provider, exposed in dev builds so the browser suite can ask
+ * it for suggestions directly rather than scraping the Monaco suggest widget.
+ */
+let devProvider: Monaco.languages.CompletionItemProvider | null = null
+
 export function registerSqlCompletion(monaco: typeof Monaco): void {
   // QueryEditor mounts once, but guard against double registration anyway
   // (duplicate providers produce duplicate suggestions).
   if (registered) return
   registered = true
 
-  monaco.languages.registerCompletionItemProvider('sql', {
+  const provider: Monaco.languages.CompletionItemProvider = {
     triggerCharacters: ['.', ' '],
     provideCompletionItems(model, position) {
       const { state } = useSchema()
@@ -208,5 +214,17 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       }
       return { suggestions }
     },
-  })
+  }
+  monaco.languages.registerCompletionItemProvider('sql', provider)
+  if (import.meta.env.DEV) devProvider = provider
+}
+
+/** Dev/test helper: the suggestions the editor would receive at a position. */
+export function completionSuggestions(
+  model: Monaco.editor.ITextModel,
+  position: Monaco.Position,
+): Monaco.languages.CompletionItem[] {
+  const result = devProvider?.provideCompletionItems(model, position, {} as never, {} as never)
+  if (!result || Array.isArray(result) || !('suggestions' in result)) return []
+  return result.suggestions
 }

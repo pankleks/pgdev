@@ -12,6 +12,12 @@ async function unwrap<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  version(): Promise<string> {
+    return fetch('/api/version')
+      .then((r) => unwrap<{ version: string }>(r))
+      .then((b) => b.version)
+  },
+
   connect(config: ConnectionConfig): Promise<{ id: string }> {
     return fetch('/api/connections', {
       method: 'POST',

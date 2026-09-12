@@ -1,7 +1,6 @@
 // End-to-end API test: a real Fastify server, a real pg.Pool, and fixtures
 // created inside a database this harness owns. Exercises the documented HTTP
 // surface exactly as the browser does.
-import Fastify from 'fastify'
 import { createRequire } from 'node:module'
 const require = createRequire(new URL('../server/', import.meta.url))
 const { Client, Pool } = require('pg')
@@ -95,32 +94,66 @@ const eq = (name, got, want) => {
 const ok = (name, cond, detail = '') => eq(name + (detail ? ` — ${detail}` : ''), !!cond, true)
 
 // ------------------------------------------------------------------ the server
-process.env.PORT = '3211'
-const { connectionRoutes } = await import('../server/dist/routes/connections.js')
-const { metadataRoutes } = await import('../server/dist/routes/metadata.js')
-const { ddlRoutes } = await import('../server/dist/routes/ddl.js')
-const { queryRoutes } = await import('../server/dist/routes/query.js')
+// The real application, so the origin guard and route wiring under test are
+// the ones that ship rather than a copy of them.
+const { createApp } = await import('../server/dist/app.js')
+const app = await createApp({ serveStatic: false })
 
-const app = Fastify({ bodyLimit: 4 * 1024 * 1024 })
-app.setErrorHandler((err, _req, reply) => reply.code(err.statusCode ?? 500).send({ error: err.message }))
-// same origin guard as index.ts
-app.addHook('onRequest', async (req, reply) => {
-  if (!req.url.startsWith('/api/')) return
-  if (!req.headers.origin && req.headers['sec-fetch-site'] === 'same-origin') return
-  if (!req.headers.origin) return reply.code(403).send({ error: 'Origin required' })
-  return
-})
-await app.register(connectionRoutes)
-await app.register(metadataRoutes)
-await app.register(ddlRoutes)
-await app.register(queryRoutes)
-
-const ORIGIN = 'http://127.0.0.1:3211'
+const ORIGIN = 'http://localhost'
 const call = async (method, url, payload) => {
   const res = await app.inject({ method, url, payload, headers: { origin: ORIGIN } })
   let body = null
   try { body = res.json() } catch { body = res.body }
   return { status: res.statusCode, body }
+}
+
+console.log('\n== origin guard (the real one, from createApp) ==')
+{
+  const bare = await app.inject({ method: 'GET', url: '/api/connections/x/schema' })
+  eq('no Origin and no Sec-Fetch-Site is rejected', bare.statusCode, 403)
+  const sameSite = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { 'sec-fetch-site': 'same-origin' },
+  })
+  eq('same-origin GET without Origin is allowed', sameSite.statusCode, 404)
+  const evil = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://evil.example' },
+  })
+  eq('cross-origin is rejected', evil.statusCode, 403)
+  const wrongPort = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://127.0.0.1:9999' },
+  })
+  eq('wrong port is rejected', wrongPort.statusCode, 403)
+  const good = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://localhost' },
+  })
+  eq('matching origin passes the guard', good.statusCode, 404)
+
+  // Browsers and the launcher pick between loopback spellings inconsistently;
+  // http://localhost:3000 must work even when the request host is 127.0.0.1.
+  const crossLoopback = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://localhost' },
+  })
+  eq('localhost origin with a loopback request host is allowed', crossLoopback.statusCode, 404)
+  const ipv6 = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://[::1]' },
+  })
+  eq('IPv6 loopback origin is allowed', ipv6.statusCode, 404)
+  const remote = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'http://192.168.70.70' },
+  })
+  eq('a non-loopback origin is still rejected', remote.statusCode, 403)
+  const badScheme = await app.inject({
+    method: 'GET', url: '/api/connections/x/schema',
+    headers: { origin: 'https://localhost' },
+  })
+  eq('a scheme mismatch is still rejected', badScheme.statusCode, 403)
 }
 
 console.log('== connect ==')

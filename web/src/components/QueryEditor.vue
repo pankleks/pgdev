@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
-import { registerSqlCompletion } from '../monaco/completions'
+import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
@@ -48,6 +48,26 @@ onMounted(() => {
     return model && selection && !selection.isEmpty() ? model.getValueInRange(selection) : undefined
   })
   applyTab(props.tab)
+  // Dev-only handles so the browser suite can drive Monaco; stripped from the
+  // production build by the constant-folded import.meta.env.DEV guard.
+  if (import.meta.env.DEV) {
+    ;(window as unknown as Record<string, unknown>).__pgdev = {
+      editor,
+      monaco,
+      getReadOnly: () => !!editor?.getOption(monaco.editor.EditorOption.readOnly),
+      getValue: () => editor?.getModel()?.getValue() ?? '',
+      setValue: (text: string) => editor?.getModel()?.setValue(text),
+      suggestions: () => {
+        const model = editor?.getModel()
+        const position = model?.getFullModelRange()
+        if (!model || !position) return []
+        return completionSuggestions(model, {
+          lineNumber: position.endLineNumber,
+          column: position.endColumn,
+        } as never).map((s) => ({ label: String(s.label), kind: s.kind, detail: s.detail }))
+      },
+    }
+  }
 })
 
 function formatActive() {

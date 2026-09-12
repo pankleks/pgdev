@@ -11,6 +11,7 @@ import { useTabs, type EditorTab } from './composables/tabs'
 import { useResults } from './composables/results'
 import { useSettings } from './composables/settings'
 import { useToast } from './composables/toast'
+import { api } from './api'
 import { getActiveSelection, triggerFormat } from './lib/formatbridge'
 import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
 
@@ -21,6 +22,10 @@ const settings = useSettings()
 const toast = useToast()
 const settingsOpen = ref(false)
 const saving = ref(false)
+const version = ref('')
+
+// Fetched once so support can ask "which build?" without a terminal.
+void api.version().then((v) => { version.value = v }).catch(() => undefined)
 
 const activeTab = computed(() =>
   tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
@@ -212,6 +217,7 @@ provide('pgdev:run', runActive)
       <button v-if="conn.state.id" @click="conn.disconnect()">Disconnect</button>
       <button v-else class="primary" @click="conn.state.dialog = true">Connect</button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
+      <span v-if="version" class="app-version" :title="`pgDEV ${version}`">v{{ version }}</span>
     </header>
     <input
       ref="fileInput"

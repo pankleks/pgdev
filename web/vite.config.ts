@@ -1,61 +1,14 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    VitePWA({
-      registerType: 'prompt',
-      injectRegister: false,
-      manifest: {
-        id: '/',
-        name: 'pgDEV',
-        short_name: 'pgDEV',
-        description: 'A minimal IDE for PostgreSQL',
-        start_url: '/',
-        scope: '/',
-        display: 'standalone',
-        orientation: 'any',
-        theme_color: '#1e1e1e',
-        background_color: '#1e1e1e',
-        icons: [
-          {
-            src: '/icons/pgdev-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-            purpose: 'any',
-          },
-          {
-            src: '/icons/pgdev-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any',
-          },
-          {
-            src: '/icons/pgdev-maskable-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'maskable',
-          },
-        ],
-      },
-      workbox: {
-        navigateFallback: '/index.html',
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        runtimeCaching: [
-          {
-            urlPattern: /\/api\//,
-            handler: 'NetworkOnly',
-          },
-        ],
-      },
-    }),
-  ],
+  plugins: [vue()],
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:3000',
+      // PGDEV_API_PORT lets the browser suite run the API on a spare port;
+      // the dev default stays 3000.
+      '/api': `http://127.0.0.1:${process.env.PGDEV_API_PORT ?? 3000}`,
     },
   },
   build: {
