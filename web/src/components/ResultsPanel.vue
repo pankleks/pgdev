@@ -5,7 +5,7 @@ import { useResults } from '../composables/results'
 import { useConnection } from '../composables/connection'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
-import { copyGrid, copyText, downloadCsv, cellToText, formatCellForDisplay } from '../lib/gridio'
+import { copyGrid, copyText, downloadCsv, csvHeader, csvRows, cellToText, formatCellForDisplay } from '../lib/gridio'
 
 const results = useResults()
 const conn = useConnection()
@@ -173,12 +173,65 @@ async function copyResult() {
   toast.show(ok ? `Copied ${g.rows.length} row(s) to clipboard` : 'Copy to clipboard failed')
 }
 
+/** Minimal shape of the File System Access save picker (Chrome/Edge). */
+interface SavePicker {
+  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<{
+    createWritable(): {
+      write(data: string): Promise<void>
+      close(): Promise<void>
+      abort(): Promise<void>
+    }
+  }>
+}
+
 async function exportCsv() {
   const connectionId = conn.state.id
   if (!connectionId) return
   const tabKey = tabs.state.activeKey
   const g = results.state.byTab[tabKey]?.grid
   if (!g) return
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
+  const filename = `pgDEV-statement-${g.statementNumber}-${stamp}${g.limited ? '-partial' : ''}.csv`
+
+  // Stream pages straight to disk when the browser can, so export memory does
+  // not grow with the result. The sink receives each page as the drain loads
+  // it; the grid keeps its normal Load more / truncated state throughout.
+  const picker = (window as unknown as SavePicker).showSaveFilePicker
+  if (picker) {
+    let handle
+    try {
+      handle = await picker.call(window, { suggestedName: filename })
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') toast.show(`Export failed: ${(e as Error).message}`)
+      return
+    }
+    const writable = await handle.createWritable()
+    let rows = 0
+    try {
+      await writable.write(csvHeader(g.columns))
+      const complete = await results.exportAll(tabKey, connectionId, (page) => {
+        rows += page.length
+        void writable.write(csvRows(page))
+      })
+      if (!complete) {
+        // Stale drain (connection/tab/result changed): discard the partial
+        // file rather than leaving truncated data on disk.
+        await writable.abort()
+        toast.show('Export canceled because the active connection, tab, or result changed')
+        return
+      }
+      await writable.close()
+      toast.show(g.limited
+        ? `Exported first ${rows} of ${g.totalRowCount} rows to CSV (partial result)`
+        : `Exported ${rows} row(s) to CSV`)
+    } catch (e) {
+      await writable.abort().catch(() => undefined)
+      toast.show(`Export failed: ${(e as Error).message}`)
+    }
+    return
+  }
+
+  // Fallback: drain into the grid, then download one Blob.
   if (g.truncated) {
     toast.show('Loading all rows for export…')
     const ok = await results.loadAll(tabKey, connectionId)
@@ -192,8 +245,7 @@ async function exportCsv() {
     }
     toast.show(`Loaded all rows (${g.rows.length} total), exporting…`)
   }
-  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
-  downloadCsv(g.columns, g.rows, `pgDEV-statement-${g.statementNumber}-${stamp}${g.limited ? '-partial' : ''}.csv`)
+  downloadCsv(g.columns, g.rows, filename)
   toast.show(g.limited
     ? `Exported first ${g.rows.length} of ${g.totalRowCount} rows to CSV (partial result)`
     : `Exported ${g.rows.length} row(s) to CSV`)

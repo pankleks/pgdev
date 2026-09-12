@@ -32,6 +32,22 @@ export function csvEscape(value: string): string {
   return value
 }
 
+function csvCell(v: unknown): string {
+  return csvEscape(cellToText(v))
+}
+
+/** BOM + header line for a streamed CSV file. */
+export function csvHeader(columns: string[]): string {
+  return '\uFEFF' + columns.map((c) => csvCell(c)).join(',') + '\n'
+}
+
+/** CSV text for one page of rows, every line newline-terminated. */
+export function csvRows(rows: unknown[][]): string {
+  let out = ''
+  for (const row of rows) out += row.map((v) => csvCell(v)).join(',') + '\n'
+  return out
+}
+
 export function toDelimited(columns: string[], rows: unknown[][], separator: ',' | '\t'): string {
   const cell = (v: unknown): string => {
     const s = cellToText(v)

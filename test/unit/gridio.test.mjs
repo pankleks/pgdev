@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { csvEscape, cellToText, formatCellForDisplay, toDelimited } = await load('web/lib/gridio.ts')
+const { csvEscape, csvHeader, csvRows, cellToText, formatCellForDisplay, toDelimited } = await load('web/lib/gridio.ts')
 
 test('csvEscape neutralises spreadsheet formula starters', () => {
   // A database value must not execute when the export is opened.
@@ -53,6 +53,13 @@ test('toDelimited writes a header row and keeps TSV free of tabs and newlines', 
 
 test('toDelimited escapes header names too', () => {
   assert.equal(toDelimited(['a,b'], [[1]], ','), '"a,b"\n1')
+})
+
+test('csvHeader and csvRows write BOM, header and newline-terminated pages', () => {
+  assert.equal(csvHeader(['a', 'b,b']), '\uFEFFa,"b,b"\n')
+  assert.equal(csvRows([[1, '=cmd']], ), '1,\'=cmd\n')
+  // The streamed path needs the same formula guard as the single-string one.
+  assert.equal(csvRows([['x\ty']], ), 'x\ty\n')
 })
 
 test('TSV copy neutralises spreadsheet formula starters like the CSV path', () => {

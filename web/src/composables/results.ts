@@ -216,20 +216,27 @@ export function createResults(api: ResultsApi) {
   }
 
   /**
-   * Drain all remaining pages into the grid (for CSV export).
-   * Aborts safely if a new query replaces the grid mid-drain.
-   * Returns true when every row was loaded.
+   * Drain all remaining pages into the grid, handing every page — starting
+   * with the rows already loaded — to `sink`. The CSV export streams pages to
+   * disk through it instead of building one giant string. Returns true when
+   * every row was loaded.
    */
-  async function loadAll(tabKey: string, connectionId: string): Promise<boolean> {
+  async function exportAll(
+    tabKey: string,
+    connectionId: string,
+    sink: (rows: unknown[][]) => void,
+  ): Promise<boolean> {
     const r = state.byTab[tabKey]
     if (!r?.grid || r.running || r.loadingMore) return (r?.grid && !r.grid.truncated) || false
     const g = r.grid
     const operation = r.operation
     r.loadingMore = true
     try {
+      sink([...g.rows])
       while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running) {
         const res = await fetchPageFor(tabKey, connectionId, r, operation, g)
         if (!res) return false
+        sink(res.rows)
       }
       if (!isCurrent(tabKey, r, operation)) return false
       const complete = r.grids.includes(g) && !g.truncated
@@ -251,7 +258,12 @@ export function createResults(api: ResultsApi) {
     }
   }
 
-  return { state, drop, selectGrid, run, cancel, loadMore, loadAll }
+  /** Drain all remaining pages into the grid (in-place export helper). */
+  async function loadAll(tabKey: string, connectionId: string): Promise<boolean> {
+    return exportAll(tabKey, connectionId, () => undefined)
+  }
+
+  return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll }
 }
 
 export type Results = ReturnType<typeof createResults>
