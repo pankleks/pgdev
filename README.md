@@ -27,7 +27,8 @@ pgdev
 If port 3000 is taken it moves to the next free port and prints the URL it used.
 
 **Upgrading:** `npm install -g @pankleks/pgdev@latest`, then restart. Connections,
-settings and pinned files live in your browser and are kept.
+settings, pinned files, opened browser nodes and panel sizes live in your
+browser and are kept.
 
 ## Use
 

@@ -237,6 +237,18 @@ try {
     `)
   }
 
+  console.log('\n== opened sections survive a reload ==')
+  {
+    // The Tables section was opened earlier in this run; after a reload the
+    // saved expansion should reopen it without any clicks.
+    await page.evaluate(`location.reload()`)
+    const restored = await page.waitFor(
+      `[...document.querySelectorAll('.obj-name')].some((e) => e.textContent.trim() === 'items')`,
+      { timeout: 25000 },
+    ).then(() => true).catch(() => false)
+    ok('Tables section is expanded after a reload', restored)
+  }
+
   console.log('\n== a query error is surfaced in the UI ==')
   {
     // Run a statement the server rejects and confirm the message reaches the

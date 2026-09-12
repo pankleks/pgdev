@@ -211,11 +211,14 @@ function onGlobalKeydown(e: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('click', closeContextMenus)
   window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('pagehide', flushUiSave)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeContextMenus)
   window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('pagehide', flushUiSave)
+  window.clearTimeout(uiSaveTimer)
 })
 
 const filter = ref('')
@@ -523,6 +526,7 @@ const ddlRequests = new Map<string, number>()
 // OIDs are only unique per database, and the token map grows per click, so
 // all of this is dropped when the connection changes: stale expansion state
 // would otherwise pre-expand unrelated objects, and old tokens are dead.
+// appliedLabel resets too, so reconnecting restores the saved expansion.
 watch(
   () => conn.state.id,
   () => {
@@ -532,8 +536,61 @@ watch(
     expandedFunctionGroups.clear()
     expandedTypeGroups.clear()
     ddlRequests.clear()
+    appliedLabel = ''
   },
 )
+
+// --- persistence of opened nodes -------------------------------------------
+// Expansion is saved per connection label (user@host:port/db) and restored
+// once that connection's schema arrives, so catalog keys can only ever match
+// the database they were recorded against.
+let appliedLabel = ''
+watch(
+  () => [conn.state.id, schema.state.data],
+  ([id, data]) => {
+    if (!id || !data) return
+    if (appliedLabel === conn.state.label) return
+    appliedLabel = conn.state.label
+    const saved = settings.browserStateFor(conn.state.label)
+    if (!saved) return
+    open.tables = saved.sections.tables
+    open.views = saved.sections.views
+    open.functions = saved.sections.functions
+    open.types = saved.sections.types
+    for (const key of saved.expanded) expanded.add(key)
+    for (const key of saved.groups.tables) expandedTableGroups.add(key)
+    for (const key of saved.groups.views) expandedViewGroups.add(key)
+    for (const key of saved.groups.functions) expandedFunctionGroups.add(key)
+    for (const key of saved.groups.types) expandedTypeGroups.add(key)
+  },
+)
+
+let uiSaveTimer = 0
+function scheduleUiSave() {
+  if (!conn.state.id) return
+  window.clearTimeout(uiSaveTimer)
+  uiSaveTimer = window.setTimeout(flushUiSave, 400)
+}
+function flushUiSave() {
+  window.clearTimeout(uiSaveTimer)
+  if (!conn.state.id) return
+  settings.setBrowserState(conn.state.label, {
+    sections: { ...open },
+    expanded: [...expanded],
+    groups: {
+      tables: [...expandedTableGroups],
+      views: [...expandedViewGroups],
+      functions: [...expandedFunctionGroups],
+      types: [...expandedTypeGroups],
+    },
+  })
+}
+watch(() => [...expanded], scheduleUiSave)
+watch(() => [...expandedTableGroups], scheduleUiSave)
+watch(() => [...expandedViewGroups], scheduleUiSave)
+watch(() => [...expandedFunctionGroups], scheduleUiSave)
+watch(() => [...expandedTypeGroups], scheduleUiSave)
+watch(open, scheduleUiSave)
 
 async function openObject(
   type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type',
