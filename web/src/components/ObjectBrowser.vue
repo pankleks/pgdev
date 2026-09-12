@@ -598,7 +598,7 @@ async function openObject(
   schemaName: string,
   name: string,
   oid?: string,
-  suffix = '',
+  identitySuffix = '',
   parent?: string,
 ) {
   cancelPendingToggle()
@@ -612,7 +612,8 @@ async function openObject(
     // editable; tables and constraints stay read-only previews. Re-opening
     // refreshes content.
     const editable = type === 'function' || type === 'view' || type === 'index' || type === 'trigger' || type === 'type'
-    tabs.openDdl(type, schemaName, name, ddl, suffix, editable, parent ?? '')
+    const identity = oid ? `--${oid}` : identitySuffix
+    tabs.openDdl(type, schemaName, name, ddl, identity, editable, parent ?? '')
   } catch (e) {
     toast.show((e as Error).message)
   }

@@ -94,12 +94,12 @@ export function useTabs() {
     schema: string,
     name: string,
     ddl: string,
-    suffix = '',
+    identity = '',
     editable = false,
     parent = '',
   ) {
     const parentKey = parent ? `--${parent}` : ''
-    const key = `ddl-${type}-${schema}-${name}${suffix}${parentKey}`
+    const key = `ddl-${type}-${schema}-${name}${identity}${parentKey}`
     const existing = state.tabs.find((t) => t.key === key)
     if (existing) {
       if (existing.content !== ddl) existing.content = ddl
@@ -112,7 +112,7 @@ export function useTabs() {
       key,
       kind: 'ddl',
       source: 'untitled',
-      title: suffix ? `${name} ${suffix}` : `${name} (${type})`,
+      title: name,
       fileName: null,
       content: ddl,
       savedContent: ddl,
