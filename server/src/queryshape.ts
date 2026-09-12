@@ -39,6 +39,40 @@ export function withoutLeadingComments(sql: string): string {
   return sql.slice(i)
 }
 
+/** Transaction effect of a successfully executed statement. */
+export function transactionControl(stmt: string): 'unchanged' | 'start' | 'end' | 'chain' {
+  // Read only leading keyword tokens, skipping comments between them. Never
+  // interpret keywords inside quoted savepoint names or string literals.
+  const words: string[] = []
+  let rest = stmt
+  for (let i = 0; i < 5; i++) {
+    rest = withoutLeadingComments(rest)
+    const word = /^[A-Za-z_][A-Za-z_0-9$]*/.exec(rest)
+    if (!word) break
+    words.push(word[0].toUpperCase())
+    rest = rest.slice(word[0].length)
+  }
+  const first = words.shift()
+  if (first === 'BEGIN' || (first === 'START' && words[0] === 'TRANSACTION')) return 'start'
+  if (!first || !['COMMIT', 'ROLLBACK', 'END', 'ABORT'].includes(first)) return 'unchanged'
+  if (words[0] === 'WORK' || words[0] === 'TRANSACTION') words.shift()
+  if (first === 'ROLLBACK' && words[0] === 'TO') return 'unchanged'
+  // These commit/roll back a prepared transaction, not the current session's.
+  if ((first === 'COMMIT' || first === 'ROLLBACK') && words[0] === 'PREPARED') return 'unchanged'
+  return words[0] === 'AND' && words[1] === 'CHAIN' ? 'chain' : 'end'
+}
+
+/** Explicit transactions must be completed within the submitted batch. */
+export function hasOpenTransaction(statements: string[]): boolean {
+  let open = false
+  for (const stmt of statements) {
+    const control = transactionControl(stmt)
+    if (control === 'start' || control === 'chain') open = true
+    if (control === 'end') open = false
+  }
+  return open
+}
+
 export function canUseCursor(stmt: string): boolean {
   // WITH is included so CTE queries (`WITH … SELECT …`) are paged instead of
   // being materialized in full. DECLARE only accepts SELECT/VALUES, so a

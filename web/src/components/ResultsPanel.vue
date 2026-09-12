@@ -18,10 +18,6 @@ const activeGrid = computed(() =>
   result.value && !result.value.showMessages ? result.value.grid : null,
 )
 
-function showResultView() {
-  if (result.value) result.value.showMessages = false
-}
-
 function showMessagesView() {
   if (result.value) result.value.showMessages = true
 }
@@ -106,6 +102,7 @@ watch(bodyEl, (el) => {
 watch(
   () => activeGrid.value,
   (g) => {
+    endResize()
     scrollTop.value = 0
     if (bodyEl.value) bodyEl.value.scrollTop = 0
     if (g) ensureWidths(g.key, g.columns)
@@ -122,7 +119,20 @@ watch(
   },
 )
 
-onBeforeUnmount(() => observer?.disconnect())
+watch(
+  () => Object.values(results.state.byTab).flatMap((r) => r.grids.map((g) => g.key)),
+  (keys) => {
+    const live = new Set(keys)
+    for (const key of widthsByKey.keys()) {
+      if (!live.has(key)) {
+        widthsByKey.delete(key)
+        columnsByKey.delete(key)
+      }
+    }
+  },
+)
+
+onBeforeUnmount(() => { observer?.disconnect(); endResize() })
 
 const grid = computed(() => {
   const g = activeGrid.value
@@ -167,25 +177,26 @@ async function exportCsv() {
   const connectionId = conn.state.id
   if (!connectionId) return
   const tabKey = tabs.state.activeKey
-  let g = results.state.byTab[tabKey]?.grid
+  const g = results.state.byTab[tabKey]?.grid
   if (!g) return
   if (g.truncated) {
     toast.show('Loading all rows for export…')
     const ok = await results.loadAll(tabKey, connectionId)
-    if (tabs.state.activeKey !== tabKey || conn.state.id !== connectionId) {
-      toast.show('Export canceled because the active connection or tab changed')
+    if (tabs.state.activeKey !== tabKey || conn.state.id !== connectionId || results.state.byTab[tabKey]?.grid !== g) {
+      toast.show('Export canceled because the active connection, tab, or result changed')
       return
     }
-    g = results.state.byTab[tabKey]?.grid ?? null
-    if (!ok || !g) {
+    if (!ok) {
       toast.show('Export failed — see Messages')
       return
     }
     toast.show(`Loaded all rows (${g.rows.length} total), exporting…`)
   }
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
-  downloadCsv(g.columns, g.rows, `pgDEV-result-${stamp}.csv`)
-  toast.show(`Exported ${g.rows.length} row(s) to CSV`)
+  downloadCsv(g.columns, g.rows, `pgDEV-statement-${g.statementNumber}-${stamp}${g.limited ? '-partial' : ''}.csv`)
+  toast.show(g.limited
+    ? `Exported first ${g.rows.length} of ${g.totalRowCount} rows to CSV (partial result)`
+    : `Exported ${g.rows.length} row(s) to CSV`)
 }
 </script>
 
@@ -194,12 +205,15 @@ async function exportCsv() {
     <div class="results-head">
       <div class="subtabs">
         <button
+          v-for="(g, index) in result?.grids ?? []"
+          :key="g.key"
           class="subtab"
-          :class="{ active: !!result && !result.showMessages }"
-          :disabled="!result?.grid"
-          @click="showResultView()"
+          :class="{ active: !result?.showMessages && result?.grid?.key === g.key }"
+          :aria-pressed="!result?.showMessages && result?.grid?.key === g.key"
+          :title="`Statement ${g.statementNumber} · ${g.rows.length} loaded row(s)${g.limited ? ' · partial result' : ''}`"
+          @click="results.selectGrid(tabs.state.activeKey, g.key)"
         >
-          Result
+          Result {{ index + 1 }}
         </button>
         <button
           class="subtab"
@@ -212,7 +226,7 @@ async function exportCsv() {
       <span class="spacer" />
       <template v-if="activeGrid">
         <button class="btn-sm" title="Copy loaded rows to clipboard (TSV)" :disabled="result?.loadingMore" @click="copyResult()"><Copy :size="13" /> COPY</button>
-        <button class="btn-sm" title="Export all rows to CSV" :disabled="result?.loadingMore" @click="exportCsv()"><Download :size="13" /> CSV</button>
+        <button class="btn-sm" :title="activeGrid.limited ? 'Export only the retained rows to CSV (partial result)' : 'Export all rows to CSV'" :disabled="result?.loadingMore" @click="exportCsv()"><Download :size="13" /> {{ activeGrid.limited ? 'CSV (partial)' : 'CSV' }}</button>
       </template>
       <button
         v-if="result?.running || result?.loadingMore"
@@ -280,9 +294,10 @@ async function exportCsv() {
       </div>
       <div class="grid-foot">
         <!-- the result's own rowCount, not the virtualised slice actually
-             rendered: grid.g.rows is only the visible window -->
+             rendered: grid.rows is only the visible window -->
         {{ result?.grid?.rowCount ?? 0 }} row(s)
         <span v-if="grid.g.truncated">· more available</span>
+        <span v-else-if="grid.g.limited">· first {{ grid.g.rows.length }} of {{ grid.g.totalRowCount }} · row limit reached; remaining rows were not retained</span>
         <button
           v-if="grid.g.truncated"
           class="btn-sm"

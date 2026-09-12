@@ -179,7 +179,9 @@ console.log('\n== P2: grid footer counts loaded rows, not the rendered slice =='
   const src = readFileSync(join(REAL_WEB, 'components/ResultsPanel.vue'), 'utf8')
   const foot = src.slice(src.indexOf('class="grid-foot"'), src.indexOf('</div>', src.indexOf('class="grid-foot"')))
   ok('footer uses the result rowCount', /result\?\.grid\?\.rowCount/.test(foot), foot.trim().split('\n')[1]?.trim())
-  ok('footer no longer uses the virtualised slice', !/grid\.g\.rows\.length/.test(foot))
+  // grid.rows is the visible slice; grid.g.rows is the full retained result
+  // and is legitimately used in the partial-result notice.
+  ok('footer no longer uses the virtualised slice', !/grid\??\.rows\??\.length/.test(foot))
 }
 
 rmSync(ROOT, { recursive: true, force: true })

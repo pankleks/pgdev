@@ -91,6 +91,9 @@ export interface DataResult {
   rows: unknown[][]
   rowCount: number
   truncated: boolean
+  /** Rows were discarded after reaching the limit; no cursor can retrieve them. */
+  limited?: boolean
+  totalRowCount?: number
 }
 
 export type QueryResult = CommandResult | DataResult

@@ -5,8 +5,10 @@ import { cancelClientQuery } from '../pgcancel.js'
 import { pgErrorMessage } from '../pgerror.js'
 import { guardCheckedOutClient } from '../checkout.js'
 import { splitStatements } from '../sqlsplit.js'
+import { boundedQuery } from '../boundedquery.js'
 import {
-  withoutLeadingComments,
+  transactionControl,
+  hasOpenTransaction,
   canUseCursor,
   requiresAutocommit,
   parseMaxRows,
@@ -53,6 +55,8 @@ interface DataPage {
   rows: unknown[][]
   hasMore: boolean
   pendingRow: unknown[] | null
+  limited?: boolean
+  totalRowCount?: number
 }
 
 interface FetchedRows {
@@ -128,6 +132,15 @@ export async function queryRoutes(app: FastifyInstance) {
     if (typeof sql !== 'string' || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
     const cap = parseMaxRows(maxRows)
     if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
+    const statements = splitStatements(sql)
+    if (!statements.length) return reply.code(400).send({ error: 'Empty query' })
+    // Validate the whole batch before executing anything (or closing an old
+    // result cursor). Never silently commit a transaction the user left open.
+    if (hasOpenTransaction(statements)) {
+      return reply.code(400).send({
+        error: 'Open transactions cannot span query runs. Include COMMIT or ROLLBACK in the same selection or batch. No statements were executed.',
+      })
+    }
     const pool = getPool(id)
     const runKey = sessionKey(id, tabKey ?? '')
     if (getRunning(runKey)) {
@@ -135,8 +148,6 @@ export async function queryRoutes(app: FastifyInstance) {
     }
     // Drop any idle-open cursor from a previous truncated query on this tab.
     await teardownSession(runKey, 'rollback')
-    const statements = splitStatements(sql)
-    if (!statements.length) return reply.code(400).send({ error: 'Empty query' })
     const autocommit = statements.some(requiresAutocommit)
 
     const start = performance.now()
@@ -184,7 +195,7 @@ export async function queryRoutes(app: FastifyInstance) {
       let seq = 0
       let openCursor: string | null = null
       // Only the final statement may retain a cursor. Earlier result sets are
-      // materialized, so the UI never advertises a closed cursor as pageable.
+      // bounded and drained, so the UI never advertises a closed cursor as pageable.
       // A mutation-containing batch also finishes and commits in this request.
       const useCursors = !autocommit && statements.every(canUseCursor)
 
@@ -192,16 +203,15 @@ export async function queryRoutes(app: FastifyInstance) {
       // batch aborts with the statement's real message (never masked).
       // Also tracks user-typed transaction control (COMMIT/ROLLBACK/END).
       const execDirect = async (stmt: string): Promise<void> => {
-        const control = withoutLeadingComments(stmt)
-        const endsTxn = /^(COMMIT|ROLLBACK|END|ABORT)\b/i.test(control)
-        const startsTxn = /^(BEGIN|START\s+TRANSACTION)\b/i.test(control)
-        if (endsTxn) {
+        const control = transactionControl(stmt)
+        const bounded = await boundedQuery(client, stmt, cap)
+        const res = bounded.result
+        if (control === 'end' || control === 'chain') {
           // Ends our transaction server-side, taking any open cursor with it.
           openCursor = null
         }
-        const res = await client.query({ text: stmt, rowMode: 'array' })
-        if (endsTxn) inTxn = false
-        if (startsTxn) inTxn = true
+        if (control === 'end') inTxn = false
+        if (control === 'start' || control === 'chain') inTxn = true
         if (!res.fields || res.fields.length === 0) {
           results.push({
             kind: 'command',
@@ -209,7 +219,7 @@ export async function queryRoutes(app: FastifyInstance) {
             rowCount: res.rowCount ?? 0,
           })
         } else {
-          const rows = res.rows.map((row: unknown[]) =>
+          const rows = bounded.rows.map((row: unknown[]) =>
             row.map((cell) => normalizeCell(cell)),
           )
           results.push({
@@ -219,6 +229,8 @@ export async function queryRoutes(app: FastifyInstance) {
               rows,
               hasMore: false,
               pendingRow: null,
+              limited: bounded.totalRowCount > cap,
+              totalRowCount: bounded.totalRowCount,
             },
           })
         }
@@ -275,6 +287,8 @@ export async function queryRoutes(app: FastifyInstance) {
           rows: r.page.rows,
           rowCount: r.page.rows.length,
           truncated: r.page.hasMore,
+          limited: r.page.limited ?? false,
+          totalRowCount: r.page.totalRowCount,
         }
       })
 

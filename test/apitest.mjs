@@ -226,6 +226,81 @@ eq('insert with trigger ok', ins.status, 200)
 const cap = await q("SELECT first_name FROM employees WHERE email='bob@example.com'", 'tab6')
 eq('trigger fired (initcap)', cap.body.results[0].rows[0][0], 'Bob')
 
+console.log('\n== transaction safety ==')
+eq('transaction fixture created', (await q('CREATE TABLE tx_check (id integer PRIMARY KEY)', 'tx')).status, 200)
+const observer = new Client({ ...base, database: DB })
+await observer.connect()
+try {
+  for (const sql of [
+    'BEGIN; INSERT INTO tx_check VALUES (1)',
+    'INSERT INTO tx_check VALUES (1); BEGIN',
+    'BEGIN; INSERT INTO tx_check VALUES (1); COMMIT; BEGIN',
+    'BEGIN; SAVEPOINT s; ROLLBACK TO s',
+    'COMMIT AND CHAIN',
+  ]) {
+    const rejected = await q(sql, 'tx')
+    eq(`unfinished batch rejected: ${sql}`, rejected.status, 400)
+    ok('rejection explains that nothing ran', /No statements were executed/.test(rejected.body.error))
+    eq('rejected batch made no persistent changes', (await observer.query('SELECT count(*)::int AS n FROM tx_check')).rows[0].n, 0)
+  }
+  eq('complete commit succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (1); COMMIT', 'tx')).status, 200)
+  eq('complete rollback succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (2); ROLLBACK', 'tx')).status, 200)
+  eq('savepoint rollback leaves enclosing transaction tracked', (await q('INSERT INTO tx_check VALUES (3); SAVEPOINT s; INSERT INTO tx_check VALUES (4); ROLLBACK TO SAVEPOINT s', 'tx')).status, 200)
+  eq('chained transactions with final rollback succeed', (await q('BEGIN; INSERT INTO tx_check VALUES (5); COMMIT AND CHAIN; INSERT INTO tx_check VALUES (6); ROLLBACK', 'tx')).status, 200)
+  eq('independent connection sees only committed rows', (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map(r => r.id), [1, 3, 5])
+  eq('no transaction leaked into idle pool clients', (await observer.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'pgDEV' AND state LIKE 'idle in transaction%'")).rows[0].n, 0)
+} finally {
+  await observer.end()
+}
+
+console.log('\n== bounded direct results ==')
+const earlyLarge = await q('SELECT generate_series(1, 2500) AS n; SELECT 1 AS last', 'bounds', 7)
+eq('earlier SELECT is capped', earlyLarge.body.results[0].rows.length, 7)
+eq('earlier SELECT reports total rows', earlyLarge.body.results[0].totalRowCount, 2500)
+eq('earlier SELECT reports a partial result', earlyLarge.body.results[0].limited, true)
+eq('earlier SELECT does not advertise a closed cursor', earlyLarge.body.results[0].truncated, false)
+const defaultBound = await q('SELECT generate_series(1, 1001); SELECT 1', 'bounds')
+eq('default direct result cap is 500', defaultBound.body.results[0].rows.length, 500)
+const exactBound = await q('SELECT generate_series(1, 7); SELECT 1', 'bounds', 7)
+eq('exactly the cap is not a partial result', exactBound.body.results[0].limited, false)
+const emptyBound = await q('SELECT 1 AS n WHERE false; SELECT 1', 'bounds', 7)
+eq('empty direct result retains columns', emptyBound.body.results[0].columns, ['n'])
+eq('empty direct result has no rows', emptyBound.body.results[0].rows.length, 0)
+
+eq('bounded mutation fixture created', (await q('CREATE TABLE bounded_check (id integer PRIMARY KEY, changes integer DEFAULT 0)', 'bounds')).status, 200)
+const insertedBound = await q('INSERT INTO bounded_check (id) SELECT generate_series(1, 2500) RETURNING id', 'bounds', 7)
+eq('INSERT RETURNING rows capped', insertedBound.body.results[0].rows.length, 7)
+eq('INSERT RETURNING reports complete row count', insertedBound.body.results[0].totalRowCount, 2500)
+eq('INSERT RETURNING marked partial', insertedBound.body.results[0].limited, true)
+eq('INSERT RETURNING has no more-pages flag', insertedBound.body.results[0].truncated, false)
+const updatedBound = await q('UPDATE bounded_check SET changes = changes + 1 RETURNING id; SELECT id FROM bounded_check ORDER BY id', 'bounds', 7)
+eq('UPDATE RETURNING capped in a batch', updatedBound.body.results[0].rows.length, 7)
+eq('SELECT in mutation batch capped', updatedBound.body.results[1].rows.length, 7)
+eq('SELECT in mutation batch marked partial', updatedBound.body.results[1].limited, true)
+const cteBound = await q('WITH changed AS (UPDATE bounded_check SET changes = changes + 1 RETURNING id) SELECT id FROM changed', 'bounds', 7)
+eq('data-modifying CTE fallback succeeds', cteBound.status, 200)
+eq('data-modifying CTE fallback capped', cteBound.body.results[0].rows.length, 7)
+eq('data-modifying CTE fallback marked partial', cteBound.body.results[0].limited, true)
+const boundObserver = new Client({ ...base, database: DB })
+await boundObserver.connect()
+try {
+  eq('all mutations committed exactly once', (await boundObserver.query('SELECT count(*)::int AS n, min(changes) AS lo, max(changes) AS hi FROM bounded_check')).rows[0], { n: 2500, lo: 2, hi: 2 })
+  const lateError = await q('UPDATE bounded_check SET changes = 99; SELECT 1 / (n - 19) FROM generate_series(1, 20) n; SELECT 1', 'bounds', 7)
+  eq('error after the retained rows is surfaced', lateError.status, 400)
+  eq('late SQLSTATE preserved', lateError.body.code, '22012')
+  eq('late error rolls back mutations', (await boundObserver.query('SELECT max(changes) AS hi FROM bounded_check')).rows[0].hi, 2)
+} finally {
+  await boundObserver.end()
+}
+const vacuumBound = await q('VACUUM bounded_check; SELECT generate_series(1, 25)', 'bounds', 7)
+eq('autocommit batch succeeds', vacuumBound.status, 200)
+eq('autocommit batch SELECT capped', vacuumBound.body.results[1].rows.length, 7)
+eq('autocommit batch SELECT marked partial', vacuumBound.body.results[1].limited, true)
+const deletedBound = await q('DELETE FROM bounded_check RETURNING id', 'bounds', 7)
+eq('DELETE RETURNING capped', deletedBound.body.results[0].rows.length, 7)
+eq('DELETE RETURNING total rows', deletedBound.body.results[0].totalRowCount, 2500)
+eq('all deletes completed', (await q('SELECT count(*)::int FROM bounded_check', 'bounds')).body.results[0].rows[0][0], 0)
+
 console.log('\n== paging (the P0 fix, end to end) ==')
 const p1 = await q('SELECT id, label FROM big ORDER BY id', 'page', 500)
 eq('page 1 status', p1.status, 200)

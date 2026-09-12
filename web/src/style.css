@@ -902,11 +902,15 @@ input {
     flex-shrink: 0;
 
     .subtabs {
+      min-width: 0;
+      flex-shrink: 1;
       display: flex;
       gap: 2px;
       overflow-x: auto;
 
       .subtab {
+        flex-shrink: 0;
+        white-space: nowrap;
         border: none;
         background: transparent;
         color: var(--text-dim);

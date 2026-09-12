@@ -7,7 +7,7 @@
 // retargeted at the `.ts` files, which Node's type stripping can execute.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, lstatSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..')
@@ -83,6 +83,8 @@ export function sourceLoader() {
   }
   return async (spec) => {
     await built
-    return import(join(SHIM, spec))
+    // Dynamic import expects a URL: Windows drive letters are otherwise
+    // interpreted as URL schemes. This also escapes spaces and URL delimiters.
+    return import(pathToFileURL(join(SHIM, spec)).href)
   }
 }

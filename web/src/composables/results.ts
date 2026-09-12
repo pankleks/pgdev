@@ -4,6 +4,7 @@ import type { DataResult } from '../types'
 
 export interface GridResult extends DataResult {
   key: string
+  statementNumber: number
 }
 
 export interface Message {
@@ -42,6 +43,7 @@ export interface TabResult {
   cancelling: boolean
   loadingMore: boolean
   grid: GridResult | null
+  grids: GridResult[]
   messages: Message[]
   showMessages: boolean
 }
@@ -57,6 +59,7 @@ function ensure(key: string): TabResult {
       cancelling: false,
       loadingMore: false,
       grid: null,
+      grids: [],
       messages: [],
       showMessages: false,
     })
@@ -66,6 +69,14 @@ function ensure(key: string): TabResult {
 }
 
 export function useResults() {
+  function selectGrid(tabKey: string, gridKey: string) {
+    const r = state.byTab[tabKey]
+    const grid = r?.grids.find((g) => g.key === gridKey)
+    if (!r || !grid) return
+    r.grid = grid
+    r.showMessages = false
+  }
+
   function drop(key: string) {
     const r = state.byTab[key]
     if (r) r.operation++
@@ -83,6 +94,7 @@ export function useResults() {
     r.running = true
     r.cancelling = false
     r.grid = null
+    r.grids = []
     r.showMessages = false
     r.messages = [{ text: 'Running query…', level: 'info' }]
     try {
@@ -92,8 +104,7 @@ export function useResults() {
       const messages: Message[] = [
         { text: `${res.results.length} statement(s) in ${res.durationMs} ms`, level: 'info' },
       ]
-      const dataItems = res.results.filter((item) => item.kind === 'data')
-      let lastData: DataResult | null = null
+      const grids: GridResult[] = []
       for (let idx = 0; idx < res.results.length; idx++) {
         const item = res.results[idx]
         const stmt = multi ? `Statement ${idx + 1}: ` : ''
@@ -103,24 +114,21 @@ export function useResults() {
             level: 'info',
           })
         } else {
-          lastData = item
+          grids.push({ ...item, key: `grid-${tabKey}-${idx}`, statementNumber: idx + 1 })
           const truncated = item.truncated
             ? ` (showing first ${item.rows.length} — use Load more)`
-            : ''
+            : item.limited
+              ? ` (showing first ${item.rows.length} of ${item.totalRowCount} — row limit reached; remaining rows were not retained)`
+              : ''
           messages.push({
             text: `${stmt}${item.rowCount} row(s)${truncated}`,
             level: 'info',
           })
         }
       }
-      if (dataItems.length > 1) {
-        messages.push({
-          text: `Showing last of ${dataItems.length} result sets.`,
-          level: 'info',
-        })
-      }
       r.messages = messages
-      r.grid = lastData ? { ...lastData, key: `grid-${tabKey}` } : null
+      r.grids = grids
+      r.grid = r.grids[0] ?? null
       if (!r.grid) r.showMessages = true
     } catch (e) {
       if (!isCurrent(tabKey, r, operation)) return
@@ -128,6 +136,7 @@ export function useResults() {
       const info = describeQueryError(err.message, err.code, r.cancelling)
       r.messages = [{ text: info.text, level: info.level }]
       r.grid = null
+      r.grids = []
       r.showMessages = true
     } finally {
       if (isCurrent(tabKey, r, operation)) {
@@ -147,18 +156,19 @@ export function useResults() {
   async function loadMore(tabKey: string, connectionId: string) {
     const r = state.byTab[tabKey]
     if (!r?.grid?.truncated || r.running || r.loadingMore) return
+    const g = r.grid
     const operation = r.operation
     r.loadingMore = true
     try {
       const res = await api.fetchMore(connectionId, tabKey)
-      if (!isCurrent(tabKey, r, operation) || r.grid === null) return
-      r.grid.rows.push(...res.rows)
-      r.grid.rowCount = r.grid.rows.length
-      r.grid.truncated = res.truncated
+      if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return
+      g.rows.push(...res.rows)
+      g.rowCount = g.rows.length
+      g.truncated = res.truncated
       r.messages.push({
         text: res.truncated
-          ? `Loaded ${res.rows.length} more row(s) (${r.grid.rows.length} total — more available).`
-          : `Loaded ${res.rows.length} more row(s) (${r.grid.rows.length} total, all rows).`,
+          ? `Statement ${g.statementNumber}: loaded ${res.rows.length} more row(s) (${g.rows.length} total — more available).`
+          : `Statement ${g.statementNumber}: loaded ${res.rows.length} more row(s) (${g.rows.length} total, all rows).`,
         level: 'info',
       })
     } catch (e) {
@@ -183,18 +193,18 @@ export function useResults() {
     const operation = r.operation
     r.loadingMore = true
     try {
-      while (isCurrent(tabKey, r, operation) && r.grid === g && g.truncated && !r.running) {
+      while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running) {
         const res = await api.fetchMore(connectionId, tabKey)
-        if (!isCurrent(tabKey, r, operation) || r.grid !== g) return false
+        if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
         g.rows.push(...res.rows)
         g.rowCount = g.rows.length
         g.truncated = res.truncated
       }
       if (!isCurrent(tabKey, r, operation)) return false
-      const complete = r.grid === g && !g.truncated
+      const complete = r.grids.includes(g) && !g.truncated
       r.messages.push({
         text: complete
-          ? `All rows loaded (${g.rows.length} total).`
+          ? `Statement ${g.statementNumber}: all rows loaded (${g.rows.length} total).`
           : 'Stopped early — grid changed during load.',
         level: complete ? 'info' : 'error',
       })
@@ -210,5 +220,5 @@ export function useResults() {
     }
   }
 
-  return { state, drop, run, cancel, loadMore, loadAll }
+  return { state, drop, selectGrid, run, cancel, loadMore, loadAll }
 }
