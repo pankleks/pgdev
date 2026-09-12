@@ -53,12 +53,28 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char)
 }
 
+// Compiling the pattern is not free and rendering calls this for every
+// visible label on every keystroke — cache per term set (matchAll clones the
+// regex, so sharing one instance is safe).
+const patternCache = new Map<string, RegExp>()
+
+function highlightPattern(rawTerms: string[]): RegExp | null {
+  if (!rawTerms.length) return null
+  const key = [...new Set(rawTerms)].sort((a, b) => b.length - a.length).join('\u0000')
+  let pattern = patternCache.get(key)
+  if (!pattern) {
+    pattern = new RegExp(key.split('\u0000').map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi')
+    if (patternCache.size >= 32) patternCache.clear()
+    patternCache.set(key, pattern)
+  }
+  return pattern
+}
+
 /** Escape everything, then wrap case-insensitive term hits in `<mark>`. */
 export function highlightTerms(value: string, rawTerms: string[]): string {
-  const terms = [...new Set(rawTerms)].sort((a, b) => b.length - a.length)
-  if (!terms.length) return escapeHtml(value)
+  const pattern = highlightPattern(rawTerms)
+  if (!pattern) return escapeHtml(value)
 
-  const pattern = new RegExp(terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi')
   let result = ''
   let lastIndex = 0
   for (const match of value.matchAll(pattern)) {
@@ -127,22 +143,32 @@ export interface ParamRow {
   rest: string
 }
 
+// Argument text repeats heavily across overloads and renders — parse once.
+// The cached array is shared: callers must not mutate it.
+const paramCache = new Map<string, ParamRow[]>()
+
 export function paramRows(args: string, returns: string): ParamRow[] {
-  const rows = splitArgs(args).map((a): ParamRow => {
-    const words = a.split(/\s+/)
-    let kind: ParamKind = 'in'
-    let i = 0
-    const first = words[0]?.toUpperCase()
-    if (words.length > 1 && PARAM_MODES.includes(first)) {
-      kind = first === 'OUT' ? 'out' : first === 'INOUT' ? 'inout' : first === 'VARIADIC' ? 'variadic' : 'in'
-      i = 1
-    }
-    if (words.length > i + 1) {
-      return { kind, name: words.slice(i, i + 1).join(' '), rest: words.slice(i + 1).join(' ') }
-    }
-    return { kind, name: words.length > i ? words.slice(i).join(' ') : a, rest: '' }
-  })
-  rows.push({ kind: 'returns', name: 'returns', rest: returns })
+  const key = `${args}\u0000${returns}`
+  let rows = paramCache.get(key)
+  if (!rows) {
+    rows = splitArgs(args).map((a): ParamRow => {
+      const words = a.split(/\s+/)
+      let kind: ParamKind = 'in'
+      let i = 0
+      const first = words[0]?.toUpperCase()
+      if (words.length > 1 && PARAM_MODES.includes(first)) {
+        kind = first === 'OUT' ? 'out' : first === 'INOUT' ? 'inout' : first === 'VARIADIC' ? 'variadic' : 'in'
+        i = 1
+      }
+      if (words.length > i + 1) {
+        return { kind, name: words.slice(i, i + 1).join(' '), rest: words.slice(i + 1).join(' ') }
+      }
+      return { kind, name: words.length > i ? words.slice(i).join(' ') : a, rest: '' }
+    })
+    rows.push({ kind: 'returns', name: 'returns', rest: returns })
+    if (paramCache.size >= 512) paramCache.clear()
+    paramCache.set(key, rows)
+  }
   return rows
 }
 

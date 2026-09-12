@@ -1,5 +1,6 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
+import type { SchemaData, TableInfo, ViewInfo } from '../types'
 import {
   matchDotChain,
   findRelation,
@@ -17,6 +18,18 @@ const KEYWORD_LIST = [...new Set(KEYWORDS.split(' '))]
 
 function qualified(schema: string, name: string): string {
   return schema === 'public' ? quoteIdent(name) : `${quoteIdent(schema)}.${quoteIdent(name)}`
+}
+
+// The provider runs on every keystroke; the relations array only changes when
+// a new schema load replaces the data object, so derive it once per load.
+type Relation = TableInfo | ViewInfo
+let relationsCache: { data: SchemaData; relations: Relation[] } | null = null
+
+function relationsFor(data: SchemaData): Relation[] {
+  if (relationsCache?.data !== data) {
+    relationsCache = { data, relations: [...data.tables, ...data.views] }
+  }
+  return relationsCache.relations
 }
 
 let registered = false
@@ -62,25 +75,24 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         [K.Field]: 2,
         [K.Class]: 3,
       }
-      const emitted = new Map<string, Monaco.languages.CompletionItem>()
+      const emitted = new Map<string, { item: Monaco.languages.CompletionItem; index: number }>()
       const emit = (item: Monaco.languages.CompletionItem): Monaco.languages.CompletionItem => {
         // Every label below is a plain string; normalize for the lookup key
         // because the Monaco type also allows structured labels.
         const key = typeof item.label === 'string' ? item.label : item.label.label
         const prev = emitted.get(key)
         if (!prev) {
-          emitted.set(key, item)
-          suggestions.push(item)
+          emitted.set(key, { item, index: suggestions.push(item) - 1 })
           return item
         }
-        if ((TIER[item.kind] ?? 0) > (TIER[prev.kind] ?? 0)) {
-          suggestions[suggestions.indexOf(prev)] = item
-          emitted.set(key, item)
+        if ((TIER[item.kind] ?? 0) > (TIER[prev.item.kind] ?? 0)) {
+          suggestions[prev.index] = item
+          emitted.set(key, { item, index: prev.index })
           return item
         }
-        return prev
+        return prev.item
       }
-      const relations = [...(data?.tables ?? []), ...(data?.views ?? [])]
+      const relations = data ? relationsFor(data) : []
       const sqlBefore = model.getValueInRange({
         startLineNumber: 1,
         startColumn: 1,
