@@ -221,6 +221,7 @@ input {
   background: var(--border);
   flex-shrink: 0;
   z-index: 5;
+  touch-action: none;
 
   &:hover {
     background: var(--accent-2);
@@ -236,10 +237,27 @@ input {
   flex-shrink: 0;
   z-index: 5;
   position: relative;
+  touch-action: none;
 
   &:hover {
     background: var(--accent-2);
   }
+}
+
+/* While a splitter is being dragged, no text anywhere may select — the
+   pointer sweeps straight across the results grid and messages. */
+body.dragging-side,
+body.dragging-results {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.dragging-side {
+  cursor: col-resize;
+}
+
+body.dragging-results {
+  cursor: row-resize;
 }
 
 .pgdev-main {

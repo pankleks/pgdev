@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, Wand2 } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
@@ -92,16 +92,49 @@ const sideW = ref(336)
 const resultsH = ref(240)
 let dragKind: 'side' | 'results' | null = null
 
-function onMouseMove(e: MouseEvent) {
+// Panel sizes persist per browser: saved values land once settings load, and
+// drags are written back debounced (flushed on pagehide so a quick resize
+// before closing is not lost).
+void settings.ready.then(() => {
+  sideW.value = settings.state.panelSizes.sideW
+  resultsH.value = settings.state.panelSizes.resultsH
+})
+
+let sizesTimer = 0
+function persistSizes() {
+  window.clearTimeout(sizesTimer)
+  sizesTimer = window.setTimeout(() => settings.setPanelSizes(sideW.value, resultsH.value), 300)
+}
+watch([sideW, resultsH], persistSizes)
+function flushSizes() {
+  window.clearTimeout(sizesTimer)
+  settings.setPanelSizes(sideW.value, resultsH.value)
+}
+
+function startDrag(e: PointerEvent, kind: 'side' | 'results') {
+  dragKind = kind
+  // Keep the drag (and the resize cursor) alive even when the pointer leaves
+  // the window; without capture a release outside sticks the drag on.
+  try {
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  } catch {
+    // Pointer capture is a progressive enhancement; window listeners suffice.
+  }
+  // Suppress text selection under the pointer for the whole drag.
+  document.body.classList.add(kind === 'side' ? 'dragging-side' : 'dragging-results')
+}
+
+function onMouseUp() {
+  dragKind = null
+  document.body.classList.remove('dragging-side', 'dragging-results')
+}
+
+function onMouseMove(e: PointerEvent) {
   if (dragKind === 'side') {
     sideW.value = Math.min(640, Math.max(180, e.clientX))
   } else if (dragKind === 'results') {
     resultsH.value = Math.min(window.innerHeight - 220, Math.max(80, window.innerHeight - e.clientY))
   }
-}
-
-function onMouseUp() {
-  dragKind = null
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -122,8 +155,10 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('pointermove', onMouseMove)
+  window.addEventListener('pointerup', onMouseUp)
+  window.addEventListener('pointercancel', onMouseUp)
+  window.addEventListener('pagehide', flushSizes)
   // Capture editor shortcuts before Monaco or the browser handles them.
   window.addEventListener('keydown', onKeyDown, true)
   if (!tabs.state.tabs.length) tabs.newQuery()
@@ -131,8 +166,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('pointermove', onMouseMove)
+  window.removeEventListener('pointerup', onMouseUp)
+  window.removeEventListener('pointercancel', onMouseUp)
+  window.removeEventListener('pagehide', flushSizes)
   window.removeEventListener('keydown', onKeyDown, true)
 })
 
@@ -230,12 +267,12 @@ provide('pgdev:run', runActive)
       <aside class="sidebar" :style="{ width: sideW + 'px' }">
         <ObjectBrowser />
       </aside>
-      <div class="drag-v" @mousedown="dragKind = 'side'" />
+      <div class="drag-v" @pointerdown.prevent="startDrag($event, 'side')" />
       <main class="pgdev-main">
         <section class="editor-area">
           <EditorTabs />
         </section>
-        <div class="drag-h" @mousedown="dragKind = 'results'" />
+        <div class="drag-h" @pointerdown.prevent="startDrag($event, 'results')" />
         <section class="results-area" :style="{ height: resultsH + 'px' }">
           <ResultsPanel />
         </section>
