@@ -30,7 +30,7 @@ npm start       # Fastify serves the SPA + API on http://localhost:3000
 PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test
 ```
 
-The suites in `test/` round-trip generated DDL against a live PostgreSQL server and exercise the HTTP API end to end. They create and drop their own `pgdev_*` databases, so point `PGDEV_TEST_URL` at a server where that is allowed — never at a database you care about. See `test/README.md`.
+Without `PGDEV_TEST_URL` only the suite that needs no database runs; the rest are skipped with a notice. The database suites round-trip generated DDL against a live PostgreSQL server and exercise the HTTP API end to end. They create and drop their own `pgdev_*` databases, so point `PGDEV_TEST_URL` at a server where that is allowed — never at a database you care about. Nothing here drives a browser. See `test/README.md`.
 
 ## Production notes
 
