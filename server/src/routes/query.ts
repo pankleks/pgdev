@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg'
 import { getPool, setRunning, getRunning, deleteRunning } from '../pools.js'
 import { cancelClientQuery } from '../pgcancel.js'
 import { pgErrorMessage } from '../pgerror.js'
+import { guardCheckedOutClient } from '../checkout.js'
 import { splitStatements } from '../sqlsplit.js'
 import {
   sessionKey,
@@ -198,6 +199,9 @@ export async function queryRoutes(app: FastifyInstance) {
       client.release()
       return reply.code(409).send({ error: 'A query is already running for this tab' })
     }
+    // Cursor sessions hold this client for the life of the session; without a
+    // listener a backend-side termination crashes the process (see checkout.ts).
+    guardCheckedOutClient(client)
 
     // From here the client is owned either by the session map (kept open
     // for FETCH MORE) or released explicitly on every exit path.
