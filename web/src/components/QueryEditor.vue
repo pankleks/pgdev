@@ -30,6 +30,9 @@ onMounted(() => {
     scrollBeyondLastLine: false,
     wordWrap: 'on',
     renderWhitespace: 'selection',
+    // The list is schema-driven (see monaco/completions.ts); Monaco's
+    // document-word suggestions only duplicate what is already typed.
+    wordBasedSuggestions: 'off',
   })
   registerSqlCompletion(monaco)
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
