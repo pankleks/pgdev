@@ -242,6 +242,8 @@ Generated DDL was subsequently round-tripped against a live PostgreSQL 16.14 ser
 
 The HTTP API is also exercised end to end against a live server — connect, `/schema`, `/ddl` for every object type, query execution, cursor paging, errors, cancellation, the 30s statement timeout, autocommit statements, and disconnect — with all fixtures created in a database the test owns and drops afterwards.
 
+Those suites live in `test/` and run with `PGDEV_TEST_URL=postgres://… npm test`; see `test/README.md`. They create and drop their own `pgdev_*` databases and never modify objects in the database they connect to.
+
 ## TODO
 
 ### PostgreSQL limitations (not fixable here)
@@ -251,7 +253,8 @@ The HTTP API is also exercised end to end against a live server — connect, `/s
 ### Testing
 
 - Add a repository test runner with unit tests for `sqlsplit`, `sqlformat`, `gridio`, sessions, query routing, origin validation, and DDL generation.
-- Fold the ad-hoc live harnesses used for the passes above into a repeatable suite: they currently exist only as throwaway scripts, so nothing guards the DDL generator against regression. The cases they cover — tables with partitions (range, list, hash, default, sub-partitioned), RLS policies, identity/generated/serial columns, aggregates (plain, ordered-set, hypothetical, moving), range/composite/enum/domain types, and unusual identifiers — are the specification for that suite.
+- Extend `test/` to cover the object shapes not yet asserted there: tables with list/hash/default partitions, RLS policies, serial columns, and enum types. Aggregate, range, composite, domain and sub-partitioned cases already run.
+- Wire `test/` into CI once there is one; today it runs only when invoked by hand with `PGDEV_TEST_URL` set.
 - Add end-to-end browser tests for connection switching, tab closure during queries, cancellation, pagination, export, and stale-response scenarios. The HTTP surface is covered against a live server, but nothing exercises Monaco, the object browser, or the result grid.
 - Remove or resolve the Vite warning caused by `results.ts` being both statically and dynamically imported.
 

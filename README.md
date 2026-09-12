@@ -24,6 +24,16 @@ npm run build   # builds web/dist and server/dist
 npm start       # Fastify serves the SPA + API on http://localhost:3000
 ```
 
+## Tests
+
+```bash
+PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test
+```
+
+The suites in `test/` round-trip generated DDL against a live PostgreSQL server and exercise the HTTP API end to end. They create and drop their own `pgdev_*` databases, so point `PGDEV_TEST_URL` at a server where that is allowed — never at a database you care about. See `test/README.md`.
+
+## Production notes
+
 The production web build is installable as a PWA. Open the app from `localhost` or an HTTPS deployment and use the browser's install action. The service worker caches the application shell and static assets, but `/api/*` requests remain network-only because queries and schema data must be live.
 
 ## Project layout
