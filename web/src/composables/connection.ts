@@ -127,6 +127,14 @@ export function useConnection() {
         }
         try {
           const { useResults } = await import('./results')
+          // Re-check after the await: a disconnect+reconnect during the
+          // import must not drop the new connection's tab results or
+          // overwrite state.id below (which would leak the newer pool).
+          // No further awaits follow before the writes, so this closes it.
+          if (attempt !== connectionAttempt) {
+            await api.disconnect(id).catch(() => {})
+            return
+          }
           const res = useResults()
           for (const key of Object.keys(res.state.byTab)) res.drop(key)
         } catch {

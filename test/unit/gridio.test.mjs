@@ -54,3 +54,14 @@ test('toDelimited writes a header row and keeps TSV free of tabs and newlines', 
 test('toDelimited escapes header names too', () => {
   assert.equal(toDelimited(['a,b'], [[1]], ','), '"a,b"\n1')
 })
+
+test('TSV copy neutralises spreadsheet formula starters like the CSV path', () => {
+  // The clipboard path feeds Excel/Sheets just as a .csv download does, so
+  // the formula guard must apply before TSV flattening.
+  assert.equal(toDelimited(['v'], [['=cmd|calc']], '\t'), 'v\n\'=cmd|calc')
+  assert.equal(toDelimited(['v'], [['+1']], '\t'), 'v\n\'+1')
+  assert.equal(toDelimited(['v'], [['-2']], '\t'), 'v\n\'-2')
+  assert.equal(toDelimited(['v'], [['@SUM(A1)']], '\t'), 'v\n\'@SUM(A1)')
+  assert.equal(toDelimited(['v'], [['\t=x']], '\t'), 'v\n\' =x')
+  assert.equal(toDelimited(['v'], [['hello']], '\t'), 'v\nhello')
+})

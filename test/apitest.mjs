@@ -6,7 +6,22 @@
 import { credentials, Client, Pool } from './lib/db.mjs'
 const base = await credentials()
 
-const DB = 'pgdev_apitest'
+// The PID suffix lets two runs (or two CI jobs) share one server without
+// DROP ... WITH (FORCE) destroying each other's database.
+const DB = `pgdev_apitest_${process.pid}`
+
+// Registered before anything can throw, so a crash cannot strand the scratch
+// database (node exits on unhandled rejections without running late handlers).
+process.on('uncaughtException', async (e) => {
+  console.log('unexpected error:', e.message)
+  try {
+    const adm = new Client({ ...base, database: 'postgres' })
+    await adm.connect()
+    await adm.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`)
+    await adm.end()
+  } catch { /* best effort */ }
+  process.exit(2)
+})
 
 // ------------------------------------------------------------------ fixtures
 const FIXTURE = `
@@ -382,11 +397,6 @@ const cleanup = async () => {
   await adm.end()
   return left.rows.map((r) => r.datname)
 }
-process.on('uncaughtException', async (e) => {
-  console.log('unexpected error:', e.message)
-  console.log('leftover:', JSON.stringify(await cleanup().catch(() => ['cleanup failed'])))
-  process.exit(2)
-})
 const left = await cleanup()
 console.log(`\nleftover pgdev_% databases: ${JSON.stringify(left)}`)
 console.log(`\n===== ${pass} passed, ${fail} failed =====`)

@@ -50,7 +50,17 @@ export function splitStatements(sql: string): string[] {
     }
     // Single-quoted string.
     if (ch === "'") {
-      const escapeBackslashes = !standardConformingStrings || /e/i.test(sql[i - 1] ?? '')
+      // Backslash escapes are active inside E'…' and U&'…', and everywhere
+      // when standard_conforming_strings is off. The prefix letter must be a
+      // standalone token: in `type='a\'` the `e` merely ends the identifier,
+      // and treating the backslash as an escape would swallow the statement
+      // boundary after the closing quote.
+      const p1 = sql[i - 1] ?? ''
+      const p2 = sql[i - 2] ?? ''
+      const p3 = sql[i - 3] ?? ''
+      const eString = /e/i.test(p1) && !/^[A-Za-z0-9_$]/.test(p2)
+      const uString = p1 === '&' && /u/i.test(p2) && !/^[A-Za-z0-9_$]/.test(p3)
+      const escapeBackslashes = !standardConformingStrings || eString || uString
       let j = i + 1
       while (j < n) {
         if (sql[j] === "'") {

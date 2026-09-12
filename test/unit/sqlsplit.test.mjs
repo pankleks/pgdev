@@ -54,6 +54,32 @@ test('tracks standard_conforming_strings across statements', () => {
   )
 })
 
+test('an identifier ending in e does not turn its string into an E-string', () => {
+  // SCS=on: `type='a\'` closes at that quote, so the batch splits.
+  // Misreading the `e` of `type` as an E-prefix would swallow the rest.
+  assert.deepEqual(
+    splitStatements("SELECT type='a\\'; SELECT 2"),
+    ["SELECT type='a\\'", 'SELECT 2'],
+  )
+  // A standalone E prefix still escapes.
+  assert.deepEqual(
+    splitStatements("SELECT E'a\\'; SELECT 2;'"),
+    ["SELECT E'a\\'; SELECT 2;'"],
+  )
+})
+
+test('U&-prefixed strings honour backslash escapes under SCS=on', () => {
+  assert.deepEqual(
+    splitStatements("SELECT u&'a\\'; SELECT 2;'"),
+    ["SELECT u&'a\\'; SELECT 2;'"],
+  )
+  // The & alone must not trigger it: a plain string with a literal backslash.
+  assert.deepEqual(
+    splitStatements("SELECT x&'a\\'; SELECT 2"),
+    ["SELECT x&'a\\'", 'SELECT 2'],
+  )
+})
+
 test('returns no statements for empty or comment-only input', () => {
   assert.deepEqual(splitStatements(''), [])
   assert.deepEqual(splitStatements('   \n\t '), [])

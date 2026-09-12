@@ -28,10 +28,12 @@ export function describeQueryError(
   if (/statement timeout/i.test(raw)) {
     return { text: 'Query timed out (30s statement limit).', level: 'error' }
   }
+  // A user-initiated cancel surfaces as SQLSTATE 57014 ("canceling statement
+  // due to user request"); the timeout case is handled above. Matching the
+  // message text would misclassify any error that merely contains "cancel".
   // NB: no /aborted/i heuristic — 25P02 "current transaction is aborted"
   // is a server state, not a user cancel; it must surface verbatim.
-  const cancelled =
-    wasCancelling || /cancel/i.test(raw) || /57014/.test(raw) || code === '57014'
+  const cancelled = wasCancelling || code === '57014'
   return cancelled
     ? { text: 'Query canceled.', level: 'info' }
     : { text: raw, level: 'error' }

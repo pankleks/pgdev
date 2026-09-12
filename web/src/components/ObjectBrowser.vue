@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -621,6 +621,21 @@ function catOpen(t: TableInfo, cat: TableCategory): boolean {
 // Monotonic token per object: two quick double-clicks must not let the slower
 // response win the active tab (schema loads use the same pattern).
 const ddlRequests = new Map<string, number>()
+
+// OIDs are only unique per database, and the token map grows per click, so
+// all of this is dropped when the connection changes: stale expansion state
+// would otherwise pre-expand unrelated objects, and old tokens are dead.
+watch(
+  () => conn.state.id,
+  () => {
+    expanded.clear()
+    expandedTableGroups.clear()
+    expandedViewGroups.clear()
+    expandedFunctionGroups.clear()
+    expandedTypeGroups.clear()
+    ddlRequests.clear()
+  },
+)
 
 async function openObject(
   type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type',

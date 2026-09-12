@@ -70,6 +70,13 @@ export interface SchemaData {
   types: TypeInfo[]
 }
 
+// Schemas the browser never shows: system catalogs, TOAST, and other
+// sessions' temporary tables. Interpolated into every catalog query so the
+// rules cannot drift apart.
+const USER_SCHEMA_SQL = `n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'`
+
 const TABLES_SQL = `
 SELECT n.nspname AS schema, c.relname AS name, c.oid::text AS oid,
   c.relispartition AS is_partition,
@@ -81,9 +88,8 @@ SELECT n.nspname AS schema, c.relname AS name, c.oid::text AS oid,
     WHERE i.inhrelid = c.oid), '') AS parents
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind IN ('r', 'p')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+WHERE c.relkind IN ('r', 'p', 'f')
+  AND ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname`
 
 const VIEWS_SQL = `
@@ -91,8 +97,7 @@ SELECT n.nspname AS schema, c.relname AS name, c.oid::text AS oid, c.relkind = '
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('v', 'm')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+  AND ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname`
 
 const COLUMNS_SQL = `
@@ -106,9 +111,8 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
 WHERE a.attnum > 0
   AND NOT a.attisdropped
-  AND c.relkind IN ('r', 'p', 'v', 'm')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+  AND c.relkind IN ('r', 'p', 'f', 'v', 'm')
+  AND ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname, a.attnum`
 
 const INDEXES_SQL = `
@@ -125,8 +129,7 @@ JOIN pg_class ic ON ic.oid = i.indexrelid
 JOIN pg_class c ON c.oid = i.indrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_am am ON am.oid = ic.relam
-WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+WHERE ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname, ic.relname`
 
 const CONSTRAINTS_SQL = `
@@ -135,8 +138,7 @@ SELECT n.nspname AS schema, c.relname AS table, con.conname AS name, con.contype
 FROM pg_constraint con
 JOIN pg_class c ON c.oid = con.conrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+WHERE ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname, con.conname`
 
 const TRIGGERS_SQL = `
@@ -146,8 +148,7 @@ FROM pg_trigger t
 JOIN pg_class c ON c.oid = t.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE NOT t.tgisinternal
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+  AND ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, c.relname, t.tgname`
 
 const FUNCTIONS_SQL = `
@@ -156,7 +157,9 @@ SELECT n.nspname AS schema, p.proname AS name,
   pg_get_function_result(p.oid) AS returns,
   COALESCE((SELECT string_agg(format_type(t.oid, NULL), ', ') FROM unnest(p.proargtypes) AS t(oid)), '') AS type_sig,
   CASE
-    WHEN pg_get_function_result(p.oid) = 'trigger' THEN 'trigger'
+    -- prorettype rather than a second pg_get_function_result call: a
+    -- trigger function is exactly one whose return type is trigger.
+    WHEN p.prorettype = 'trigger'::regtype THEN 'trigger'
     WHEN p.prokind = 'p' THEN 'procedure'
     WHEN p.prokind = 'w' THEN 'window'
     WHEN p.prokind = 'a' THEN 'aggregate'
@@ -165,8 +168,8 @@ SELECT n.nspname AS schema, p.proname AS name,
   p.oid::text AS oid
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND p.prokind IN ('f', 'p', 'w', 'a')
+WHERE p.prokind IN ('f', 'p', 'w', 'a')
+  AND ${USER_SCHEMA_SQL}
 ORDER BY n.nspname, p.proname`
 
 const TYPES_SQL = `
@@ -188,8 +191,7 @@ LEFT JOIN LATERAL (
 ) dm ON t.typtype = 'd'
 LEFT JOIN pg_range r ON r.rngtypid = t.oid
 WHERE t.typtype IN ('e', 'c', 'd', 'r')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
+  AND ${USER_SCHEMA_SQL}
   AND (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_class c WHERE c.oid = t.typrelid))
 ORDER BY n.nspname, t.typname`
 

@@ -6,7 +6,10 @@
 import { credentials, Client, Pool } from './lib/db.mjs'
 const base = await credentials()
 
-const DB = 'pgdev_aggtest'
+// The PID suffix lets two runs (or two machines of CI) share one server
+// without DROP ... WITH (FORCE) destroying each other's database. A run that
+// crashes still strands its database, but the leftover report names it.
+const DB = `pgdev_aggtest_${process.pid}`
 
 // ---- scratch database lifecycle (only ever touches DB) ----------------------
 const admin = new Client({ ...base, database: 'postgres' })
@@ -16,6 +19,20 @@ await admin.query(`CREATE DATABASE ${DB}`)
 await admin.end()
 const pool = new Pool({ ...base, database: DB, max: 3 })
 pool.on('error', (e) => console.log('pool error:', e.message))
+
+// Registered before anything can throw, so a crash cannot strand the scratch
+// database (node exits on unhandled rejections without running late handlers).
+process.on('uncaughtException', async (e) => {
+  console.log('unexpected error:', e.message)
+  try {
+    await pool.end().catch(() => {})
+    const adm = new Client({ ...base, database: 'postgres' })
+    await adm.connect()
+    await adm.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`)
+    await adm.end()
+  } catch { /* best effort */ }
+  process.exit(2)
+})
 
 let pass = 0, fail = 0
 const ok = (name, cond, detail = '') => {

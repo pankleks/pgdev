@@ -5,7 +5,7 @@
 import { credentials, Client, Pool } from './lib/db.mjs'
 const base = await credentials()
 
-const DB = 'pgdev_typetest'
+const DB = `pgdev_typetest_${process.pid}`
 
 const admin = new Client({ ...base, database: 'postgres' })
 await admin.connect()
@@ -14,6 +14,24 @@ await admin.query(`CREATE DATABASE ${DB}`)
 await admin.end()
 const pool = new Pool({ ...base, database: DB, max: 3 })
 pool.on('error', (e) => console.log('pool error:', e.message))
+
+// ------------------------------------------------------------------ teardown
+const cleanup = async () => {
+  await pool.end().catch(() => {})
+  const adm = new Client({ ...base, database: 'postgres' })
+  await adm.connect()
+  await adm.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`)
+  const left = await adm.query(`SELECT datname FROM pg_database WHERE datname LIKE 'pgdev_%'`)
+  await adm.end()
+  return left.rows.map((r) => r.datname)
+}
+// Registered before anything can throw, so a crash cannot strand the scratch
+// database (node exits on unhandled rejections without running late handlers).
+process.on('uncaughtException', async (e) => {
+  console.log('unexpected error:', e.message)
+  console.log('leftover pgdev_% databases:', JSON.stringify(await cleanup().catch(() => ['cleanup failed'])))
+  process.exit(2)
+})
 
 let pass = 0, fail = 0
 const ok = (name, cond, detail = '') => {
@@ -90,6 +108,17 @@ await roundTrip('domain constraint name',
   `SELECT c.conname, pg_get_constraintdef(c.oid) AS def FROM pg_constraint c
    JOIN pg_type t ON t.oid=c.contypid WHERE t.typname=$1`, ['d1'])
 
+// typdefault is the *external* representation (unquoted) once typdefaultbin
+// is set, so a string default only round-trips if the DDL quotes it.
+await roundTrip('domain with a string default',
+  `CREATE DOMAIN d2 AS text DEFAULT 'abc' NOT NULL`, 'type', 'd2',
+  'DROP DOMAIN d2 CASCADE',
+  `SELECT pg_get_expr(t.typdefaultbin, 0) AS def FROM pg_type t WHERE t.typname=$1`, ['d2'])
+await roundTrip('domain with a quoted string default',
+  `CREATE DOMAIN d3 AS text DEFAULT 'it''s'`, 'type', 'd3',
+  'DROP DOMAIN d3 CASCADE',
+  `SELECT pg_get_expr(t.typdefaultbin, 0) AS def FROM pg_type t WHERE t.typname=$1`, ['d3'])
+
 console.log('\n== sub-partitioned child ==')
 {
   await pool.query(`CREATE TABLE sp (a int NOT NULL, b int NOT NULL, PRIMARY KEY (a,b)) PARTITION BY RANGE (a)`)
@@ -123,20 +152,6 @@ console.log('\n== sub-partitioned child ==')
 }
 
 // ------------------------------------------------------------------ teardown
-const cleanup = async () => {
-  await pool.end().catch(() => {})
-  const adm = new Client({ ...base, database: 'postgres' })
-  await adm.connect()
-  await adm.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`)
-  const left = await adm.query(`SELECT datname FROM pg_database WHERE datname LIKE 'pgdev_%'`)
-  await adm.end()
-  return left.rows.map((r) => r.datname)
-}
-process.on('uncaughtException', async (e) => {
-  console.log('unexpected error:', e.message)
-  console.log('leftover pgdev_% databases:', JSON.stringify(await cleanup().catch(() => ['cleanup failed'])))
-  process.exit(2)
-})
 const left = await cleanup()
 console.log(`\nleftover pgdev_% databases: ${JSON.stringify(left)}`)
 console.log(`\n===== ${pass} passed, ${fail} failed =====`)

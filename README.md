@@ -8,7 +8,7 @@ no account to create.
 
 ## Install
 
-Needs Node.js 20+ and a PostgreSQL server (11 or newer).
+Needs Node.js 20+ and a PostgreSQL server (14 or newer).
 
 ```bash
 npm install -g @pankleks/pgdev

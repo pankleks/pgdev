@@ -21,13 +21,14 @@ if (!existsSync(join(REPO, 'web', 'dist'))) {
   console.log('web/dist is missing; run npm run build first')
   process.exit(2)
 }
-if (!findChrome()) {
+const base = await credentials()
+// launchChrome honors CHROME_PATH; the fallback list only covers Mac/Linux.
+// credentials() must run first — it is what loads .env, where CHROME_PATH lives.
+if (!process.env.CHROME_PATH && !findChrome()) {
   console.log('no Chrome binary found; set CHROME_PATH to run the browser suite')
   process.exit(2)
 }
-
-const base = await credentials()
-const DB = 'pgdev_browsertest'
+const DB = `pgdev_browsertest_${process.pid}`
 const { pool, teardown } = await scratchDatabase(base, DB)
 const { eq, ok, report } = counters()
 
@@ -63,7 +64,9 @@ children.push(server)
 server.stdout.on('data', (d) => process.stdout.write(`  [api] ${d}`))
 server.stderr.on('data', (d) => process.stdout.write(`  [api] ${d}`))
 
-const vite = spawn('npx', ['vite', '--port', String(WEB_PORT), '--strictPort', '--host', '127.0.0.1'], {
+// Spawn vite via node directly: spawning 'npx' on Windows resolves to
+// npx.cmd, which Node refuses to spawn without a shell (EINVAL since 18.20).
+const vite = spawn(process.execPath, [join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(WEB_PORT), '--strictPort', '--host', '127.0.0.1'], {
   cwd: join(REPO, 'web'),
   env: { ...process.env, PGDEV_API_PORT: String(API_PORT) },
   stdio: ['ignore', 'pipe', 'pipe'],

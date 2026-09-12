@@ -83,14 +83,29 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
        LEFT JOIN pg_namespace pcn ON pcn.oid = pc.relnamespace
        LEFT JOIN pg_namespace rcn ON rcn.oid = rc.relnamespace
        WHERE con.conrelid = $1 AND con.contype IN ('p', 'u', 'f', 'c', 'x')
+         -- Constraints cloned from a partitioned parent (conparentid) or
+         -- plain-inherited ones (coninhcount) are recreated automatically by
+         -- the PARTITION OF / INHERITS clause — emitting them would collide.
+         AND con.conparentid = 0 AND con.coninhcount = 0
        ORDER BY con.contype, conname`,
       [relOid],
     ),
     pool.query(
-      `SELECT indexname, indexdef FROM pg_indexes
-       WHERE schemaname = $1 AND tablename = $2
-       ORDER BY indexname`,
-      [schema, name],
+      // Indexes without a backing constraint: PRIMARY KEY / UNIQUE /
+      // EXCLUDE indexes are emitted inline as CONSTRAINT clauses, so they
+      // are matched by oid here rather than by name (an ALTER INDEX RENAME
+      // must not turn a constraint into a duplicate standalone index).
+      // Child indexes attached or cloned under a partitioned parent index
+      // appear in pg_inherits and are recreated by the parent's CREATE INDEX.
+      `SELECT idx.relname AS indexname, pg_get_indexdef(idx.oid) AS indexdef
+       FROM pg_index i
+       JOIN pg_class idx ON idx.oid = i.indexrelid
+       LEFT JOIN pg_constraint con ON con.conindid = idx.oid
+       WHERE i.indrelid = $1
+         AND con.oid IS NULL
+         AND NOT EXISTS (SELECT 1 FROM pg_inherits x WHERE x.inhrelid = idx.oid)
+       ORDER BY idx.relname`,
+      [relOid],
     ),
     pool.query(
       `SELECT a.attname FROM pg_index i
@@ -141,12 +156,17 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
   const chunks: string[] = []
 
   if (rel.relispartition && rel.part_name) {
-    // Partitions inherit columns/constraints/indexes from the parent —
-    // only the attachment bound is per-partition DDL.
-    const bound = String(rel.partbound ?? '').trim()
+    // Partition-local constraints and indexes still belong in the DDL: only
+    // the parent-cloned ones (filtered out of the queries above) are
+    // recreated by the attachment.
+    const localConstraints = consRes.rows.map(
+      (c) => `ALTER TABLE ${table} ADD CONSTRAINT ${ident(c.conname)} ${String(c.def)};`,
+    )
+    const localIndexes = idxRes.rows.map((r) => `${r.indexdef};`)
     // pg_get_expr returns bounds in their final form: list/range bounds read
     // "FOR VALUES …", a default partition reads "DEFAULT" (which must NOT be
     // prefixed with FOR VALUES). Only hash bounds need the wrapper.
+    const bound = String(rel.partbound ?? '').trim()
     const partitionBound = /^(FOR\s+VALUES|DEFAULT)\b/i.test(bound) ? bound : `FOR VALUES ${bound}`
     // A partition can itself be partitioned; without its own PARTITION BY it
     // would be recreated as a plain table, breaking its own children.
@@ -154,6 +174,8 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     chunks.push(
       `CREATE TABLE ${table}\n  PARTITION OF ${ident(rel.part_schema)}.${ident(rel.part_name)}\n  ${partitionBound}${subPartition};`,
     )
+    if (localConstraints.length) chunks.push(localConstraints.join('\n'))
+    if (localIndexes.length) chunks.push(localIndexes.join('\n'))
   } else {
     const pkCols = new Set(pkRes.rows.map((r) => r.attname as string))
     const lines = colsRes.rows.map((r) => {
@@ -175,13 +197,16 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     // A foreign key that references a partitioned table is stored once per
     // partition, so the catalogue returns several rows with identical
     // definitions (…_fkey, …_fkey1, …_fkey2). Emitting each as an inline
-    // CONSTRAINT makes the names collide, so collapse identical definitions.
-    const constraintNames = new Set(consRes.rows.map((r) => r.conname as string))
-    const seenDefs = new Set<string>()
+    // CONSTRAINT makes the names collide, so collapse identical FK rows.
+    // Only FKs dedupe by definition: two same-shaped CHECK constraints are
+    // legal and distinct, and names are unique per relation anyway.
+    const seenFkDefs = new Set<string>()
     for (const c of consRes.rows) {
       const def = String(c.def)
-      if (seenDefs.has(def)) continue
-      seenDefs.add(def)
+      if (c.contype === 'f') {
+        if (seenFkDefs.has(def)) continue
+        seenFkDefs.add(def)
+      }
       lines.push(`  CONSTRAINT ${ident(c.conname)} ${def}`)
     }
 
@@ -194,11 +219,10 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     if (rel.tablespace) create += `\n  TABLESPACE ${ident(rel.tablespace)}`
     chunks.push(create + ';')
 
-    if (!rel.relispartition) {
-      const extraIndexes = idxRes.rows.filter((r) => !constraintNames.has(r.indexname))
-      if (extraIndexes.length) {
-        chunks.push(extraIndexes.map((r) => `${r.indexdef};`).join('\n'))
-      }
+    // Constraint-backed indexes are excluded by the query itself; whatever
+    // remains is a standalone index for every relation kind.
+    if (idxRes.rows.length) {
+      chunks.push(idxRes.rows.map((r) => `${r.indexdef};`).join('\n'))
     }
   }
 
@@ -411,7 +435,12 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
     target = fallback.rows[0].oid
   }
   const res = await pool.query(
-    `SELECT t.typtype, t.typnotnull, t.typdefault,
+    `SELECT t.typtype, t.typnotnull,
+       -- typdefault is the *external* representation when typdefaultbin is
+       -- set (e.g. 'abc' without its quotes for a text domain), so emitting it raw
+       -- produces unrunnable DDL. pg_get_expr renders the parsed default
+       -- back as executable SQL, same as the column-default path above.
+       pg_get_expr(t.typdefaultbin, 0) AS typdefault,
        format_type(t.typbasetype, t.typtypmod) AS base,
        (SELECT string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder)
           FROM pg_enum e WHERE e.enumtypid = t.oid) AS labels,
@@ -435,10 +464,9 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
        (SELECT quote_ident(rcn.nspname) || '.' || quote_ident(rc.collname)
           FROM pg_collation rc JOIN pg_namespace rcn ON rcn.oid = rc.collnamespace
           WHERE rc.oid = r.rngcollation AND r.rngcollation <> 0 AND rc.collname <> 'default') AS collation,
-       -- PG14+ names the multirange <range>_multirange. Only emit the option
+       -- PG names the multirange <range>_multirange. Only emit the option
        -- when the actual name differs, so the generated DDL works on the
-       -- server version it came from without probing for rngmultitypid
-       -- (absent before PG14).
+       -- server version it came from without probing.
        (SELECT mt.typname FROM pg_type mt
           WHERE mt.oid = (SELECT x.rngmultitypid FROM pg_range x WHERE x.rngtypid = t.oid)
             AND mt.typname <> t.typname || '_multirange'

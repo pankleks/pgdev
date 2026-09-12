@@ -174,18 +174,9 @@ export async function queryRoutes(app: FastifyInstance) {
       if (!autocommit) {
         await client.query('BEGIN')
         inTxn = true
-        await client.query('SAVEPOINT pgdev_init')
-        try {
-          await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
-        } catch {
-          // Pre-9.6 servers: reaper + explicit teardown still apply.
-          // The savepoint rollback below undoes the aborted state.
-          try {
-            await client.query('ROLLBACK TO SAVEPOINT pgdev_init')
-          } catch {
-            throw new Error('Unable to recover the query transaction')
-          }
-        }
+        // Bounds how long a paged session may sit idle in its transaction
+        // server-side; the reaper and explicit teardown back this up.
+        await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
       }
 
       const results: (

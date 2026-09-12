@@ -67,8 +67,18 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 function database(): Promise<IDBDatabase> {
-  if (!databasePromise) databasePromise = openDatabase()
-  return databasePromise
+  let p = databasePromise
+  if (!p) {
+    p = openDatabase()
+    databasePromise = p
+    // A failed open must not stay cached: a blocked or transiently
+    // unavailable IndexedDB can come back (e.g. the blocking tab closes),
+    // so drop the rejection and let the next caller retry.
+    p.catch(() => {
+      if (databasePromise === p) databasePromise = null
+    })
+  }
+  return p
 }
 
 function getRecord<T>(db: IDBDatabase, storeName: StoreName, key: IDBValidKey): Promise<T | undefined> {
@@ -286,17 +296,27 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
       return false
     }
     const db = await database()
+    const withoutHandles = pins.map(({ handle: _handle, ...pin }) => pin)
     try {
       await replacePinnedFiles(db, pins)
       return true
     } catch {
       // File handles are structured-cloneable in supported browsers, but keep
       // the file snapshots if a browser rejects cloning a handle.
-      await replacePinnedFiles(
-        db,
-        pins.map(({ handle: _handle, ...pin }) => pin),
-      )
-      return false
+      try {
+        await replacePinnedFiles(db, withoutHandles)
+        return false
+      } catch (err) {
+        // Last resort before the pins are lost (e.g. quota): legacy
+        // localStorage. If even that fails, surface the original error so
+        // the caller can warn the user instead of losing data silently.
+        try {
+          writeLegacyJson(LEGACY_PINNED_FILES_KEY, withoutHandles)
+        } catch {
+          throw err
+        }
+        return false
+      }
     }
   })
 }

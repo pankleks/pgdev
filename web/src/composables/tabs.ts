@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { readTextFileHandle, type FileHandle } from '../lib/files'
 import { savePinnedFiles, storageReady, type StoredPinnedFile } from '../lib/storage'
+import { useToast } from './toast'
 
 export interface EditorTab {
   key: string
@@ -52,7 +53,12 @@ function persistPins() {
   pinWrite = pinWrite
     .then(() => storageReady)
     .then(() => savePinnedFiles(snapshot).then(() => undefined))
-    .catch(() => undefined)
+    .catch((e: unknown) => {
+      // Every in-storage fallback failed; the pins exist only in memory and
+      // a refresh loses them. Say so instead of failing silently.
+      const message = e instanceof Error ? e.message : String(e)
+      useToast().show(`Pinned files are not being saved: ${message}`)
+    })
 }
 
 function newPinId(): string {

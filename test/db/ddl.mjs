@@ -4,7 +4,7 @@
 import { credentials, scratchDatabase, counters, roundTrip } from '../lib/db.mjs'
 
 const base = await credentials()
-const DB = 'pgdev_ddltest'
+const DB = `pgdev_ddltest_${process.pid}`
 const { pool, teardown } = await scratchDatabase(base, DB)
 const { eq, ok, report } = counters()
 
@@ -91,6 +91,32 @@ await roundTrip({
   fingerprint: tableFp,
   ddl: async () => ddl.tableDdl(pool, await oidOfRel('list_eu'), 'public', 'list_eu'),
 })
+
+console.log('\n== partition-local constraints and indexes ==')
+await pool.query(`CREATE TABLE list_loc PARTITION OF list_parent FOR VALUES IN ('fr','de')`)
+await pool.query(`ALTER TABLE list_loc ADD CONSTRAINT loc_chk CHECK (id > 100)`)
+await pool.query(`CREATE INDEX loc_idx ON list_loc (id)`)
+await roundTrip({
+  pool, eq, ok, params: ['list_loc'], create: [], drop: `DROP TABLE list_loc`,
+  label: 'partition-local CHECK and index survive the round-trip',
+  fingerprint: `SELECT con.conname, pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid
+      WHERE c.relname = $1 AND con.conname = 'loc_chk'`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('list_loc'), 'public', 'list_loc'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('list_loc'), 'public', 'list_loc')
+  ok('emits the partition-local CHECK', /ADD CONSTRAINT "loc_chk" CHECK \(\(id > 100\)\)/.test(text),
+    text.split('\n').find((l) => /loc_chk/.test(l))?.trim())
+  ok('emits the partition-local index', /CREATE INDEX "?loc_idx"? ON/.test(text),
+    text.split('\n').find((l) => /loc_idx/.test(l))?.trim())
+  // Parent-cloned objects must NOT appear: the attachment recreates them.
+  ok('omits the cloned primary key', !/list_loc_pkey|CONSTRAINT .* PRIMARY KEY/.test(text),
+    text.split('\n').find((l) => /pkey|PRIMARY KEY/.test(l))?.trim())
+  ok('cloned CHECKs do not collide with the local one',
+    (text.match(/ADD CONSTRAINT/g) ?? []).length === 1)
+}
+await pool.query(`DROP TABLE list_loc`)
 
 console.log('\n== index variants ==')
 for (const [label, create, name] of [

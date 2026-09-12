@@ -16,10 +16,18 @@ export function formatCellForDisplay(value: unknown): string {
   return cellToText(value)
 }
 
+/**
+ * Prefix spreadsheet formula starters so a pasted cell cannot execute as a
+ * formula. Applies to every export path — CSV download and clipboard TSV
+ * alike — because the data comes from the database, not from the user.
+ */
+function neutralizeFormula(value: string): string {
+  if (/^[\t\r\n ]*[=+\-@]/.test(value)) return `'${value}`
+  return value
+}
+
 export function csvEscape(value: string): string {
-  // Prefix spreadsheet formula starters so opening the CSV cannot execute
-  // values returned by an untrusted database.
-  if (/^[\t\r\n ]*[=+\-@]/.test(value)) value = `'${value}`
+  value = neutralizeFormula(value)
   if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
 }
@@ -27,7 +35,10 @@ export function csvEscape(value: string): string {
 export function toDelimited(columns: string[], rows: unknown[][], separator: ',' | '\t'): string {
   const cell = (v: unknown): string => {
     const s = cellToText(v)
-    return separator === ',' ? csvEscape(s) : s.replace(/\t/g, ' ').replace(/\r?\n/g, ' ')
+    if (separator === ',') return csvEscape(s)
+    // Neutralize first so the guard survives; then flatten what TSV cannot
+    // carry (tabs and newlines inside a clipboard cell).
+    return neutralizeFormula(s).replace(/\t/g, ' ').replace(/\r?\n/g, ' ')
   }
   const lines = [columns.map((c) => cell(c)).join(separator)]
   for (const row of rows) {

@@ -78,15 +78,52 @@ if (!existsSync(entry)) {
   process.exit(1)
 }
 
-const { port, fellBack } = await pickPort(DEFAULT_PORT)
-const url = `http://localhost:${port}/`
-
-const server = spawn(process.execPath, [entry], {
-  env: { ...process.env, PORT: String(port) },
-  stdio: ['ignore', 'inherit', 'inherit'],
-})
-
+// Probe-then-bind is a race: another process can take the port between
+// portFree() and the server's listen(). If a child dies immediately and its
+// port has since become busy, walk upward and try again — the fallback the
+// probe alone cannot guarantee.
+const MAX_ATTEMPTS = 20
+let { port, fellBack } = await pickPort(DEFAULT_PORT)
+let server = null
+let childStartedAt = 0
 let shuttingDown = false
+
+function startChild() {
+  const child = spawn(process.execPath, [entry], {
+    env: { ...process.env, PORT: String(port) },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
+  childStartedAt = Date.now()
+  child.on('error', (err) => {
+    console.error(`Could not start pgDEV: ${err.message}`)
+    process.exit(1)
+  })
+  child.on('exit', onChildExit)
+  return child
+}
+
+async function onChildExit(code, signal) {
+  if (shuttingDown) process.exit(0)
+  // Retry only a fresh failure on a port that is now busy — never a server
+  // that ran for a while; that exit code belongs to the user.
+  const freshFailure = Date.now() - childStartedAt < 5000
+  if (freshFailure && !(await portFree(port))) {
+    const next = port + 1
+    if (next >= DEFAULT_PORT + MAX_ATTEMPTS) {
+      console.error(`no free port in ${DEFAULT_PORT}\u2013${DEFAULT_PORT + MAX_ATTEMPTS - 1}`)
+      process.exit(1)
+    }
+    console.log(`Port ${port} was taken while starting; trying ${next}…`)
+    ;({ port, fellBack } = { port: next, fellBack: true })
+    server = startChild()
+    return
+  }
+  // The server exits by itself when dist is missing or the port is hopeless.
+  process.exit(code ?? (signal ? 1 : 0))
+}
+
+server = startChild()
+
 const shutdown = (signal) => {
   if (shuttingDown) return
   shuttingDown = true
@@ -99,17 +136,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => shutdown(signal))
 }
 
-server.on('exit', (code, signal) => {
-  if (shuttingDown) process.exit(0)
-  // The server exits by itself when the port is taken or dist is missing.
-  process.exit(code ?? (signal ? 1 : 0))
-})
-server.on('error', (err) => {
-  console.error(`Could not start pgDEV: ${err.message}`)
-  process.exit(1)
-})
-
-// Wait for the server to answer before opening a browser at it.
+// Wait for the server to answer before opening a browser at it. `port` is a
+// let: if the child lost its port and we retried upward, polling follows it.
 const ready = async () => {
   for (let i = 0; i < 80; i++) {
     try {
@@ -123,6 +151,6 @@ const ready = async () => {
 await ready()
 
 if (fellBack) console.log(`Port ${DEFAULT_PORT} was busy; using ${port} instead.`)
-console.log(`pgDEV is running at ${url}`)
+console.log(`pgDEV is running at http://localhost:${port}/`)
 console.log('Press Ctrl+C to stop.')
-if (!NO_OPEN) openBrowser(url)
+if (!NO_OPEN) openBrowser(`http://localhost:${port}/`)
