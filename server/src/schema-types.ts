@@ -12,6 +12,9 @@ export interface ConnectionConfig {
   user?: string
   password?: string
   ssl?: boolean
+  /** Statement timeout in seconds applied to every query on the pool
+   * (PostgreSQL `statement_timeout`). Server default: 30. */
+  statementTimeout?: number
 }
 
 export interface ColumnInfo {

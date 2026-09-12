@@ -3,6 +3,7 @@ import { api } from '../api'
 import type { ConnectionConfig } from '../types'
 import { saveConnections, storageReady } from '../lib/storage'
 import { useSchema } from './schema'
+import { useSettings } from './settings'
 import { useToast } from './toast'
 
 const state = reactive({
@@ -112,7 +113,11 @@ export function useConnection() {
     await ensureReady()
     try {
       const prevId = state.id
-      const { id } = await api.connect(cfg)
+      // The statement timeout is a settings-level value (not part of the
+      // remembered config) applied when the pool opens: changing it in
+      // Settings takes effect on the next connect.
+      const body: ConnectionConfig = { ...cfg, statementTimeout: useSettings().state.statementTimeout }
+      const { id } = await api.connect(body)
       if (attempt !== connectionAttempt) {
         await api.disconnect(id).catch(() => {})
         return

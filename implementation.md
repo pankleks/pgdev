@@ -65,7 +65,7 @@ Connections can be opened with either individual parameters or a PostgreSQL conn
 Parameter-based connections apply these backend settings:
 
 - Pool size: 5 clients.
-- Statement timeout: 30 seconds.
+- Statement timeout: from the browser's settings (seconds, 1–600, default 30; sent as `statementTimeout` with the connect request and applied at pool level).
 - Connection timeout: 10 seconds.
 - Application name: `pgDEV`.
 - SSL disabled explicitly when the form checkbox is off.

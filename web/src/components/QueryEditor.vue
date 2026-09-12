@@ -3,6 +3,7 @@ import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
 import { useTabs, type EditorTab } from '../composables/tabs'
+import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
 import { setFormatHandler, setSelectionGetter } from '../lib/formatbridge'
@@ -10,6 +11,7 @@ import { setFormatHandler, setSelectionGetter } from '../lib/formatbridge'
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
 const tabs = useTabs()
+const settings = useSettings()
 const toast = useToast()
 const run = inject<(sql?: string) => void>('pgdev:run')
 
@@ -23,7 +25,7 @@ onMounted(() => {
     theme: 'vs-dark',
     automaticLayout: true,
     minimap: { enabled: false },
-    fontSize: 14,
+    fontSize: settings.state.editorFontSize,
     tabSize: 4,
     insertSpaces: false,
     detectIndentation: false,
@@ -34,6 +36,12 @@ onMounted(() => {
     // document-word suggestions only duplicate what is already typed.
     wordBasedSuggestions: 'off',
   })
+  // Applies both live changes from Settings and the persisted value arriving
+  // from storage after this editor was created.
+  watch(
+    () => settings.state.editorFontSize,
+    (size) => editor?.updateOptions({ fontSize: size }),
+  )
   registerSqlCompletion(monaco)
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
     run?.()

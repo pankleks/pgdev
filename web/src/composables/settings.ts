@@ -14,7 +14,14 @@ interface SettingsState {
   groupObjects: boolean
   panelSizes: { sideW: number; resultsH: number }
   browserExpanded: Record<string, BrowserUiState>
+  /** Statement timeout in seconds; applied to pools when a connection opens. */
+  statementTimeout: number
+  /** Monaco editor font size in px. */
+  editorFontSize: number
 }
+
+const STATEMENT_TIMEOUT = { min: 1, max: 600, fallback: 30 } as const
+const EDITOR_FONT = { min: 8, max: 32, fallback: 14 } as const
 
 const SIZE_LIMITS = {
   sideW: { min: 180, max: 640, fallback: 336 },
@@ -27,6 +34,16 @@ const MAX_KEYS_PER_LIST = 2000
 function clampSize(value: unknown, limits: { min: number; max: number; fallback: number }): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return limits.fallback
   return Math.min(limits.max, Math.max(limits.min, Math.round(value)))
+}
+
+function clampStatementTimeout(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return STATEMENT_TIMEOUT.fallback
+  return Math.min(STATEMENT_TIMEOUT.max, Math.max(STATEMENT_TIMEOUT.min, Math.round(value)))
+}
+
+function clampEditorFontSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return EDITOR_FONT.fallback
+  return Math.min(EDITOR_FONT.max, Math.max(EDITOR_FONT.min, Math.round(value)))
 }
 
 function stringList(value: unknown): string[] {
@@ -60,6 +77,8 @@ const state = reactive<SettingsState>({
   groupObjects: true,
   panelSizes: { sideW: SIZE_LIMITS.sideW.fallback, resultsH: SIZE_LIMITS.resultsH.fallback },
   browserExpanded: {},
+  statementTimeout: STATEMENT_TIMEOUT.fallback,
+  editorFontSize: EDITOR_FONT.fallback,
 })
 
 let readyPromise: Promise<void> | null = null
@@ -72,6 +91,12 @@ function ensureReady(): Promise<void> {
         if (locallyChanged || !settings || typeof settings !== 'object') return
         const saved = settings as Partial<SettingsState>
         if (typeof saved.groupObjects === 'boolean') state.groupObjects = saved.groupObjects
+        if (typeof saved.statementTimeout !== 'undefined') {
+          state.statementTimeout = clampStatementTimeout(saved.statementTimeout)
+        }
+        if (typeof saved.editorFontSize !== 'undefined') {
+          state.editorFontSize = clampEditorFontSize(saved.editorFontSize)
+        }
         if (saved.panelSizes && typeof saved.panelSizes === 'object') {
           state.panelSizes.sideW = clampSize(saved.panelSizes.sideW, SIZE_LIMITS.sideW)
           state.panelSizes.resultsH = clampSize(saved.panelSizes.resultsH, SIZE_LIMITS.resultsH)
@@ -95,6 +120,8 @@ function persist() {
     groupObjects: state.groupObjects,
     panelSizes: state.panelSizes,
     browserExpanded: state.browserExpanded,
+    statementTimeout: state.statementTimeout,
+    editorFontSize: state.editorFontSize,
   })) as SettingsState
   void ensureReady().then(() => saveSettings(value)).catch(() => undefined)
 }
@@ -105,6 +132,28 @@ export function useSettings() {
   function setGroupObjects(enabled: boolean) {
     locallyChanged = true
     state.groupObjects = enabled
+    persist()
+  }
+
+  function setStatementTimeout(seconds: number) {
+    state.statementTimeout = clampStatementTimeout(seconds)
+    persist()
+  }
+
+  function setEditorFontSize(px: number) {
+    state.editorFontSize = clampEditorFontSize(px)
+    persist()
+  }
+
+  /** Restore every preference to its default (per-connection expansion is
+   * recorded state, not a preference, so it is left alone). */
+  function resetToDefaults() {
+    locallyChanged = true
+    state.groupObjects = true
+    state.statementTimeout = STATEMENT_TIMEOUT.fallback
+    state.editorFontSize = EDITOR_FONT.fallback
+    state.panelSizes.sideW = SIZE_LIMITS.sideW.fallback
+    state.panelSizes.resultsH = SIZE_LIMITS.resultsH.fallback
     persist()
   }
 
@@ -130,5 +179,5 @@ export function useSettings() {
     return (label && state.browserExpanded[label]) || null
   }
 
-  return { state, setGroupObjects, setPanelSizes, setBrowserState, browserStateFor, ready }
+  return { state, setGroupObjects, setStatementTimeout, setEditorFontSize, setPanelSizes, setBrowserState, browserStateFor, resetToDefaults, ready }
 }

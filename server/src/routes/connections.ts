@@ -13,11 +13,24 @@ interface ConnectBody {
   user?: string
   password?: string
   ssl?: boolean
+  statementTimeout?: number
 }
+
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30000
 
 export async function connectionRoutes(app: FastifyInstance) {
   app.post('/api/connections', async (req, reply) => {
     const b = req.body as ConnectBody
+    // Statement timeout arrives in seconds from the settings UI; absent means
+    // the documented 30 s default, anything else outside 1–600 is rejected.
+    let statementTimeoutMs = DEFAULT_STATEMENT_TIMEOUT_MS
+    if (b.statementTimeout !== undefined) {
+      const s = b.statementTimeout
+      if (typeof s !== 'number' || !Number.isInteger(s) || s < 1 || s > 600) {
+        return reply.code(400).send({ error: 'statementTimeout must be an integer from 1 to 600 seconds' })
+      }
+      statementTimeoutMs = s * 1000
+    }
     const config: Record<string, unknown> = b.connectionString
       ? { connectionString: b.connectionString }
       : {
@@ -33,7 +46,7 @@ export async function connectionRoutes(app: FastifyInstance) {
       config.ssl = b.ssl ? { rejectUnauthorized: false } : false
     }
     config.max = 5
-    config.statement_timeout = 30000
+    config.statement_timeout = statementTimeoutMs
     // Tabs can hold a session client while paging large results; fail fast
     // instead of hanging forever when every pool slot is checked out.
     config.connectionTimeoutMillis = 10000

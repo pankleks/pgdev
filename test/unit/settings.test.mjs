@@ -21,6 +21,28 @@ test('panel sizes are clamped to the splitter limits', () => {
   assert.equal(settings.state.panelSizes.resultsH, 240)
 })
 
+test('statement timeout is clamped to 1-600 seconds', () => {
+  settings.setStatementTimeout(0)
+  assert.equal(settings.state.statementTimeout, 1)
+  settings.setStatementTimeout(99999)
+  assert.equal(settings.state.statementTimeout, 600)
+  settings.setStatementTimeout(45.6)
+  assert.equal(settings.state.statementTimeout, 46)
+  settings.setStatementTimeout(Number.NaN)
+  assert.equal(settings.state.statementTimeout, 30)
+})
+
+test('editor font size is clamped to 8-32 px', () => {
+  settings.setEditorFontSize(3)
+  assert.equal(settings.state.editorFontSize, 8)
+  settings.setEditorFontSize(200)
+  assert.equal(settings.state.editorFontSize, 32)
+  settings.setEditorFontSize(11.4)
+  assert.equal(settings.state.editorFontSize, 11)
+  settings.setEditorFontSize(Number.NaN)
+  assert.equal(settings.state.editorFontSize, 14)
+})
+
 test('browser state is stored per connection and sanitized on write', () => {
   settings.setBrowserState('pg@localhost:5432/app', {
     sections: { tables: true, views: false, functions: false, types: 'yes' },

@@ -351,6 +351,33 @@ const timeout = await app.inject({
 ok('statement timeout enforced', timeout.statusCode === 400 && /timeout/i.test(timeout.json().error),
   `${timeout.statusCode} ${timeout.json().error}`)
 
+console.log('\n== configurable statement timeout ==')
+{
+  const short = await call('POST', '/api/connections', {
+    host: base.host, port: base.port, database: DB, user: base.user, password: base.password, ssl: false,
+    statementTimeout: 1,
+  })
+  eq('1s-timeout connection opens', short.status, 200)
+  const sid = short.body.id
+  if (sid) {
+    const t0 = Date.now()
+    const slept = await app.inject({
+      method: 'POST', url: `/api/connections/${sid}/query`,
+      payload: { sql: 'SELECT pg_sleep(5)', tabKey: 'slow2' }, headers: { origin: ORIGIN },
+    })
+    const took = Date.now() - t0
+    ok('1s statement timeout enforced', slept.statusCode === 400 && /timeout/i.test(slept.json().error) && took < 4000,
+      `${slept.statusCode} after ${took}ms ${slept.json().error}`)
+    eq('1s-timeout connection closes', (await call('DELETE', `/api/connections/${sid}`)).status, 200)
+  }
+  const bad = await call('POST', '/api/connections', {
+    host: base.host, port: base.port, database: DB, user: base.user, password: base.password, ssl: false,
+    statementTimeout: 99999,
+  })
+  eq('out-of-range timeout rejected', bad.status, 400)
+  ok('rejection explains the range', /1 to 600/.test(bad.body.error), bad.body.error)
+}
+
 const slow = app.inject({
   method: 'POST', url: `/api/connections/${id}/query`,
   payload: { sql: 'SELECT pg_sleep(5)', tabKey: 'cancel' }, headers: { origin: ORIGIN },
