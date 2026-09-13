@@ -1,4 +1,5 @@
 import type { Pool } from 'pg'
+import { createHash } from 'node:crypto'
 import type {
   TableEditColumnInput,
   TableEditColumnState,
@@ -70,6 +71,36 @@ const NEW_ID = /^new:\d+$/
 
 export function isNewColumnId(id: string): boolean {
   return NEW_ID.test(id)
+}
+
+/**
+ * Stable hash of a live editor state. The dialog echoes it back on submit; a
+ * mismatch means the table changed since it was loaded, and diffing the stale
+ * column set would drop anything added in the meantime.
+ */
+export function stateFingerprint(state: Omit<TableEditState, 'fingerprint'>): string {
+  const parts = [
+    state.oid,
+    state.schema,
+    state.name,
+    state.relkind,
+    state.description ?? '',
+    ...state.columns.map((c) =>
+      [
+        c.id,
+        c.name,
+        c.type,
+        c.nullable ? '1' : '0',
+        c.defaultValue ?? '',
+        c.description ?? '',
+        c.pk ? '1' : '0',
+        c.unique ? '1' : '0',
+        c.locked ? '1' : '0',
+        c.lockKind ?? '',
+      ].join('\u0001'),
+    ),
+  ]
+  return createHash('sha256').update(parts.join('\u0000')).digest('hex')
 }
 
 /**
@@ -190,7 +221,8 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
 }
 
 const TABLE_SQL = `
-SELECT c.relkind::text AS relkind, n.nspname AS schema, c.relname AS name,
+SELECT c.relkind::text AS relkind, c.relispartition AS is_partition,
+  n.nspname AS schema, c.relname AS name,
   obj_description(c.oid) AS description
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -233,8 +265,9 @@ WHERE i.indrelid = $1::oid AND i.indisunique AND NOT i.indisprimary
 
 const SERIAL_TYPES = new Set(['smallint', 'integer', 'bigint'])
 
-/** Read the live editor state for one table. Non-editable relations still
- * return their state; the caller (route) decides whether to reject them. */
+/** Read the live editor state for one editable table. Views, matviews, indexes,
+ * sequences, foreign tables and partitions are rejected here, so both the read
+ * and the submit routes agree on what may be edited. */
 export async function fetchTableEditState(pool: Pool, oid: string): Promise<TableEditState> {
   const [tableRes, colsRes, pkRes, uniqRes] = await Promise.all([
     pool.query(TABLE_SQL, [oid]),
@@ -247,6 +280,12 @@ export async function fetchTableEditState(pool: Pool, oid: string): Promise<Tabl
     const err = new Error('Object not found')
     ;(err as Error & { statusCode: number }).statusCode = 404
     throw err
+  }
+  // A partition ('r' with relispartition) gets its shape from the parent, and
+  // every other relation kind speaks different DDL.
+  const relkind = String(table.relkind)
+  if ((relkind !== 'r' && relkind !== 'p') || table.is_partition === true) {
+    validationError('Only ordinary tables and partitioned parents can be edited')
   }
   const pkCols = new Set<string>(pkRes.rows.map((r) => String(r.name)))
   const uniqueCols = new Set<string>(uniqRes.rows.map((r) => String(r.name)))
@@ -269,19 +308,26 @@ export async function fetchTableEditState(pool: Pool, oid: string): Promise<Tabl
       lockKind: identity ? 'identity' : generated ? 'generated' : serial ? 'serial' : undefined,
     }
   })
-  return {
+  const state: Omit<TableEditState, 'fingerprint'> = {
     oid: String(oid),
     schema: String(table.schema),
     name: String(table.name),
-    relkind: table.relkind === 'p' ? 'p' : table.relkind === 'f' ? 'f' : 'r',
+    relkind: relkind as 'r' | 'p',
     description: table.description == null ? null : String(table.description),
     columns,
   }
+  return { ...state, fingerprint: stateFingerprint(state) }
 }
 
 function validationError(message: string): never {
   const err = new Error(message)
   ;(err as Error & { statusCode: number }).statusCode = 400
+  throw err
+}
+
+function conflict(message: string): never {
+  const err = new Error(message)
+  ;(err as Error & { statusCode: number }).statusCode = 409
   throw err
 }
 
@@ -324,13 +370,19 @@ function liveView(state: TableEditState): LiveTable {
 }
 
 /** Generate the change-only ALTER script for a submitted dialog, or null when
- * nothing differs. The live catalog is re-read as the source of truth. */
+ * nothing differs. The live catalog is re-read as the source of truth, and the
+ * submitted fingerprint must match it so a table changed since the dialog
+ * loaded is rejected instead of diffed against a stale column set. */
 export async function tableEditDdl(
   pool: Pool,
   oid: string,
   request: TableEditRequest,
 ): Promise<string | null> {
-  const live = liveView(await fetchTableEditState(pool, oid))
+  const state = await fetchTableEditState(pool, oid)
+  if (request.fingerprint !== state.fingerprint) {
+    conflict('This table changed on the server since the editor loaded — close and reopen it')
+  }
+  const live = liveView(state)
   validateRequest(live, request)
   const outcome = diffTableEdit(live, request)
   if (outcome.kind === 'error') {

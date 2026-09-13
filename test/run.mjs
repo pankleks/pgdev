@@ -44,7 +44,7 @@ for (const file of ['p2verify.mjs']) {
   if (!run(file)) ok = false
 }
 
-const DATABASE_SUITES = ['aggtest.mjs', 'typetest.mjs', join('db', 'ddl.mjs'), 'apitest.mjs']
+const DATABASE_SUITES = ['aggtest.mjs', 'typetest.mjs', join('db', 'ddl.mjs'), join('db', 'tableedit.mjs'), 'apitest.mjs']
 
 if (!process.env.PGDEV_TEST_URL) {
   console.log(`\n${'='.repeat(72)}`)

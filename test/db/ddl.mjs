@@ -283,6 +283,17 @@ await pool.query(`CREATE VIEW guard_view AS SELECT 1 AS one`)
 }
 await pool.query(`DROP VIEW guard_view`)
 
+console.log('\n== table editor rejects non-tables ==')
+{
+  const { fetchTableEditState } = await import('../../server/dist/catalog/tableedit.js')
+  const threw = async (fn) => { try { await fn(); return null } catch (e) { return e } }
+  const partition = await threw(async () => fetchTableEditState(pool, await oidOfRel('list_eu')))
+  ok('table editor rejects a partition', partition && partition.statusCode === 400,
+    partition ? `${partition.statusCode} ${partition.message}` : 'no error')
+  const ordinary = await threw(async () => fetchTableEditState(pool, await oidOfRel('base')))
+  ok('table editor accepts an ordinary table', ordinary === null, ordinary?.message)
+}
+
 console.log('\n== view and materialized view attributes ==')
 await pool.query(`CREATE VIEW view_attrs WITH (security_barrier=true) AS SELECT id, label FROM base`)
 await pool.query(`COMMENT ON VIEW view_attrs IS 'a view'`)

@@ -82,14 +82,21 @@ export interface TableEditState {
   oid: string
   schema: string
   name: string
-  /** pg_class.relkind of the fetched table ('r', 'p' or 'f'). */
-  relkind: 'r' | 'p' | 'f'
+  /** Only ordinary tables (`'r'`) and partitioned parents (`'p'`) are editable. */
+  relkind: 'r' | 'p'
   description: string | null
   columns: TableEditColumnState[]
+  /** Hash of the live catalog state at read time. The dialog echoes it back on
+   * submit, so a table changed in between is rejected rather than diffed
+   * against a stale column set (which would turn a concurrent ADD COLUMN into
+   * a DROP). */
+  fingerprint: string
 }
 
 export interface TableEditRequest {
   description: string | null
+  /** The `fingerprint` returned by the read endpoint. */
+  fingerprint: string
   columns: TableEditColumnInput[]
 }
 

@@ -27,6 +27,9 @@ function parseEditBody(body: unknown): TableEditRequest {
   if (b.description !== null && b.description.length > 5000) {
     throw invalid('description is too long')
   }
+  if (typeof b.fingerprint !== 'string' || !b.fingerprint || b.fingerprint.length > 128) {
+    throw invalid('The table state fingerprint is missing — reload the editor')
+  }
   if (!Array.isArray(b.columns) || b.columns.length > 1000) {
     throw invalid('columns must be an array with at most 1000 entries')
   }
@@ -51,7 +54,7 @@ function parseEditBody(body: unknown): TableEditRequest {
       description: c.description ?? null,
     })
   }
-  return { description: b.description ?? null, columns }
+  return { description: b.description ?? null, fingerprint: b.fingerprint, columns }
 }
 
 function invalid(message: string): Error & { statusCode: number } {

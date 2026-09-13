@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { diffTableEdit, isNewColumnId } = await load('server/catalog/tableedit.ts')
+const { diffTableEdit, isNewColumnId, stateFingerprint } = await load('server/catalog/tableedit.ts')
 
 // The diff decides which ALTER statements the table editor emits, so every
 // rule here is behaviour: an unnecessary statement is a bug, and so is a
@@ -56,6 +56,23 @@ test('isNewColumnId accepts only the new:<n> shape', () => {
   assert.equal(isNewColumnId('a'), false)
   assert.equal(isNewColumnId('new:x'), false)
   assert.equal(isNewColumnId('new:'), false)
+})
+
+test('stateFingerprint is stable and reacts to any live change', () => {
+  const state = {
+    oid: '1',
+    schema: 'public',
+    name: 't',
+    relkind: 'r',
+    description: null,
+    columns: [col('a'), col('b', { defaultValue: 'now()' })],
+  }
+  assert.equal(stateFingerprint(state), stateFingerprint({ ...state }))
+  // Adding, altering or describing any column changes the hash, so a stale
+  // dialog is always detected.
+  assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, columns: [...state.columns, col('c')] }))
+  assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, description: 'note' }))
+  assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, columns: [col('a'), col('b', { defaultValue: 'now()', nullable: false })] }))
 })
 
 test('identical request produces no statements', () => {

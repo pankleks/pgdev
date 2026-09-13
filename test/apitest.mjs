@@ -408,6 +408,66 @@ eq('DROP TABLE via query tool', rec.status, 200)
 const reapplied = await q(madeDdl.body.ddl, 'ddl4')
 eq('generated DDL re-executes through the API', reapplied.status, 200)
 
+console.log('\n== table editor ==')
+{
+  // Only ordinary/partitioned tables are editable: a view is rejected.
+  const viewOid = schema.body.views.find((v) => v.name === 'v_emp').oid
+  const onView = await call('GET', `/api/connections/${id}/tableedit/${viewOid}`)
+  eq('table editor rejects a view', onView.status, 400)
+
+  await q('CREATE TABLE tableedit_probe (a integer, b text, n numeric(10,2))', 'te0')
+  const probeOid = (await q("SELECT 'tableedit_probe'::regclass::oid::text AS o", 'te0')).body.results[0].rows[0][0]
+  const state = await call('GET', `/api/connections/${id}/tableedit/${probeOid}`)
+  eq('table editor reads state', state.status, 200)
+  ok('state carries a fingerprint', typeof state.body.fingerprint === 'string' && state.body.fingerprint.length > 0)
+
+  const toRequest = (s) => ({
+    description: null,
+    fingerprint: s.fingerprint,
+    columns: s.columns.map((c) => ({
+      id: c.id, name: c.name, type: c.type, nullable: c.nullable,
+      defaultValue: c.defaultValue, description: c.description,
+    })),
+  })
+  const unchanged = await call('POST', `/api/connections/${id}/tableedit/${probeOid}`, toRequest(state.body))
+  eq('no changes returns null ddl', unchanged.body.ddl, null)
+
+  // A column added after the dialog loaded must not be silently dropped by a
+  // diff against the stale column set.
+  await q('ALTER TABLE tableedit_probe ADD COLUMN c boolean', 'te1')
+  const stale = await call('POST', `/api/connections/${id}/tableedit/${probeOid}`, toRequest(state.body))
+  eq('stale editor state is rejected', stale.status, 409)
+  ok('conflict asks for a reload', /reopen|reload|changed/i.test(stale.body.error), stale.body.error)
+
+  // Reloading picks up the new column, and a rename then applies cleanly.
+  const fresh = await call('GET', `/api/connections/${id}/tableedit/${probeOid}`)
+  const renamePayload = toRequest(fresh.body)
+  renamePayload.columns = renamePayload.columns.map((c) => (c.id === 'a' ? { ...c, name: 'a2' } : c))
+  const renamed = await call('POST', `/api/connections/${id}/tableedit/${probeOid}`, renamePayload)
+  eq('fresh edit is accepted', renamed.status, 200)
+  ok('emits the rename', /RENAME COLUMN "a" TO "a2"/.test(renamed.body.ddl), renamed.body.ddl)
+
+  // Precision/scale: changing a numeric's precision must round-trip and the
+  // applied type must render back canonically.
+  const fresh2 = await call('GET', `/api/connections/${id}/tableedit/${probeOid}`)
+  const scalePayload = toRequest(fresh2.body)
+  scalePayload.columns = scalePayload.columns.map((c) => (c.id === 'n' ? { ...c, type: 'numeric(12,2)' } : c))
+  const retyped = await call('POST', `/api/connections/${id}/tableedit/${probeOid}`, scalePayload)
+  eq('numeric precision change is accepted', retyped.status, 200)
+  ok('emits the numeric type change', /ALTER COLUMN "n" TYPE numeric\(12,2\)/.test(retyped.body.ddl), retyped.body.ddl)
+  await q(retyped.body.ddl, 'te3')
+  const appliedType = (await q(
+    `SELECT format_type(atttypid, atttypmod) AS t FROM pg_attribute
+     WHERE attrelid='tableedit_probe'::regclass AND attname='n'`, 'te4',
+  )).body.results[0].rows[0][0]
+  eq('applied numeric type is canonical', appliedType, 'numeric(12,2)')
+
+  const noFp = await call('POST', `/api/connections/${id}/tableedit/${probeOid}`, { description: null, columns: [] })
+  eq('missing fingerprint is rejected', noFp.status, 400)
+
+  await q('DROP TABLE tableedit_probe', 'te2')
+}
+
 console.log('\n== catalog queries survive paged sessions (separate pool) ==')
 {
   const extra = await call('POST', '/api/connections', {

@@ -6,6 +6,7 @@ import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
 import type { TableEditColumnState, TableEditState } from '../types'
+import { buildColumnType, parseColumnType, SIZE_BASES } from '../lib/tabletype'
 
 // Table editor dialog: loads the live table state for one oid, lets the user
 // edit the description and the column list, and on OK asks the server to diff
@@ -55,20 +56,16 @@ const loading = ref(true)
 const loadError = ref('')
 const table = ref<TableEditState | null>(null)
 const tableDescription = ref('')
+/** Live-state hash from the load response; sent back so a table changed in the
+ * meantime is rejected server-side instead of diffed against stale columns. */
+const fingerprint = ref('')
 const rows = reactive<EditRow[]>([])
 const submitting = ref(false)
 const submitError = ref('')
 let newCounter = 0
 
-function parseType(type: string): { base: string; len: string; scale: string } {
-  const m = SIZED_TYPE_RE.exec(type.trim())
-  if (!m) return { base: type.trim(), len: '', scale: '' }
-  const base = TYPE_ALIASES[m[1].toLowerCase()] ?? m[1].toLowerCase()
-  return { base, len: m[2], scale: m[3] ?? '' }
-}
-
 function rowOf(state: TableEditColumnState): EditRow {
-  const parsed = parseType(state.type)
+  const parsed = parseColumnType(state.type)
   return {
     id: state.id,
     name: state.name,
@@ -141,32 +138,13 @@ const TYPE_SUGGESTIONS = [
   'serial', 'bigserial', 'smallserial',
 ]
 
-/** Bases whose DDL carries a parenthesized size after the drop-down. */
-const SIZE_BASES = new Set(['varchar', 'char', 'numeric'])
-
-const SIZED_TYPE_RE =
-  /^(character varying|varchar|char|character|numeric|decimal)\s*\(\s*(\d+)\s*(?:,\s*(\d+))?\s*\)$/i
-
-/** Catalog spellings folded onto the drop-down's base names. */
-const TYPE_ALIASES: Record<string, string> = {
-  'character varying': 'varchar',
-  character: 'char',
-  decimal: 'numeric',
-}
-
 /**
  * Rebuild the authoritative `type` string from base + length + scale. Only
  * called on user interaction — an untouched row keeps the catalog's exact
  * original spelling, so the server diff never sees a phantom type change.
  */
 function rebuildType(row: EditRow): void {
-  if (SIZE_BASES.has(row.base)) {
-    const len = row.len.trim()
-    const scale = row.base === 'numeric' ? row.scale.trim() : ''
-    row.type = len ? `${row.base}(${len}${scale ? `,${scale}` : ''})` : row.base
-  } else {
-    row.type = row.base
-  }
+  row.type = buildColumnType(row.base, row.len, row.scale)
 }
 
 function lenDisabled(row: EditRow): boolean {
@@ -195,6 +173,7 @@ async function load() {
     const state = await api.tableEditState(connectionId, props.target.oid)
     table.value = state
     tableDescription.value = state.description ?? ''
+    fingerprint.value = state.fingerprint
     // Underscore-prefixed (system-ish) columns render after the ordinary
     // ones, in their original order within each group. Purely visual — the
     // server diff walks the live catalog order, not this display order.
@@ -257,6 +236,7 @@ async function submit() {
   try {
     const { ddl } = await api.tableEditSubmit(connectionId, props.target.oid, {
       description: tableDescription.value,
+      fingerprint: fingerprint.value,
       columns: rows
         .filter((row) => !row.deleted)
         .map((row) => ({
