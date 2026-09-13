@@ -1,6 +1,6 @@
 {
   "name": "@pankleks/pgdev",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A local web IDE for PostgreSQL: object browser, schema-aware editor and paged results, talking to your database from your own machine.",
   "keywords": [
     "postgresql",
