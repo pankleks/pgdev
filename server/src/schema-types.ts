@@ -52,6 +52,50 @@ export interface TableInfo {
   isPartition: boolean
   isPartitioned: boolean
   parents: string
+  /** pg_class.relkind: 'r' ordinary, 'p' partitioned parent, 'f' foreign. */
+  relkind: 'r' | 'p' | 'f'
+}
+
+export interface TableEditColumnInput {
+  /** Diff identity: the original catalog column name, or `new:<n>` for rows the
+   * user added in the editor. The emitted `name` may differ (rename). */
+  id: string
+  name: string
+  type: string
+  nullable: boolean
+  /** SQL expression text (`nextval(...)`, `now()`), null when none. */
+  defaultValue: string | null
+  description: string | null
+}
+
+export interface TableEditColumnState extends TableEditColumnInput {
+  /** Read-only display flags — always computed from the live catalog. */
+  pk: boolean
+  unique: boolean
+  /** Identity/generated/serial columns: type, default (and usually nullable)
+   * are locked; only description (and renames) remain editable. */
+  locked: boolean
+  lockKind?: 'identity' | 'generated' | 'serial'
+}
+
+export interface TableEditState {
+  oid: string
+  schema: string
+  name: string
+  /** pg_class.relkind of the fetched table ('r', 'p' or 'f'). */
+  relkind: 'r' | 'p' | 'f'
+  description: string | null
+  columns: TableEditColumnState[]
+}
+
+export interface TableEditRequest {
+  description: string | null
+  columns: TableEditColumnInput[]
+}
+
+export interface TableEditResponse {
+  /** Change-only ALTER script, or null when nothing differs. */
+  ddl: string | null
 }
 
 export interface ViewInfo {

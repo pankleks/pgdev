@@ -22,6 +22,7 @@ const TABLES_SQL = `
 SELECT n.nspname AS schema, c.relname AS name, c.oid::text AS oid,
   c.relispartition AS is_partition,
   c.relkind = 'p' AS is_partitioned,
+  c.relkind::text AS relkind,
   COALESCE((SELECT string_agg(pn.nspname || '.' || pc.relname, ', ')
     FROM pg_inherits i
     JOIN pg_class pc ON pc.oid = i.inhparent
@@ -208,6 +209,7 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     isPartition: r.is_partition,
     isPartitioned: r.is_partitioned,
     parents: r.parents,
+    relkind: r.relkind,
   }))
 
   const views: ViewInfo[] = viewsRes.rows.map((r) => ({

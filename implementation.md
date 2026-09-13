@@ -35,6 +35,7 @@ The primary design goals are:
 - `server/src/checkout.ts` attaches a per-checkout error handler so a backend-side termination of a checked-out client tears down its session instead of becoming an unhandled process error.
 - `server/src/catalog/metadata.ts` queries `pg_catalog` for browser and completion data.
 - `server/src/catalog/ddl.ts` reconstructs executable DDL from PostgreSQL catalog data.
+- `server/src/catalog/tableedit.ts` reads the table-editor state and diffs a submitted edit into change-only ALTER statements.
 - `server/src/sqlsplit.ts` splits a batch into top-level statements without splitting strings, identifiers, comments, or dollar-quoted bodies.
 - `server/src/pgerror.ts` normalizes PostgreSQL and network errors into a non-empty message.
 - `server/src/pgcancel.ts` sends PostgreSQL cancel requests over TCP (optionally TLS) or a Unix-domain socket using the active connection parameters.
@@ -44,6 +45,7 @@ The primary design goals are:
 - `web/src/App.vue` provides the application shell, global run action, file opening, resizing, and connection state integration.
 - `web/src/components/ConnectDialog.vue` handles parameter-based and connection-string connections.
 - `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs.
+- `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.
 - `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.
 - `web/src/components/QueryEditor.vue` hosts Monaco models and editor commands.
 - `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, and cancellation controls.
@@ -131,6 +133,8 @@ The following endpoints are available:
 | POST | `/api/connections/:id/query/more` | Fetch the next cursor page. |
 | POST | `/api/connections/:id/cancel` | Cancel a running query or page fetch. |
 | POST | `/api/connections/:id/query/close` | Roll back and close an idle tab session, or cancel an active operation. |
+| GET | `/api/connections/:id/tableedit/:oid` | Table-editor state for one table. |
+| POST | `/api/connections/:id/tableedit/:oid` | Diff a submitted table edit into a change-only ALTER script. |
 
 Sessions are also closed when a tab is closed, a connection is disconnected, a pool client fails, a query completes, a query errors, or the five-minute idle timeout expires.
 
@@ -163,6 +167,14 @@ Range type DDL emits `SUBTYPE`, `SUBTYPE_OPCLASS`, `COLLATION`, `CANONICAL`, `SU
 View DDL carries the view's `reloptions` (`WITH (...)`), owner and comment; materialized-view DDL additionally carries its indexes and tablespace. A view is recreated with `CREATE OR REPLACE`; because PostgreSQL has no `CREATE OR REPLACE MATERIALIZED VIEW`, a materialized view is only ever a read-only preview.
 
 Every DDL tab is editable. Functions and views re-run via `CREATE OR REPLACE`; table, constraint, index, trigger, and type scripts ship with a commented drop line, so rebuilding means uncommenting it — an explicit, destructive choice (the table drop is plain `IF EXISTS`, so dependent objects fail loudly rather than cascade silently). The only read-only preview is a materialized view: PostgreSQL has no `CREATE OR REPLACE MATERIALIZED VIEW`, so its script cannot run over the existing object.
+
+## Table Editor
+
+Right-clicking an ordinary table (`relkind = 'r'`) or a partitioned parent (`'p'`) in the object browser offers **Edit…**, which opens a dialog showing the table name read-only, an editable table description, and the column list. Columns are editable in place (name, type, nullable, default, description); the primary-key and unique flags are read-only, and identity, generated, and serial columns are locked except for their description (serial columns keep nullability editable, since it is independent of the sequence machinery). Columns can be added and deleted; deleting a primary-key column is refused in the dialog and by the server.
+
+The dialog never executes anything. **OK** submits the desired column set to `POST …/tableedit/:oid`, which re-reads the live catalog (`catalog/tableedit.ts`), validates the request against it — unknown columns, duplicate final names, empty names/types, edits to locked attributes, and nullable flips on primary-key columns are rejected with 400 — and runs the pure `diffTableEdit` function. The result is a change-only script emitted in dependency-safe order: drops (before renames, so a rename may reuse a dropped name), renames, per-column `ALTER COLUMN … TYPE|SET|DROP NOT NULL|SET|DROP DEFAULT` clauses using post-rename names, `ADD COLUMN` clauses with `DEFAULT` before `NOT NULL`, then `COMMENT ON COLUMN`/`COMMENT ON TABLE` statements (a dropped column's comment is never emitted, and clearing a comment emits `IS NULL`). `null` is returned when nothing differs. Quoting follows the same `ident()` conventions as DDL generation.
+
+The generated script opens in a fresh, clean query tab bound to the connection it was generated against, so the existing stale-connection run guard applies and the user executes it explicitly. Table edits are out of scope for partitions and foreign tables.
 
 ## SQL Parsing and Formatting
 

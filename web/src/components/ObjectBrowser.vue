@@ -23,6 +23,7 @@ import {
   Link,
   ListTree,
   LoaderCircle,
+  Pencil,
   Pin,
   PinOff,
   RotateCw,
@@ -58,6 +59,7 @@ import {
   searchTerms,
   type ParamKind,
 } from '../lib/browserSearch'
+import TableEditDialog, { type TableEditTarget } from './TableEditDialog.vue'
 
 const conn = useConnection()
 const schema = useSchema()
@@ -133,14 +135,17 @@ function openNodeMenu(e: MouseEvent, node: BrowserNode, openable = true) {
   e.stopPropagation()
   cancelPendingToggle()
   pinnedContextMenu.value = null
-  // A leaf has nothing to collapse, so its menu would only offer a no-op.
-  if (!openable || !nodeHasChildren(node)) {
+  // Table nodes always get a menu (they carry the Edit action); every other
+  // node only when it has something to collapse, or its menu would offer just
+  // a no-op.
+  const tableNode = node.type === 'table'
+  if (!openable || (!nodeHasChildren(node) && !tableNode)) {
     contextMenu.value = null
     return
   }
 
   const width = 150
-  const height = 36
+  const height = tableNode && nodeHasChildren(node) ? 64 : 36
   contextMenu.value = {
     x: Math.min(e.clientX, Math.max(8, window.innerWidth - width - 8)),
     y: Math.min(e.clientY, Math.max(8, window.innerHeight - height - 8)),
@@ -183,6 +188,41 @@ function collapseContextNode() {
   const node = contextMenu.value?.node
   if (node) collapseNode(node)
   contextMenu.value = null
+}
+
+// --- table editor ----------------------------------------------------------
+// Only ordinary tables and partitioned parents are editable: partitions get
+// their shape from the parent, and foreign tables speak a different DDL.
+function tableEditable(t: TableInfo): boolean {
+  return !t.isPartition && (t.relkind === 'r' || t.relkind === 'p')
+}
+
+const tableEditTarget = ref<TableEditTarget | null>(null)
+
+function contextTable(node: BrowserNode): TableInfo | null {
+  if (node.type !== 'table') return null
+  return tables.value.find((t) => `t-${t.oid}` === node.key) ?? null
+}
+
+const contextCanEdit = computed(() => {
+  const node = contextMenu.value?.node
+  if (!node) return false
+  const t = contextTable(node)
+  return !!t && tableEditable(t)
+})
+
+const contextCanCollapse = computed(() => {
+  const node = contextMenu.value?.node
+  return !!node && nodeHasChildren(node)
+})
+
+function editContextTable() {
+  const node = contextMenu.value?.node
+  contextMenu.value = null
+  if (!node) return
+  const t = contextTable(node)
+  if (!t || !tableEditable(t)) return
+  tableEditTarget.value = { oid: t.oid, schema: t.schema, name: t.name }
 }
 
 function unpinContextFile() {
@@ -537,6 +577,9 @@ watch(
     expandedTypeGroups.clear()
     ddlRequests.clear()
     appliedLabel = ''
+    // A table-edit dialog captured the connection id when it opened; editing
+    // after a switch would target the wrong database, so it goes away.
+    tableEditTarget.value = null
   },
 )
 
@@ -1009,10 +1052,17 @@ async function refresh() {
           :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
           @click.stop
         >
-          <button @click="collapseContextNode"><ChevronsUp :size="14" /> Collapse</button>
+          <button v-if="contextCanEdit" @click="editContextTable"><Pencil :size="14" /> Edit…</button>
+          <button v-if="contextCanCollapse" @click="collapseContextNode"><ChevronsUp :size="14" /> Collapse</button>
         </div>
       </template>
     </div>
+
+    <TableEditDialog
+      v-if="tableEditTarget"
+      :target="tableEditTarget"
+      @close="tableEditTarget = null"
+    />
 
     <section class="pinned-files">
       <h3><Pin :size="13" /> Pinned files <span class="count">{{ tabs.state.pinnedFiles.length }}</span></h3>

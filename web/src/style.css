@@ -10,6 +10,8 @@
   --accent-2: #2563a8;
   --error: #f48771;
   --ok: #89d185;
+  /* Underscore-prefixed (system-ish) columns in the table editor. */
+  --meta: #7fb0da;
 }
 
 ::-webkit-scrollbar {
@@ -1712,4 +1714,309 @@ body.dragging-results {
   z-index: 200;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
   max-width: 420px;
+}
+
+/* --- table editor dialog ------------------------------------------------ */
+
+/* Scoped to .modal-backdrop .modal: the base .modal rule (width: 420px) is
+ * itself nested under .modal-backdrop, so a flat .tableedit-modal selector
+ * would lose the specificity fight and the dialog would stay narrow. */
+.modal-backdrop .modal.tableedit-modal {
+  width: min(1400px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+
+  > h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    margin: 0 0 14px;
+  }
+
+  .tableedit-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .tableedit-status {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--text-dim);
+
+    &.error-text {
+      color: var(--error);
+    }
+  }
+
+  .tableedit-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .tableedit-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .tableedit-name {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .tableedit-name input,
+  .tableedit-desc {
+    font: inherit;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+
+    &:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+  }
+
+  .tableedit-name input {
+    color: var(--text-dim);
+  }
+
+  .tableedit-grid-head,
+  .tableedit-row {
+    display: grid;
+    /* Name, Type and Default take 3/4 of their earlier share (0.62fr vs
+     * 1.05fr/1fr); the freed width flows to Comment. Minimums shrink to
+     * match (105px ≈ 3/4 of 140px). */
+    grid-template-columns:
+      minmax(105px, 0.62fr) minmax(105px, 0.62fr) 56px 50px 30px 30px 30px
+      minmax(105px, 0.62fr) minmax(160px, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tableedit-row .len {
+    text-align: center;
+    appearance: textfield;
+    -moz-appearance: textfield;
+
+    &::-webkit-outer-spin-button,
+    &::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+  }
+
+  .tableedit-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    max-height: 50vh;
+    padding-right: 4px;
+  }
+
+  /* Sticky inside the scroll container it lives in (the grid), so the header
+   * stays pinned while the rows scroll underneath. */
+  .tableedit-grid-head {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 1;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    padding: 2px 0 6px;
+    border-bottom: 1px solid var(--border);
+
+    /* Narrow flag columns: center the labels over the checkbox and icons. */
+    .center {
+      text-align: center;
+    }
+  }
+
+  .tableedit-row {
+    input[type='checkbox'] {
+      justify-self: center;
+      width: auto;
+      accent-color: var(--accent);
+    }
+
+    input:not([type='checkbox']),
+    select {
+      font: inherit;
+      font-size: 12px;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 7px;
+      min-width: 0;
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+
+      &:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+    }
+
+    select {
+      appearance: auto;
+      padding: 4px 5px;
+    }
+
+    &.deleted {
+      opacity: 0.45;
+
+      input:not([type='checkbox']),
+      select {
+        text-decoration: line-through;
+      }
+    }
+
+    /* Underscore-prefixed columns read as a separate, system-ish group:
+     * muted name text on a subtly accent-tinted field. */
+    &.meta > input:first-child {
+      color: var(--meta);
+      border-color: #3a5372;
+      background: #29313d;
+
+      &::placeholder {
+        color: var(--meta);
+        opacity: 0.7;
+      }
+    }
+  }
+
+  .flag {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--border);
+
+    &.on {
+      color: var(--accent);
+    }
+  }
+
+  .row-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    min-width: 66px;
+
+    .lock {
+      color: var(--text-dim);
+      display: flex;
+    }
+
+    .tool {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      padding: 3px;
+      cursor: pointer;
+      color: var(--text-dim);
+      border-radius: 4px;
+
+      &:hover:not(:disabled) {
+        color: var(--error);
+        background: var(--panel-2);
+      }
+
+      &:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+    }
+
+    .added-badge {
+      font-size: 10px;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 1px 6px;
+    }
+  }
+
+  .tableedit-add {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  .error-text {
+    color: var(--error);
+    font-size: 12px;
+    word-break: break-word;
+  }
+
+  .tableedit-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+
+    button {
+      padding: 8px 16px;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 6px;
+
+      &.primary {
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        color: #fff;
+
+        &:hover:not(:disabled) {
+          filter: brightness(1.1);
+        }
+
+        &:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+      }
+
+      &.ghost {
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+
+        &:hover:not(:disabled) {
+          color: var(--text);
+          border-color: var(--text-dim);
+        }
+      }
+    }
+  }
 }

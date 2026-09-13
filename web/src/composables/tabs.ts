@@ -166,6 +166,29 @@ export function useTabs() {
     state.activeKey = key
   }
 
+  /**
+   * Generated SQL (e.g. the table editor's change-only script) in a fresh,
+   * clean query tab. `savedContent` is preset so the tab is not flagged dirty,
+   * and an optional connection keeps the run-here guard from App.vue active:
+   * a script generated against one database must not run against another.
+   */
+  function openSqlTab(title: string, content: string, connectionId = '') {
+    const key = `sql-${state.counter}`
+    state.tabs.push({
+      key,
+      kind: 'query',
+      source: 'untitled',
+      title,
+      fileName: null,
+      content,
+      savedContent: content,
+      readOnly: false,
+      connectionId: connectionId || undefined,
+    })
+    state.counter++
+    state.activeKey = key
+  }
+
   function close(key: string) {
     const index = state.tabs.findIndex((t) => t.key === key)
     if (index === -1) return
@@ -324,6 +347,7 @@ export function useTabs() {
     newQuery,
     openDdl,
     openFile,
+    openSqlTab,
     close,
     closeAll,
     closeOthers,

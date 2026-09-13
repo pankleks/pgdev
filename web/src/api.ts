@@ -1,4 +1,12 @@
-import type { ConnectionConfig, FetchMoreResponse, QueryResponse, SchemaData } from './types'
+import type {
+  ConnectionConfig,
+  FetchMoreResponse,
+  QueryResponse,
+  SchemaData,
+  TableEditRequest,
+  TableEditResponse,
+  TableEditState,
+} from './types'
 
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
@@ -71,5 +79,17 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tabKey }),
     }).then((r) => unwrap<{ ok: boolean }>(r))
+  },
+
+  tableEditState(id: string, oid: string): Promise<TableEditState> {
+    return fetch(`/api/connections/${id}/tableedit/${oid}`).then((r) => unwrap<TableEditState>(r))
+  },
+
+  tableEditSubmit(id: string, oid: string, request: TableEditRequest): Promise<TableEditResponse> {
+    return fetch(`/api/connections/${id}/tableedit/${oid}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    }).then((r) => unwrap<TableEditResponse>(r))
   },
 }
