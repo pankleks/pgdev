@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { diffTableEdit, isNewColumnId, stateFingerprint } = await load('server/catalog/tableedit.ts')
+const { diffTableEdit, isNewColumnId, stateFingerprint, fkLabels, ukLabels } =
+  await load('server/catalog/tableedit.ts')
 
 // The diff decides which ALTER statements the table editor emits, so every
 // rule here is behaviour: an unnecessary statement is a bug, and so is a
@@ -73,6 +74,12 @@ test('stateFingerprint is stable and reacts to any live change', () => {
   assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, columns: [...state.columns, col('c')] }))
   assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, description: 'note' }))
   assert.notEqual(stateFingerprint(state), stateFingerprint({ ...state, columns: [col('a'), col('b', { defaultValue: 'now()', nullable: false })] }))
+  // Unique keys are display-only but part of the live state: adding one
+  // invalidates a stale dialog too.
+  assert.notEqual(
+    stateFingerprint(state),
+    stateFingerprint({ ...state, columns: [col('a'), { ...col('b', { defaultValue: 'now()' }), uks: [{ label: 'UK1', name: 'bom_code_key', definition: 'UNIQUE (b)' }] }] }),
+  )
 })
 
 test('identical request produces no statements', () => {
@@ -288,4 +295,93 @@ test('empty names and types are rejected', () => {
     errKind(runOut(l, { description: null, columns: [edit('a', { type: '' })] })),
     'empty-type',
   )
+})
+
+// --- fkLabels: running FK1/FK2/… numbers per constraint ---------------------
+
+const fkRow = (name, definition, conkey) => ({ name, definition, conkey })
+const nameByAttnum = new Map([
+  [1, 'id'],
+  [2, 'product_id'],
+  [3, 'variant_id'],
+  [4, 'warehouse_id'],
+])
+const labelsOf = (map, column) => (map.get(column) ?? []).map((f) => f.label)
+
+test('fkLabels numbers constraints in order and shares the number across its columns', () => {
+  const map = fkLabels(
+    [
+      fkRow('bom_product_fkey', 'FOREIGN KEY (product_id) REFERENCES products(id)', [2]),
+      fkRow('stock_pair_fkey', 'FOREIGN KEY (variant_id, warehouse_id) REFERENCES stock(a, b)', [3, 4]),
+    ],
+    nameByAttnum,
+  )
+  assert.deepEqual(labelsOf(map, 'product_id'), ['FK1'])
+  assert.deepEqual(labelsOf(map, 'variant_id'), ['FK2'])
+  assert.deepEqual(labelsOf(map, 'warehouse_id'), ['FK2'], 'both columns of one FK share the number')
+  assert.equal(map.get('product_id')[0].name, 'bom_product_fkey')
+  assert.equal(map.get('product_id')[0].definition, 'FOREIGN KEY (product_id) REFERENCES products(id)')
+})
+
+test('fkLabels gives a column in two foreign keys both badges', () => {
+  const map = fkLabels(
+    [
+      fkRow('f_a', 'FOREIGN KEY (id) REFERENCES a(id)', [1]),
+      fkRow('f_b', 'FOREIGN KEY (id) REFERENCES b(id)', [1]),
+    ],
+    nameByAttnum,
+  )
+  assert.deepEqual(labelsOf(map, 'id'), ['FK1', 'FK2'])
+  assert.equal(map.get('id')[1].name, 'f_b')
+})
+
+test('fkLabels keeps the running number when a conkey attnum is unknown', () => {
+  const map = fkLabels(
+    [
+      fkRow('f_dropped', 'FOREIGN KEY (gone, id) REFERENCES t(a, b)', [99, 1]),
+      fkRow('f_next', 'FOREIGN KEY (product_id) REFERENCES products(id)', [2]),
+    ],
+    nameByAttnum,
+  )
+  assert.deepEqual(labelsOf(map, 'id'), ['FK1'])
+  assert.equal(map.has('gone'), false)
+  assert.deepEqual(labelsOf(map, 'product_id'), ['FK2'], 'numbering is per constraint, not per column')
+})
+
+test('fkLabels tolerates non-array conkey and yields no labels for no rows', () => {
+  assert.equal(fkLabels([], nameByAttnum).size, 0)
+  const map = fkLabels([fkRow('f_x', 'FOREIGN KEY (id) REFERENCES x(id)', null)], nameByAttnum)
+  assert.equal(map.size, 0)
+})
+
+// --- ukLabels: same running numbers with the UK prefix ----------------------
+
+test('ukLabels numbers unique keys in order and shares numbers across columns', () => {
+  const map = ukLabels(
+    [
+      fkRow('bom_code_key', 'UNIQUE (code)', [2]),
+      fkRow('idx_stock_pair', 'CREATE UNIQUE INDEX idx_stock_pair ON bom (variant_id, warehouse_id)', [3, 4]),
+    ],
+    new Map([
+      [2, 'code'],
+      [3, 'variant_id'],
+      [4, 'warehouse_id'],
+    ]),
+  )
+  assert.deepEqual((map.get('code') ?? []).map((u) => u.label), ['UK1'])
+  assert.deepEqual((map.get('variant_id') ?? []).map((u) => u.label), ['UK2'])
+  assert.deepEqual((map.get('warehouse_id') ?? []).map((u) => u.label), ['UK2'])
+  assert.equal(map.get('code')[0].name, 'bom_code_key')
+  assert.equal(map.get('code')[0].definition, 'UNIQUE (code)')
+})
+
+test('ukLabels gives a column in two unique keys both badges', () => {
+  const map = ukLabels(
+    [
+      fkRow('u_a', 'UNIQUE (id)', [1]),
+      fkRow('u_b', 'UNIQUE (id)', [1]),
+    ],
+    nameByAttnum,
+  )
+  assert.deepEqual((map.get('id') ?? []).map((u) => u.label), ['UK1', 'UK2'])
 })

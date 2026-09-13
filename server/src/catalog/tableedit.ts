@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import type {
   TableEditColumnInput,
   TableEditColumnState,
+  TableEditKeyRef,
   TableEditRequest,
   TableEditState,
 } from '../schema-types.js'
@@ -10,8 +11,8 @@ import type {
 // Table-editor catalog access: one read turns a table into the dialog state,
 // and a submitted dialog state is diffed against a fresh live read into a
 // change-only ALTER script. The browser payload is advisory only — every
-// read-only flag (pk, unique, identity/generated/serial) is recomputed here,
-// and the final diff always runs against what PostgreSQL actually has.
+// read-only flag (pk, unique keys, identity/generated/serial) is recomputed
+// here, and the final diff always runs against what PostgreSQL actually has.
 
 function ident(s: string): string {
   return `"${s.replace(/"/g, '""')}"`
@@ -28,7 +29,6 @@ export interface LiveColumn {
   defaultValue: string | null
   description: string | null
   pk: boolean
-  unique: boolean
   locked: boolean
   lockKind?: 'identity' | 'generated' | 'serial'
 }
@@ -94,7 +94,7 @@ export function stateFingerprint(state: Omit<TableEditState, 'fingerprint'>): st
         c.defaultValue ?? '',
         c.description ?? '',
         c.pk ? '1' : '0',
-        c.unique ? '1' : '0',
+        (c.uks ?? []).map((u) => u.label).join(','),
         c.locked ? '1' : '0',
         c.lockKind ?? '',
       ].join('\u0001'),
@@ -229,7 +229,8 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.oid = $1::oid`
 
 const COLUMNS_SQL = `
-SELECT a.attname AS name,
+SELECT a.attnum AS attnum,
+  a.attname AS name,
   format_type(a.atttypid, a.atttypmod) AS type,
   NOT a.attnotnull AS nullable,
   -- Identity defaults live in the sequence machinery, not pg_attrdef (and a
@@ -254,14 +255,83 @@ JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
 WHERE con.conrelid = $1::oid AND con.contype = 'p'
   AND a.attnum > 0 AND NOT a.attisdropped`
 
-// Unique constraint memberships plus standalone unique indexes, so a column
-// that is only unique via `CREATE UNIQUE INDEX` still shows the flag.
-const UNIQUE_SQL = `
-SELECT DISTINCT a.attname AS name
+// Unique keys in catalog order: constraint-backed ones and standalone unique
+// indexes (which carry their full definition), so a column unique only via
+// `CREATE UNIQUE INDEX` gets its badge too. Key columns only — the INCLUDE
+// tail of `indkey` is sliced off. Ordered by oid so the UK1/UK2/… numbering
+// is deterministic across loads.
+const UK_SQL = `
+SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS definition, con.conkey AS conkey, con.oid AS ord
+FROM pg_constraint con
+WHERE con.conrelid = $1::oid AND con.contype = 'u'
+UNION ALL
+SELECT idx.relname AS name, pg_get_indexdef(idx.oid) AS definition,
+  (i.indkey)[0:i.indnkeyatts-1] AS conkey, idx.oid AS ord
 FROM pg_index i
-JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+JOIN pg_class idx ON idx.oid = i.indexrelid
 WHERE i.indrelid = $1::oid AND i.indisunique AND NOT i.indisprimary
-  AND a.attnum > 0 AND NOT a.attisdropped`
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = idx.oid)
+ORDER BY ord`
+
+// Outgoing foreign keys only — the display asks "does this column reference
+// another table", not "what references this table". Ordered by oid so the
+// FK1/FK2/… numbering is deterministic across loads.
+const FK_SQL = `
+SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS definition, con.conkey AS conkey
+FROM pg_constraint con
+WHERE con.conrelid = $1::oid AND con.contype = 'f'
+ORDER BY con.oid`
+
+export interface FkRow {
+  name: string
+  definition: string
+  conkey: unknown
+}
+
+/**
+ * Running-number key badges: FK1/UK1 for the first constraint (in the given
+ * order), FK2/UK2 for the second, and so on — every column listed in a
+ * constraint's key list shares that constraint's number, so a two-column key
+ * reads `FK3`/`FK3` or `UK2`/`UK2`. Unknown attnums (dropped columns) are
+ * skipped without disturbing the numbering. Pure — unit-tested directly.
+ */
+function keyLabels(
+  rows: FkRow[],
+  nameByAttnum: Map<number, string>,
+  prefix: 'FK' | 'UK',
+): Map<string, TableEditKeyRef[]> {
+  const byColumn = new Map<string, TableEditKeyRef[]>()
+  rows.forEach((row, index) => {
+    const ref: TableEditKeyRef = {
+      label: `${prefix}${index + 1}`,
+      name: String(row.name),
+      definition: String(row.definition),
+    }
+    const keys = Array.isArray(row.conkey) ? row.conkey : []
+    for (const key of keys) {
+      const column = nameByAttnum.get(Number(key))
+      if (!column) continue
+      const list = byColumn.get(column)
+      if (list) list.push(ref)
+      else byColumn.set(column, [ref])
+    }
+  })
+  return byColumn
+}
+
+export function fkLabels(
+  rows: FkRow[],
+  nameByAttnum: Map<number, string>,
+): Map<string, TableEditKeyRef[]> {
+  return keyLabels(rows, nameByAttnum, 'FK')
+}
+
+export function ukLabels(
+  rows: FkRow[],
+  nameByAttnum: Map<number, string>,
+): Map<string, TableEditKeyRef[]> {
+  return keyLabels(rows, nameByAttnum, 'UK')
+}
 
 const SERIAL_TYPES = new Set(['smallint', 'integer', 'bigint'])
 
@@ -269,11 +339,12 @@ const SERIAL_TYPES = new Set(['smallint', 'integer', 'bigint'])
  * sequences, foreign tables and partitions are rejected here, so both the read
  * and the submit routes agree on what may be edited. */
 export async function fetchTableEditState(pool: Pool, oid: string): Promise<TableEditState> {
-  const [tableRes, colsRes, pkRes, uniqRes] = await Promise.all([
+  const [tableRes, colsRes, pkRes, ukRes, fkRes] = await Promise.all([
     pool.query(TABLE_SQL, [oid]),
     pool.query(COLUMNS_SQL, [oid]),
     pool.query(PK_SQL, [oid]),
-    pool.query(UNIQUE_SQL, [oid]),
+    pool.query(UK_SQL, [oid]),
+    pool.query(FK_SQL, [oid]),
   ])
   const table = tableRes.rows[0]
   if (!table) {
@@ -288,7 +359,10 @@ export async function fetchTableEditState(pool: Pool, oid: string): Promise<Tabl
     validationError('Only ordinary tables and partitioned parents can be edited')
   }
   const pkCols = new Set<string>(pkRes.rows.map((r) => String(r.name)))
-  const uniqueCols = new Set<string>(uniqRes.rows.map((r) => String(r.name)))
+  const nameByAttnum = new Map<number, string>()
+  for (const row of colsRes.rows) nameByAttnum.set(Number(row.attnum), String(row.name))
+  const fksByColumn = fkLabels(fkRes.rows as FkRow[], nameByAttnum)
+  const uksByColumn = ukLabels(ukRes.rows as FkRow[], nameByAttnum)
   const columns: TableEditColumnState[] = colsRes.rows.map((row) => {
     const identity = String(row.identity ?? '') !== ''
     const generated = String(row.generated ?? '') !== ''
@@ -303,7 +377,8 @@ export async function fetchTableEditState(pool: Pool, oid: string): Promise<Tabl
       defaultValue: row.default_expr == null ? null : String(row.default_expr),
       description: row.description == null ? null : String(row.description),
       pk: pkCols.has(String(row.name)),
-      unique: uniqueCols.has(String(row.name)),
+      fks: fksByColumn.get(String(row.name)),
+      uks: uksByColumn.get(String(row.name)),
       locked,
       lockKind: identity ? 'identity' : generated ? 'generated' : serial ? 'serial' : undefined,
     }
@@ -362,7 +437,6 @@ function liveView(state: TableEditState): LiveTable {
       defaultValue: c.defaultValue,
       description: c.description,
       pk: c.pk,
-      unique: c.unique,
       locked: c.locked,
       lockKind: c.lockKind,
     })),

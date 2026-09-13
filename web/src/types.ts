@@ -16,6 +16,7 @@ export type {
   SchemaData,
   TableEditColumnInput,
   TableEditColumnState,
+  TableEditKeyRef,
   TableEditRequest,
   TableEditResponse,
   TableEditState,

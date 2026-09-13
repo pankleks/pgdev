@@ -1798,7 +1798,7 @@ body.dragging-results {
      * 1.05fr/1fr); the freed width flows to Comment. Minimums shrink to
      * match (105px ≈ 3/4 of 140px). */
     grid-template-columns:
-      minmax(105px, 0.62fr) minmax(105px, 0.62fr) 56px 50px 30px 30px 30px
+      minmax(105px, 0.62fr) minmax(105px, 0.62fr) 56px 50px 30px 30px 40px 40px
       minmax(105px, 0.62fr) minmax(160px, 1fr) auto;
     gap: 6px;
     align-items: center;
@@ -1911,6 +1911,39 @@ body.dragging-results {
       color: var(--accent);
     }
   }
+
+  /* Key badges (UK and FK): one chip per key the column belongs to, numbered
+   * by constraint order (FK1, UK2, …); the hover tooltip carries the names.
+   * Each number gets its own hue (same number = same color, FK3 == UK3), so a
+   * multi-column key is traceable across rows. data-idx cycles a palette of
+   * KEY_COLORS (see chipIndex in the dialog). */
+  .fk-chips {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .fk-chip {
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 13px;
+    color: var(--accent);
+    border: 1px solid var(--accent-2);
+    border-radius: 8px;
+    padding: 1px 5px;
+  }
+
+  .fk-chip[data-idx='1'] { color: #4f9cf9; border-color: #2b5a94; }
+  .fk-chip[data-idx='2'] { color: #89d185; border-color: #46804f; }
+  .fk-chip[data-idx='3'] { color: #e5c07b; border-color: #8a6d3b; }
+  .fk-chip[data-idx='4'] { color: #b18cf0; border-color: #5f4699; }
+  .fk-chip[data-idx='5'] { color: #56c2c2; border-color: #3a7a7a; }
+  .fk-chip[data-idx='6'] { color: #f08cd0; border-color: #8a4a7a; }
+  .fk-chip[data-idx='7'] { color: #f2a05a; border-color: #8a5a2b; }
+  .fk-chip[data-idx='8'] { color: #f48771; border-color: #8a4a3f; }
 
   .row-tools {
     display: flex;

@@ -68,10 +68,24 @@ export interface TableEditColumnInput {
   description: string | null
 }
 
+export interface TableEditKeyRef {
+  /** Running number per constraint/index in catalog order: "FK1", "UK2", …
+   * Every column of one constraint or index shares the same number. */
+  label: string
+  /** The constraint or index name, e.g. `bom_product_fkey`. */
+  name: string
+  /** pg_get_constraintdef / pg_get_indexdef output for the tooltip. */
+  definition: string
+}
+
 export interface TableEditColumnState extends TableEditColumnInput {
   /** Read-only display flags — always computed from the live catalog. */
   pk: boolean
-  unique: boolean
+  /** Outgoing foreign keys this column belongs to (display-only badge). */
+  fks?: TableEditKeyRef[]
+  /** Unique keys (constraints and standalone unique indexes) this column
+   * belongs to (display-only badge). */
+  uks?: TableEditKeyRef[]
   /** Identity/generated/serial columns: type, default (and usually nullable)
    * are locked; only description (and renames) remain editable. */
   locked: boolean

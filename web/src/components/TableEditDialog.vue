@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { KeyRound, Lock, Plus, RotateCcw, ShieldCheck, Table2, Trash2, X } from 'lucide-vue-next'
+import { KeyRound, Lock, Plus, RotateCcw, Table2, Trash2, X } from 'lucide-vue-next'
 import { useConnection } from '../composables/connection'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { api } from '../api'
-import type { TableEditColumnState, TableEditState } from '../types'
+import type { TableEditColumnState, TableEditKeyRef, TableEditState } from '../types'
 import { buildColumnType, parseColumnType, SIZE_BASES } from '../lib/tabletype'
 
 // Table editor dialog: loads the live table state for one oid, lets the user
@@ -33,7 +33,10 @@ interface EditRow {
   defaultValue: string
   description: string
   pk: boolean
-  unique: boolean
+  /** Read-only FK badges: "FK1", "FK2", … with name + definition for the tooltip. */
+  fks: TableEditKeyRef[]
+  /** Read-only UK badges: "UK1", "UK2", … with name + definition for the tooltip. */
+  uks: TableEditKeyRef[]
   locked: boolean
   lockKind: TableEditColumnState['lockKind']
   added: boolean
@@ -77,7 +80,8 @@ function rowOf(state: TableEditColumnState): EditRow {
     defaultValue: state.defaultValue ?? '',
     description: state.description ?? '',
     pk: state.pk,
-    unique: state.unique,
+    fks: state.fks ?? [],
+    uks: state.uks ?? [],
     locked: state.locked,
     lockKind: state.lockKind,
     added: false,
@@ -97,7 +101,8 @@ function addRow() {
     defaultValue: '',
     description: '',
     pk: false,
-    unique: false,
+    fks: [],
+    uks: [],
     locked: false,
     lockKind: undefined,
     added: true,
@@ -153,6 +158,26 @@ function lenDisabled(row: EditRow): boolean {
 
 function scaleDisabled(row: EditRow): boolean {
   return row.base !== 'numeric' || row.locked || row.deleted
+}
+
+/** One line per key so the browser tooltip keeps the line breaks. */
+function fkTooltip(row: EditRow): string {
+  return row.fks.map((f) => `${f.name}: ${f.definition}`).join('\n')
+}
+
+function ukTooltip(row: EditRow): string {
+  return row.uks.map((u) => `${u.name}: ${u.definition}`).join('\n')
+}
+
+/**
+ * Color index for a key badge: every number gets its own color and the same
+ * number always gets the same one (FK3 and UK3 match), so a multi-column key
+ * is visually traceable across rows. More keys than colors cycle the palette.
+ */
+const KEY_COLORS = 8
+function chipIndex(label: string): number {
+  const n = Number.parseInt(label.replace(/\D/g, ''), 10) || 0
+  return ((n - 1) % KEY_COLORS) + 1
 }
 
 /**
@@ -298,7 +323,9 @@ function onBackdrop() {
             <span title="Scale (numeric only)">Scale</span>
             <span class="center" title="Nullable">Null</span>
             <span class="center" title="Primary key (read-only)">PK</span>
-            <span class="center" title="Unique (read-only)">UQ</span><span title="Default value">Default</span>
+            <span class="center" title="Unique key (read-only)">UK</span>
+            <span class="center" title="Foreign key (read-only)">FK</span>
+            <span title="Default value">Default</span>
             <span title="Column description">Comment</span>
             <!-- Same 44px the row tools reserve: without it this auto track
                  collapses and every header column drifts left of the rows. -->
@@ -337,8 +364,11 @@ function onBackdrop() {
             <span class="flag" :class="{ on: row.pk }" :title="row.pk ? 'Primary key (read-only)' : ''">
               <KeyRound v-if="row.pk" :size="13" />
             </span>
-            <span class="flag" :class="{ on: row.unique }" :title="row.unique ? 'Unique (read-only)' : ''">
-              <ShieldCheck v-if="row.unique" :size="13" />
+            <span class="fk-chips" :title="ukTooltip(row)">
+              <span v-for="u in row.uks" :key="u.label" class="fk-chip" :data-idx="chipIndex(u.label)">{{ u.label }}</span>
+            </span>
+            <span class="fk-chips" :title="fkTooltip(row)">
+              <span v-for="f in row.fks" :key="f.label" class="fk-chip" :data-idx="chipIndex(f.label)">{{ f.label }}</span>
             </span>
             <input v-model="row.defaultValue" :disabled="row.locked || row.deleted" spellcheck="false" :placeholder="row.locked && row.lockKind === 'generated' ? '(generated)' : ''" />
             <input v-model="row.description" :readonly="row.deleted" spellcheck="false" />
