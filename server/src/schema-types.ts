@@ -162,19 +162,60 @@ export interface CommandResult {
   rowCount: number
 }
 
+export interface EditableGridColumn {
+  /** Result column name — a real table column present exactly once. */
+  name: string
+  pk: boolean
+  generated: boolean
+  /** False for NOT NULL columns: the row editor must not offer a NULL checkbox. */
+  nullable: boolean
+}
+
+/** Row-editing metadata attached to a data result when its statement is a
+ * plain single-table SELECT whose rows are uniquely identified by the full
+ * primary key. */
+export interface EditableGrid {
+  schema: string
+  table: string
+  pk: string[]
+  columns: EditableGridColumn[]
+}
+
 export interface DataResult {
   kind: 'data'
   columns: string[]
   columnTypes: string[]
+  /** Declared character length per column (varchar(n)/char(n)), else null. */
+  columnTypeLengths?: (number | null)[]
   rows: unknown[][]
   rowCount: number
   truncated: boolean
   /** Rows were discarded after reaching the limit; no cursor can retrieve them. */
   limited?: boolean
   totalRowCount?: number
+  /** Present only when this result's rows can be edited in place. */
+  editable?: EditableGrid
 }
 
 export type QueryResult = CommandResult | DataResult
+
+/** One row UPDATE built by the row editor: key = full primary key values,
+ * set = changed column values (JSON null means SQL NULL). */
+export interface RowUpdateRequest {
+  tabKey: string
+  schema: string
+  table: string
+  key: Record<string, unknown>
+  set: Record<string, unknown | null>
+}
+
+export interface RowUpdateResponse {
+  /** The stored row (UPDATE … RETURNING *), keyed by column name with the
+   * same value transport as grid cells. */
+  row: Record<string, unknown>
+  /** True when the update ran inside the tab's open manual transaction. */
+  transactionOpen: boolean
+}
 
 export interface QueryResponse {
   results: QueryResult[]

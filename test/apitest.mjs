@@ -224,6 +224,12 @@ eq('three rows', sel.body.results[0].rowCount, 3)
 eq('not truncated', sel.body.results[0].truncated, false)
 eq('columns', sel.body.results[0].columns, ['id', 'name', 'location'])
 eq('column types resolved', sel.body.results[0].columnTypes, ['integer', 'text', 'text'])
+const lengths = await q(
+  `SELECT 'abc'::varchar(5) AS v, 'x'::character(3) AS c, 't'::text AS t, 1.5::numeric(6,2) AS n`,
+  'tab-lengths',
+)
+eq('declared character lengths resolved (others null)',
+  lengths.body.results[0].columnTypeLengths, [5, 3, null, null])
 ok('duration reported', typeof sel.body.durationMs === 'number')
 
 const multi = await q('SELECT 1 AS a; SELECT 2 AS b; SELECT 3 AS c;', 'tab2')
@@ -519,6 +525,157 @@ console.log('\n== table editor ==')
   eq('missing fingerprint is rejected', noFp.status, 400)
 
   await q('DROP TABLE tableedit_probe', 'te2')
+}
+
+console.log('\n== row editor ==')
+{
+  await q(`CREATE TABLE rowedit_probe (
+    id serial PRIMARY KEY,
+    label text NOT NULL,
+    qty numeric(10,2),
+    active boolean,
+    due_at timestamptz,
+    payload jsonb,
+    blob bytea,
+    total numeric GENERATED ALWAYS AS (qty * 2) STORED
+  )`, 're0')
+  await q(`INSERT INTO rowedit_probe (label, qty, active, due_at, payload) VALUES
+    ('first', 1.50, true, '2024-01-15 10:30:00+00', '{"b":2,"a":1}'),
+    ('second', NULL, NULL, NULL, NULL)`, 're0')
+
+  const grid = (await q('SELECT * FROM rowedit_probe ORDER BY id', 're1')).body.results[0]
+  ok('editable metadata present', !!grid.editable, JSON.stringify(grid.editable))
+  eq('editable table identity', [grid.editable?.schema, grid.editable?.table], ['public', 'rowedit_probe'])
+  eq('editable primary key', grid.editable?.pk, ['id'])
+  const editableByName = new Map((grid.editable?.columns ?? []).map((c) => [c.name, c]))
+  eq('pk column flagged', editableByName.get('id')?.pk, true)
+  eq('generated column flagged', editableByName.get('total')?.generated, true)
+  eq('not-null column is not nullable', editableByName.get('label')?.nullable, false)
+  eq('nullable column is flagged', editableByName.get('qty')?.nullable, true)
+  ok('plain columns listed', ['label', 'payload', 'due_at'].every((n) => editableByName.has(n)))
+
+  const explicit = (await q('SELECT id, label FROM rowedit_probe', 're2')).body.results[0]
+  ok('explicit column list is editable', !!explicit.editable)
+  eq('only selected columns are offered', explicit.editable.columns.map((c) => c.name), ['id', 'label'])
+
+  const noPk = (await q('SELECT label FROM rowedit_probe', 're3')).body.results[0]
+  eq('a result without the primary key is not editable', noPk.editable ?? null, null)
+  const aliased = (await q('SELECT id AS ident, label FROM rowedit_probe', 're4')).body.results[0]
+  eq('an aliased primary key is not editable', aliased.editable ?? null, null)
+  const expr = (await q('SELECT id, upper(label) AS u FROM rowedit_probe', 're5')).body.results[0]
+  eq('an expression in the select list disables editing', expr.editable ?? null, null)
+  const joined = (await q(
+    'SELECT e.id, e.first_name FROM employees e JOIN departments d ON d.id = e.department_id', 're6',
+  )).body.results[0]
+  eq('a join is not editable', joined.editable ?? null, null)
+  const view = (await q('SELECT * FROM v_emp', 're7')).body.results[0]
+  eq('a view is not editable', view.editable ?? null, null)
+
+  const rowUpdate = (body) => call('POST', `/api/connections/${id}/row-update`, body)
+
+  const watcher = new Client({ ...base, database: DB })
+  await watcher.connect()
+  try {
+    const upd = await rowUpdate({
+      schema: 'public', table: 'rowedit_probe', key: { id: 1 },
+      set: { label: 'FIRST', qty: '2.25', active: false, payload: '{"x":1}' },
+    })
+    eq('update status', upd.status, 200)
+    eq('RETURNING reflects the stored values',
+      [upd.body.row.label, upd.body.row.qty, upd.body.row.active, upd.body.row.payload, upd.body.row.total],
+      ['FIRST', '2.25', false, '{"x": 1}', '4.50'])
+    eq('autocommit save reports no transaction', upd.body.transactionOpen, false)
+    eq('the change is visible to other connections',
+      (await watcher.query('SELECT label FROM rowedit_probe WHERE id = 1')).rows[0].label, 'FIRST')
+
+    const nulled = await rowUpdate({
+      schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { qty: null, active: null },
+    })
+    eq('NULL set status', nulled.status, 200)
+    eq('NULL values are stored', [nulled.body.row.qty, nulled.body.row.active], [null, null])
+
+    // timestamptz: the control sends wall time without an offset, PostgreSQL
+    // interprets it in the session timezone, and the text comes back raw.
+    const timed = await rowUpdate({
+      schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { due_at: '2024-06-01T12:00:00' },
+    })
+    eq('temporal update status', timed.status, 200)
+    ok('temporal cells are PostgreSQL text, not ISO Z',
+      /^2024-06-01 \d{2}:\d{2}:\d{2}[+-]/.test(timed.body.row.due_at), timed.body.row.due_at)
+    eq('the stored instant matches the wall time in the session timezone',
+      (await watcher.query(
+        "SELECT due_at = '2024-06-01T12:00:00'::timestamptz AS same FROM rowedit_probe WHERE id = 1",
+      )).rows[0].same, true)
+
+    // The browser payload is advisory: every rejection below proves the
+    // server re-validates against the live catalog.
+    const reject = async (name, body, status) => {
+      const r = await rowUpdate(body)
+      eq(name, r.status, status)
+    }
+    await reject('a key that is not the primary key is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { label: 'FIRST' }, set: { label: 'x' } }, 400)
+    await reject('editing the primary key is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { id: 99 } }, 400)
+    await reject('editing a generated column is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { total: '5' } }, 400)
+    await reject('editing binary data is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { blob: 'x' } }, 400)
+    await reject('an unknown column is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { nope: 'x' } }, 400)
+    await reject('an empty change set is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: {} }, 400)
+    await reject('malformed JSON is reported by PostgreSQL',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 1 }, set: { payload: '{oops' } }, 400)
+    await reject('a missing row reports not found',
+      { schema: 'public', table: 'rowedit_probe', key: { id: 999999 }, set: { label: 'x' } }, 404)
+    await reject('an unknown table is rejected',
+      { schema: 'public', table: 'no_such_table', key: { id: 1 }, set: { label: 'x' } }, 400)
+    await reject('a non-table target is rejected',
+      { schema: 'public', table: 'v_emp', key: { id: 1 }, set: { first_name: 'x' } }, 400)
+    await reject('a malformed body is rejected',
+      { schema: 'public', table: 'rowedit_probe', key: 'x', set: {} }, 400)
+
+    // SAVE inside the tab's open transaction: invisible outside, ended by
+    // COMMIT/ROLLBACK, and a failed statement aborts it like psql.
+    eq('begin a transaction for the tab', (await q('BEGIN', 'retx')).body.transactionOpen, true)
+    const inside = await rowUpdate({
+      tabKey: 'retx', schema: 'public', table: 'rowedit_probe', key: { id: 2 }, set: { label: 'INSIDE' },
+    })
+    eq('save inside the transaction succeeds', inside.status, 200)
+    eq('the response reports the open transaction', inside.body.transactionOpen, true)
+    eq('the tab sees its own edit',
+      (await q('SELECT label FROM rowedit_probe WHERE id = 2', 'retx')).body.results[0].rows[0][0], 'INSIDE')
+    eq('other connections do not see it yet',
+      (await watcher.query('SELECT label FROM rowedit_probe WHERE id = 2')).rows[0].label, 'second')
+    eq('commit the transaction', (await q('COMMIT', 'retx')).body.transactionOpen, false)
+    eq('the committed edit is visible to others',
+      (await watcher.query('SELECT label FROM rowedit_probe WHERE id = 2')).rows[0].label, 'INSIDE')
+
+    eq('begin again', (await q('BEGIN', 'retx')).body.transactionOpen, true)
+    const bad = await rowUpdate({
+      tabKey: 'retx', schema: 'public', table: 'rowedit_probe', key: { id: 2 }, set: { label: null },
+    })
+    eq('a constraint violation is reported', bad.status, 400)
+    eq('the aborted transaction stays open for ROLLBACK',
+      (await q('SELECT 1', 'retx')).body.code, '25P02')
+    eq('rollback closes it', (await q('ROLLBACK', 'retx')).body.transactionOpen, false)
+    eq('the rolled-back edit is gone',
+      (await watcher.query('SELECT label FROM rowedit_probe WHERE id = 2')).rows[0].label, 'INSIDE')
+
+    // A rejected plan never reaches the client, so the transaction survives.
+    eq('begin for the rejection case', (await q('BEGIN', 'retx')).body.transactionOpen, true)
+    const rejectedInTxn = await rowUpdate({
+      tabKey: 'retx', schema: 'public', table: 'rowedit_probe', key: { id: 2 }, set: { total: '5' },
+    })
+    eq('a rejected save inside a transaction is a 400', rejectedInTxn.status, 400)
+    eq('the transaction is still usable', (await q('SELECT 1', 'retx')).status, 200)
+    eq('close the transaction', (await q('ROLLBACK', 'retx')).body.transactionOpen, false)
+  } finally {
+    await watcher.end()
+  }
+
+  await q('DROP TABLE rowedit_probe', 're8')
 }
 
 console.log('\n== catalog queries survive paged sessions (separate pool) ==')

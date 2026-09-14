@@ -103,6 +103,12 @@ export async function openPage(port) {
     if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
       consoleErrors.push(msg.params.args.map((a) => a.value ?? a.description ?? '').join(' '))
     }
+    if (msg.method === 'Page.javascriptDialogOpening') {
+      // A guard `window.confirm` blocks the page and every later evaluate
+      // forever; dismiss dialogs so a surprised test fails on behaviour
+      // instead of hanging the whole run.
+      ws.send(JSON.stringify({ id: nextId++, method: 'Page.handleJavaScriptDialog', params: { accept: false } }))
+    }
   })
 
   const send = (method, params = {}) => new Promise((resolve, reject) => {

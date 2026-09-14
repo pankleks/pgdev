@@ -36,6 +36,12 @@ The primary design goals are:
 - `server/src/catalog/metadata.ts` queries `pg_catalog` for browser and completion data.
 - `server/src/catalog/ddl.ts` reconstructs executable DDL from PostgreSQL catalog data.
 - `server/src/catalog/tableedit.ts` reads the table-editor state and diffs a submitted edit into change-only ALTER statements.
+- `server/src/catalog/rowedit.ts` resolves a plain SELECT's table to its row-editing identity (columns, generated flags, primary key) and decides whether a result's columns identify rows uniquely.
+- `server/src/selectshape.ts` detects a plain single-table SELECT (no joins, set operations, grouping or expression select lists) and extracts its table and selected columns.
+- `server/src/rowupdate.ts` is the pure planner for the row editor: it validates a submitted key/change set against a live catalog read and builds the single parameterized `UPDATE … RETURNING *`.
+- `server/src/routes/rowupdate.ts` maps a row save to one UPDATE, joining the tab's open transaction session when there is one.
+- `server/src/pgtypes.ts` selects the identity type parsers that keep JSON/JSONB and temporal values as raw server text.
+- `server/src/sqlident.ts` quotes PostgreSQL identifiers for SQL text generation.
 - `server/src/sqlsplit.ts` splits a batch into top-level statements without splitting strings, identifiers, comments, or dollar-quoted bodies.
 - `server/src/pgerror.ts` normalizes PostgreSQL and network errors into a non-empty message.
 - `server/src/pgcancel.ts` sends PostgreSQL cancel requests over TCP (optionally TLS) or a Unix-domain socket using the active connection parameters.
@@ -46,9 +52,10 @@ The primary design goals are:
 - `web/src/components/ConnectDialog.vue` handles parameter-based and connection-string connections.
 - `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs.
 - `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.
+- `web/src/components/RowEditDialog.vue` edits one result row: a type-matched field per column with NULL checkboxes, PK/generated fields locked, one UPDATE on SAVE.
 - `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.
 - `web/src/components/QueryEditor.vue` hosts Monaco models and editor commands.
-- `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, cancellation controls, and the transaction indicator with Commit/Rollback buttons.
+- `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, cancellation controls, the transaction indicator with Commit/Rollback buttons, and the per-row edit button for editable results.
 - `web/src/components/SettingsDialog.vue` exposes the object-browser grouping preference.
 - `web/src/composables/connection.ts` manages connection state, remembered configurations, and connection switching.
 - `web/src/composables/schema.ts` manages schema loading and stale-request protection.
@@ -58,6 +65,8 @@ The primary design goals are:
 - `web/src/composables/toast.ts` shows transient status messages.
 - `web/src/lib/sqlformat.ts` wraps `sql-formatter` while preserving non-routine dollar-quoted bodies.
 - `web/src/lib/gridio.ts` implements clipboard, delimited text, and safe CSV export.
+- `web/src/lib/cellvalue.ts` formats result cells for the value dialog (token-preserving JSON pretty-printing).
+- `web/src/lib/celleditor.ts` maps column types to row-editor controls and converts temporal values between PostgreSQL text and native control values.
 - `web/src/lib/storage.ts` owns IndexedDB persistence for settings, connections, pinned files, and the tab session, including one-way migration from the earlier `localStorage` keys.
 - `web/src/lib/tabsession.ts` serializes and restores the user-tab session (pure helpers).
 - `web/src/lib/files.ts` wraps the File System Access API with a download fallback.
@@ -103,7 +112,7 @@ The execution flow is:
 5. Detect statements that PostgreSQL requires to run outside a transaction.
 6. Use a transaction for ordinary batches, including an initialization savepoint and an idle transaction timeout setting.
 7. Execute statements sequentially and preserve command or data results.
-8. Resolve result column type names on the same PostgreSQL client.
+8. Resolve result column type names on the same PostgreSQL client, and for plain single-table SELECTs resolve row-editing metadata (primary key, real columns, generated flags) through the same client.
 9. Commit and release the client, retain one cursor session when more rows are available, or pin the client as a transaction session when the batch leaves a user transaction open.
 
 Commands detected for autocommit execution include `VACUUM`, `CLUSTER`, `CHECKPOINT`, database and tablespace operations, `ALTER SYSTEM`, subscription operations, concurrent index operations, concurrent `REINDEX`, and concurrent materialized-view refreshes.
@@ -139,6 +148,7 @@ The following endpoints are available:
 | POST | `/api/connections/:id/query/close` | Roll back and close an idle tab session, or cancel an active operation. |
 | GET | `/api/connections/:id/tableedit/:oid` | Table-editor state for one table. |
 | POST | `/api/connections/:id/tableedit/:oid` | Diff a submitted table edit into a change-only ALTER script. |
+| POST | `/api/connections/:id/row-update` | Store one edited result row with a single UPDATE. |
 
 Sessions are also closed when a tab is closed, a connection is disconnected, a pool client fails, a query completes, a query errors, or the five-minute idle timeout expires.
 
@@ -182,6 +192,16 @@ The dialog never executes anything. **OK** submits the desired column set to `PO
 
 The generated script opens in a fresh, clean query tab bound to the connection it was generated against, so the existing stale-connection run guard applies and the user executes it explicitly. Table edits are out of scope for partitions and foreign tables.
 
+## Row Editor
+
+A result grid whose rows have an unambiguous table identity gets a narrow leading column with a pencil button per row. The gate is deliberately strict (`server/src/selectshape.ts` and `catalog/rowedit.ts`): the statement must be a **plain single-table SELECT** — no joins, set operations, CTEs, `DISTINCT`, `GROUP BY`/`HAVING`/`WINDOW`, subqueries or functions in `FROM`, `SELECT INTO`, or locking clauses — and the table must be an ordinary or partitioned table (`relkind` `r`/`p`) whose **full primary key appears in the result, unaliased and exactly once**. The select list must be `*`, `qualifier.*` or plain (possibly qualified) column references: an expression aliased to a real column name (`id + 1 AS id`) could produce a key value that no longer identifies the row it came from, so any other item disables editing for the whole result. Duplicate column names and generated columns are never editable, and `bytea` is refused because its cell transport is a `<bytea N bytes>` summary. The metadata travels with the data result (`DataResult.editable`) and is advisory only — the save endpoint re-reads the catalog on every call.
+
+Clicking the pencil opens a dialog listing one row per result column in a three-column table — column name/type (with any read-only tag), the value control, and the NULL checkbox. Columns whose names start with `_` (system-ish companions) are shown after the ordinary ones, matching the table editor's display convention. Each value control matches its type: boolean gets a value checkbox, numeric types a `type="number"` input (`step=1` for the integer family, `any` otherwise), `date`/`time without time zone`/`timestamp [with|without] time zone` native `date`/`time`/`datetime-local` inputs, JSON/JSONB a textarea holding the token-safe pretty reprint, `text` a textarea, and every other type — `varchar(n)`, `char`, uuid, enums, arrays and the rest — a single-line text input. Declared character lengths (`varchar(n)`/`char(n)`) travel with the result metadata and set a matching `maxlength` on the control; PostgreSQL still enforces the real limit. Every nullable editable field has a NULL checkbox that disables its value control; NOT NULL columns (the primary key among them) get an empty NULL cell, so they cannot be erased through the dialog. The primary key is shown but locked, and generated, expression/duplicate and binary columns are shown read-only with a tag. SAVE is disabled until something actually differs from the row as loaded, identifies each field by its original value, and sends only the changed columns, so an untouched field — including a `timestamptz` whose native control cannot carry an offset — is never written back.
+
+SAVE issues exactly one parameterized `UPDATE "schema"."table" SET … WHERE pk = … RETURNING *` through `POST …/row-update`. Changed JSON/JSONB text is syntax-checked in the browser first (`JSON.parse` in a try/catch) and the save is refused with the field's name when it does not parse — the check only validates; the token-preserving textarea text is what gets sent, so number spellings and large integers are never rewritten. The server then re-derives the table identity from the catalog, requires the key to be exactly the primary key, rejects primary-key, generated, binary and unknown columns, and quotes all identifiers itself (`sqlident.ts`); only values are parameters. A key matching no row returns 404 ("Row not found — it may have been deleted; re-run the query."). Conflicts are last-write-wins by design. When the tab has an open manual transaction, the UPDATE runs on that session's client, so `ROLLBACK` undoes it, `COMMIT` persists it, and a failed statement leaves the usual aborted transaction for the user to end; without a transaction it is one autocommit statement. The returned row patches the loaded grid cells by column name, so trigger effects, casts and generated values appear immediately without re-running the query.
+
+Temporal columns arrive as raw PostgreSQL text (not ISO strings): the per-query type parsers keep `date`, `time`, `timestamp`, `timestamptz`, `timetz` and their arrays unparsed alongside JSON/JSONB, so the grid, CSV export and the editor all see the exact server text. A `timestamp with time zone` is edited as the browser's wall clock; the offset is dropped on save and PostgreSQL interprets the value in the session timezone, which is the same instant on a single machine.
+
 ## SQL Parsing and Formatting
 
 The SQL splitter recognizes:
@@ -214,7 +234,7 @@ The result grid is virtualized and supports column resizing, cell copying, TSV c
 
 CSV export captures the grid before any await, so a selection change while the save picker or the drain is open cannot switch the target; the drain re-validates that capture (result identity and operation token) on every page and aborts a stale export. With the File System Access picker, pages stream straight to disk with every write awaited — a failed write aborts the file, and drained pages are **not** retained in the grid, so memory stays flat for large results. Because that consumes the backend cursor, the grid then keeps its first page, stops advertising pagination, and records the exported total (`exported`), which the footer reports; without the picker the fallback drains into the grid and downloads a Blob. Pinned-file persistence distinguishes "saved without file handles" (false) from total failure: when IndexedDB and the localStorage fallback both reject the write, the save rejects so the UI can warn instead of silently losing the pins.
 
-NULL and boolean cells render as badges (a dark steel-blue `null` chip; green `true` and gray `false`) so sentinel values cannot be mistaken for stored strings; exports still write the empty string for NULL. Double-clicking a `json`/`jsonb` cell opens a value dialog that pretty-prints the JSON with a two-space indent and offers a COPY button (which closes the dialog); every other cell type copies its value straight to the clipboard, and NULL stays inert. JSON/JSONB columns travel as raw server text — per-query type parsers keep the driver from `JSON.parse`-ing them, so large integers, number spellings (`1.0`) and JSON string scalars survive — and the dialog formats them with a token-preserving scanner (`web/src/lib/cellvalue.ts`) that copies every token verbatim and falls back to the raw text when the JSON does not parse.
+NULL and boolean cells render as badges (a dark steel-blue `null` chip; green `true` and gray `false`) so sentinel values cannot be mistaken for stored strings; exports still write the empty string for NULL. Double-clicking a `json`/`jsonb` cell opens a value dialog that pretty-prints the JSON with a two-space indent and offers a COPY button (which closes the dialog); every other cell type copies its value straight to the clipboard, and NULL stays inert. JSON/JSONB and temporal columns travel as raw server text — per-query type parsers keep the driver from `JSON.parse`-ing JSON or turning dates into JS `Date`s — so large integers, number spellings (`1.0`), JSON string scalars and wall-clock timestamps survive; the dialog formats JSON with a token-preserving scanner (`web/src/lib/cellvalue.ts`) that copies every token verbatim and falls back to the raw text when the JSON does not parse. Editable results additionally show a per-row pencil that opens the row editor (see above).
 
 ## API Protection
 

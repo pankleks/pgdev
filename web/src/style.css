@@ -138,6 +138,9 @@ input {
   &[type='text'],
   &[type='password'],
   &[type='number'],
+  &[type='date'],
+  &[type='time'],
+  &[type='datetime-local'],
   &:not([type]) {
     font: inherit;
     color: var(--text);
@@ -146,6 +149,27 @@ input {
     border-radius: 3px;
     padding: 5px 8px;
     width: 100%;
+  }
+
+  /* Native date/time controls otherwise keep the browser's default font and
+   * chrome; dim the picker glyph so it matches the app's muted icons. */
+  &[type='date'],
+  &[type='time'],
+  &[type='datetime-local'] {
+    &::-webkit-calendar-picker-indicator {
+      opacity: 0.55;
+      cursor: pointer;
+
+      &:hover {
+        opacity: 1;
+      }
+    }
+
+    &:disabled {
+      &::-webkit-calendar-picker-indicator {
+        cursor: default;
+      }
+    }
   }
 
   &:focus {
@@ -1169,6 +1193,32 @@ body.dragging-results {
       color: var(--text);
       font-family: Consolas, 'Courier New', monospace;
       font-size: 12px;
+    }
+  }
+
+  /* Row-editor action column: a narrow leading cell per row with a pencil. */
+  .grid-cell.actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    overflow: visible;
+    font-family: inherit;
+  }
+
+  .rowedit-open {
+    color: var(--text-dim);
+    padding: 2px 4px;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      color: var(--accent);
+      background: var(--panel-2);
+    }
+
+    &:disabled {
+      opacity: 0.25;
+      cursor: default;
     }
   }
 
@@ -2227,6 +2277,249 @@ body.dragging-results {
         &:hover:not(:disabled) {
           color: var(--text);
           border-color: var(--text-dim);
+        }
+      }
+    }
+  }
+}
+
+/* Row editor: one field per result column. Scoped like the other dialogs so
+ * the base `.modal-backdrop .modal` width (420px) does not win. */
+.modal-backdrop .modal.rowedit-modal {
+  width: min(936px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+
+  > h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 15px;
+    margin: 0 0 12px;
+    padding-right: 24px;
+    min-width: 0;
+  }
+
+  .rowedit-title {
+    flex-shrink: 0;
+  }
+
+  .rowedit-table {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .rowedit-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .rowedit-fields {
+    overflow-y: auto;
+    max-height: 55vh;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .rowedit-grid {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 6px 10px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th.rowedit-col-null,
+    td.rowedit-null,
+    td.rowedit-null-empty {
+      width: 52px;
+      text-align: center;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+
+    td {
+      padding: 6px 10px;
+      vertical-align: middle;
+    }
+
+    td.rowedit-label {
+      width: 200px;
+      vertical-align: top;
+      padding-top: 8px;
+
+      .rowedit-name {
+        font-size: 12px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+
+      .rowedit-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px;
+        margin-top: 2px;
+      }
+
+      .rowedit-type {
+        color: var(--text-dim);
+        font-size: 11px;
+      }
+
+      .rowedit-tag {
+        font-size: 10px;
+        line-height: 14px;
+        color: var(--text-dim);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0 6px;
+        white-space: nowrap;
+      }
+    }
+
+    td.rowedit-control {
+      .rowedit-input,
+      .rowedit-locked {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      input[type='checkbox'] {
+        width: auto;
+      }
+
+      .rowedit-textarea {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        min-height: 52px;
+        max-height: 200px;
+        resize: vertical;
+        font-family: Consolas, 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 5px 8px;
+        tab-size: 2;
+
+        &.json {
+          min-height: 110px;
+        }
+
+        &:disabled {
+          opacity: 0.5;
+        }
+      }
+
+      .rowedit-locked {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 5px 8px;
+        color: var(--text-dim);
+        font-family: Consolas, 'Courier New', monospace;
+        font-size: 12px;
+        background: var(--panel-2);
+        border: 1px dashed var(--border);
+        border-radius: 3px;
+      }
+    }
+
+    td.rowedit-null {
+      vertical-align: middle;
+
+      input[type='checkbox'] {
+        width: auto;
+        cursor: pointer;
+      }
+    }
+  }
+
+  .rowedit-error {
+    margin-top: 10px;
+    padding: 8px 10px;
+    color: var(--error);
+    background: rgba(244, 135, 113, 0.08);
+    border: 1px solid rgba(244, 135, 113, 0.3);
+    border-radius: 3px;
+    font-size: 12px;
+    word-break: break-word;
+  }
+
+  .rowedit-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+
+    .rowedit-count {
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    .rowedit-actions {
+      display: flex;
+      gap: 10px;
+
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 14px;
+        font-size: 13px;
+        cursor: pointer;
+        border-radius: 6px;
+
+        &.primary {
+          background: var(--accent);
+          border: 1px solid var(--accent);
+          color: #fff;
+
+          &:hover:not(:disabled) {
+            filter: brightness(1.1);
+          }
+
+          &:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+          }
+        }
+
+        &:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
       }
     }

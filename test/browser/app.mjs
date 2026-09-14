@@ -33,7 +33,16 @@ const { pool, teardown } = await scratchDatabase(base, DB)
 const { eq, ok, report } = counters()
 
 await pool.query(`
-  CREATE TABLE items (id serial PRIMARY KEY, label text NOT NULL);
+  CREATE TABLE items (
+    id serial PRIMARY KEY,
+    label text NOT NULL,
+    _meta text,
+    qty numeric(10,2),
+    active boolean,
+    due_at timestamp,
+    payload jsonb,
+    code varchar(20)
+  );
   CREATE TABLE grp_alpha (id serial PRIMARY KEY);
   CREATE TABLE grp_beta (id serial PRIMARY KEY);
   CREATE VIEW v_items AS SELECT id, label FROM items;
@@ -44,7 +53,9 @@ await pool.query(`
   CREATE TABLE app.thing (id integer PRIMARY KEY);
   CREATE VIEW app.v_thing AS SELECT id FROM app.thing;
   CREATE FUNCTION app.thing_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM app.thing $$;
-  INSERT INTO items (label) VALUES ('a'), ('b');
+  INSERT INTO items (label, qty, active, due_at, payload) VALUES
+    ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}'),
+    ('b', NULL, NULL, NULL, NULL);
 `)
 
 const children = []
@@ -289,10 +300,162 @@ try {
       btn?.click()
     `)
     const shown = await page.waitFor(
-      `document.body.textContent.includes('definitely_not_a_table')`,
+      `document.querySelector('.results .msg.error')?.textContent?.includes('definitely_not_a_table')`,
       { timeout: 20000 },
     ).then(() => true).catch(() => false)
     ok('server error text appears in the results panel', shown)
+  }
+
+  console.log('\n== row editor ==')
+  {
+    const runQuery = async (sql) => {
+      // Running is queued per tab; refuse to click while the previous run is
+      // still in flight or the new click would be swallowed.
+      await page.waitFor(
+        `![...document.querySelectorAll('button')].some((b) => /^Cancel/.test(b.textContent.trim()))`,
+        { timeout: 20000 },
+      )
+      await page.evaluate(`window.__pgdev.setValue(${JSON.stringify(sql)})`)
+      await page.evaluate(`
+        const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run')
+        btn?.click()
+      `)
+    }
+    const setField = (name, value) => page.evaluate(`
+      const field = [...document.querySelectorAll('.rowedit-field')]
+        .find((f) => f.querySelector('.rowedit-name')?.textContent === ${JSON.stringify(name)})
+      const el = field?.querySelector('textarea, input')
+      const proto = Object.getPrototypeOf(el)
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    `)
+    const saveButton = `[...document.querySelectorAll('.rowedit-actions button')].find((b) => /SAVE/.test(b.textContent))`
+
+    // A result without the primary key cannot identify rows.
+    await runQuery('SELECT label FROM items ORDER BY label')
+    await page.waitFor(`document.querySelectorAll('.grid-row').length > 0`, { timeout: 20000 })
+    eq('a result without the primary key has no edit buttons',
+      await page.evaluate(`return document.querySelectorAll('.rowedit-open').length`), 0)
+
+    await runQuery('SELECT * FROM items ORDER BY id')
+    await page.waitFor(`document.querySelectorAll('.rowedit-open').length > 0`, { timeout: 20000 })
+    ok('an editable result renders row edit buttons', true)
+
+    // Open the first row and inspect the generated controls.
+    await page.evaluate(`document.querySelector('.rowedit-open')?.click()`)
+    await page.waitFor(`!!document.querySelector('.rowedit-modal')`, { timeout: 10000 })
+    const dialog = await page.evaluate(`
+      const modal = document.querySelector('.rowedit-modal')
+      const fields = [...modal.querySelectorAll('.rowedit-field')]
+      const byName = (n) => fields.find((f) => f.querySelector('.rowedit-name')?.textContent === n)
+      return {
+        title: modal.querySelector('.rowedit-title')?.textContent,
+        table: modal.querySelector('.rowedit-table')?.textContent,
+        names: fields.map((f) => f.querySelector('.rowedit-name')?.textContent),
+        idLocked: !!byName('id')?.querySelector('.rowedit-locked'),
+        idTag: byName('id')?.querySelector('.rowedit-tag')?.textContent,
+        qtyType: byName('qty')?.querySelector('input')?.type,
+        activeCheckboxes: byName('active')?.querySelectorAll('input[type=checkbox]').length,
+        dueType: byName('due_at')?.querySelector('input')?.type,
+        dueValue: byName('due_at')?.querySelector('input')?.value,
+        payloadJson: /json/.test(byName('payload')?.querySelector('textarea')?.className ?? ''),
+        payloadText: byName('payload')?.querySelector('textarea')?.value,
+        codeType: byName('code')?.querySelector('input')?.type,
+        codeMax: byName('code')?.querySelector('input')?.maxLength,
+        labelMax: byName('label')?.querySelector('textarea')?.maxLength,
+        labelTag: byName('label')?.querySelector('textarea') ? 'textarea' : (byName('label')?.querySelector('input')?.tagName ?? null),
+        labelNull: !!byName('label')?.querySelector('.rowedit-null'),
+        qtyNull: !!byName('qty')?.querySelector('.rowedit-null'),
+        nullChecks: modal.querySelectorAll('.rowedit-null').length,
+        saveDisabled: ${saveButton}?.disabled,
+      }
+    `)
+    eq('dialog title and table', [dialog.title, dialog.table], ['Edit row', 'public.items'])
+    eq('dialog lists every result column, underscore columns last',
+      dialog.names, ['id', 'label', 'qty', 'active', 'due_at', 'payload', 'code', '_meta'])
+    eq('the primary key is locked and tagged', [dialog.idLocked, dialog.idTag], [true, 'primary key'])
+    eq('numeric columns get a number input', dialog.qtyType, 'number')
+    eq('booleans get a value checkbox and a NULL checkbox', dialog.activeCheckboxes, 2)
+    eq('timestamps get a datetime-local input', dialog.dueType, 'datetime-local')
+    // PostgreSQL microseconds are truncated to milliseconds: more digits are
+    // an invalid value for a native datetime-local control (it renders empty).
+    eq('the timestamp control holds the wall time', dialog.dueValue, '2024-01-15T10:30:00.123')
+    ok('json gets a pretty-printed textarea', dialog.payloadJson && dialog.payloadText.includes('\n  "a": 1'), dialog.payloadText)
+    eq('text columns keep the textarea', dialog.labelTag, 'textarea')
+    eq('varchar columns get a single-line text input', dialog.codeType, 'text')
+    eq('varchar(n) input carries the declared maxlength', dialog.codeMax, 20)
+    eq('text columns have no maxlength', dialog.labelMax, -1)
+    eq('NOT NULL columns offer no NULL checkbox', dialog.labelNull, false)
+    eq('nullable columns offer a NULL checkbox', dialog.qtyNull, true)
+    eq('one NULL checkbox per nullable field', dialog.nullChecks, 6)
+    eq('SAVE starts disabled', dialog.saveDisabled, true)
+
+    // Native date/time controls otherwise render with the browser's default
+    // font and chrome; they must match the plain text inputs.
+    const unified = await page.evaluate(`
+      const modal = document.querySelector('.rowedit-modal')
+      const byName = (n) => [...modal.querySelectorAll('.rowedit-field')]
+        .find((f) => f.querySelector('.rowedit-name')?.textContent === n)
+      const pick = (n) => {
+        const s = getComputedStyle(byName(n)?.querySelector('input'))
+        return { size: s.fontSize, family: s.fontFamily, padding: s.padding, bg: s.backgroundColor, radius: s.borderRadius }
+      }
+      return { date: pick('due_at'), text: pick('code') }
+    `)
+    eq('date/time inputs share the text input styling', unified.date, unified.text)
+
+    // Invalid JSON never leaves the browser: the dialog validates the text
+    // before building the UPDATE, so the field error appears without a round
+    // trip. Restore the field afterwards so CANCEL needs no confirm.
+    await setField('payload', '{oops')
+    eq('SAVE is enabled after an edit',
+      await page.evaluate(`return ${saveButton}?.disabled`), false)
+    await page.evaluate(`${saveButton}?.click()`)
+    const jsonCaught = await page.waitFor(
+      `document.querySelector('.rowedit-error')?.textContent?.includes('JSON')`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('invalid JSON is rejected before saving', jsonCaught)
+    ok('the dialog stays open after invalid JSON',
+      await page.evaluate(`return !!document.querySelector('.rowedit-modal')`))
+    await setField('payload', dialog.payloadText)
+
+    // A real server rejection (numeric overflow) keeps the dialog open with
+    // the PostgreSQL message.
+    await setField('qty', '99999999999')
+    await page.evaluate(`${saveButton}?.click()`)
+    const failed = await page.waitFor(
+      `!!document.querySelector('.rowedit-error') && !document.querySelector('.rowedit-error')?.textContent?.includes('JSON')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('a server rejection is shown in the dialog', failed)
+    ok('the dialog stays open after a rejection',
+      await page.evaluate(`return !!document.querySelector('.rowedit-modal')`))
+    await setField('qty', '1.50')
+    await page.evaluate(`[...document.querySelectorAll('.rowedit-actions button')].find((b) => b.textContent.trim() === 'CANCEL')?.click()`)
+    await page.waitFor(`!document.querySelector('.rowedit-modal')`, { timeout: 10000 })
+    ok('CANCEL closes the dialog', true)
+
+    // A successful save patches the grid from the RETURNING row.
+    await page.evaluate(`document.querySelector('.rowedit-open')?.click()`)
+    await page.waitFor(`!!document.querySelector('.rowedit-modal')`, { timeout: 10000 })
+    await setField('label', 'edited-in-browser')
+    await page.evaluate(`${saveButton}?.click()`)
+    await page.waitFor(`!document.querySelector('.rowedit-modal')`, { timeout: 20000 })
+    ok('the dialog closes after a successful save', true)
+    const patched = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === 'edited-in-browser')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('the grid cell shows the saved value', patched)
+
+    // And the value is really in the database.
+    await runQuery("SELECT label FROM items WHERE id = 1")
+    const stored = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === 'edited-in-browser')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('the saved value is stored in the database', stored)
   }
 
   console.log('\n== disconnecting disables running ==')

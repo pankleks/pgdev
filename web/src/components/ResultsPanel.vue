@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { Copy, Download, Play, Square } from 'lucide-vue-next'
+import { Copy, Download, Pencil, Play, Square } from 'lucide-vue-next'
 import { useResults } from '../composables/results'
 import { useConnection } from '../composables/connection'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
 import { copyGrid, copyText, downloadCsv, csvHeader, csvRows, formatCellForDisplay } from '../lib/gridio'
 import ValueDialog, { type CellValueTarget } from './ValueDialog.vue'
+import RowEditDialog, { type RowEditTarget } from './RowEditDialog.vue'
 
 const results = useResults()
 const conn = useConnection()
@@ -26,6 +27,8 @@ function showMessagesView() {
 const ROW_H = 24
 const HEADER_H = 24
 const COL_W = 180
+/** Width of the per-row edit button column (only for editable results). */
+const ACTION_W = 30
 const bodyEl = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const bodyH = ref(300)
@@ -63,7 +66,8 @@ function ensureWidths(key: string, columns: string[]) {
 const innerWidth = computed(() => {
   const g = activeGrid.value
   if (!g) return 0
-  return g.columns.reduce((sum, _c, i) => sum + colWidth(i), 0)
+  const columns = g.columns.reduce((sum, _c, i) => sum + colWidth(i), 0)
+  return columns + (g.editable ? ACTION_W : 0)
 })
 
 function startResize(i: number, e: MouseEvent) {
@@ -155,6 +159,43 @@ function fmt(v: unknown): string {
  * printed, with its own COPY), everything else copies straight to the
  * clipboard like it used to. NULL stays inert — the badge says it all. */
 const cellValue = ref<CellValueTarget | null>(null)
+
+const rowEdit = ref<RowEditTarget | null>(null)
+
+/** A row is editable only when every key cell actually holds a value; a NULL
+ * key could not name a row in the WHERE clause. */
+function rowKeyComplete(r: unknown[]): boolean {
+  const g = activeGrid.value
+  if (!g?.editable) return false
+  for (const pk of g.editable.pk) {
+    const j = g.columns.indexOf(pk)
+    if (j < 0 || r[j] === null || r[j] === undefined) return false
+  }
+  return true
+}
+
+function openRowEdit(r: unknown[]) {
+  const g = activeGrid.value
+  if (!g?.editable || !conn.state.id) return
+  rowEdit.value = {
+    grid: g,
+    row: r,
+    connectionId: conn.state.id,
+    tabKey: tabs.state.activeKey,
+    inTransaction: Boolean(result.value?.transactionOpen),
+  }
+}
+
+/** Patch the stored row (UPDATE … RETURNING *) into the loaded cells. Only
+ * matching names are touched — expressions simply stay as they were. */
+function onRowSaved(row: Record<string, unknown>) {
+  const target = rowEdit.value
+  if (!target) return
+  for (let j = 0; j < target.grid.columns.length; j++) {
+    const name = target.grid.columns[j] ?? ''
+    if (Object.prototype.hasOwnProperty.call(row, name)) target.row[j] = row[name]
+  }
+}
 
 function isJsonColumn(j: number): boolean {
   const type = activeGrid.value?.columnTypes[j]
@@ -367,6 +408,12 @@ async function exportCsv() {
         <div class="grid-inner" :style="{ width: innerWidth + 'px' }">
           <div class="grid-head">
             <div
+              v-if="grid.g.editable"
+              class="grid-cell head actions"
+              :style="{ width: ACTION_W + 'px' }"
+              title="Edit a row in a dialog (needs the full primary key in the result)"
+            />
+            <div
               v-for="(c, i) in grid.g.columns"
               :key="`${i}-${c}`"
               class="grid-cell head"
@@ -383,6 +430,16 @@ async function exportCsv() {
             class="grid-row"
             :style="{ top: HEADER_H + (grid.start + i) * ROW_H + 'px' }"
           >
+            <div v-if="grid.g.editable" class="grid-cell actions" :style="{ width: ACTION_W + 'px' }">
+              <button
+                class="icon rowedit-open"
+                :title="rowKeyComplete(r) ? 'Edit row' : 'Row key is not available'"
+                :disabled="!rowKeyComplete(r)"
+                @click="openRowEdit(r)"
+              >
+                <Pencil :size="12" />
+              </button>
+            </div>
             <div
               v-for="(cell, j) in r"
               :key="j"
@@ -423,5 +480,11 @@ async function exportCsv() {
     </div>
 
     <ValueDialog v-if="cellValue" :target="cellValue" @close="cellValue = null" />
+    <RowEditDialog
+      v-if="rowEdit"
+      :target="rowEdit"
+      @saved="onRowSaved"
+      @close="rowEdit = null"
+    />
   </div>
 </template>

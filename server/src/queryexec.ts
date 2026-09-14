@@ -1,11 +1,15 @@
 import type { PoolClient } from 'pg'
 import { getPool, setRunning, getRunning, deleteRunning, runningKeysForConnection } from './pools.js'
-import { rawJsonTypes } from './pgtypes.js'
+import { rawTextTypes } from './pgtypes.js'
 import { cancelClientQuery } from './pgcancel.js'
 import { guardCheckedOutClient } from './checkout.js'
 import { splitStatements } from './sqlsplit.js'
 import { boundedQuery } from './boundedquery.js'
 import { pgErrorMessage } from './pgerror.js'
+import { plainSelectTable } from './selectshape.js'
+import { fetchRowEditInfo, editableGrid } from './catalog/rowedit.js'
+import { typeLength } from './typelength.js'
+import type { EditableGrid } from './schema-types.js'
 import {
   transactionControl,
   hasOpenTransaction,
@@ -36,11 +40,13 @@ export interface MappedData {
   kind: 'data'
   columns: string[]
   columnTypes: string[]
+  columnTypeLengths: (number | null)[]
   rows: unknown[][]
   rowCount: number
   truncated: boolean
   limited: boolean
   totalRowCount?: number
+  editable?: EditableGrid
 }
 
 export type MappedResult = MappedCommand | MappedData
@@ -60,7 +66,7 @@ export type MoreOutcome =
   | { kind: 'ok'; rows: unknown[][]; rowCount: number; truncated: boolean }
   | { kind: 'error'; error: BatchError }
 
-function normalizeCell(v: unknown): unknown {
+export function normalizeCell(v: unknown): unknown {
   if (Buffer.isBuffer(v)) return `<bytea ${v.length} bytes>`
   if (typeof v === 'object' && v !== null && !(v instanceof Date)) {
     try {
@@ -75,6 +81,7 @@ function normalizeCell(v: unknown): unknown {
 interface FieldInfo {
   name: string
   dataTypeID: number
+  dataTypeModifier: number
 }
 
 interface DataPage {
@@ -95,7 +102,7 @@ async function fetchRows(
     // Cursor names are server-generated (`pgdev_cur_N`), never user input.
     text: `FETCH FORWARD ${count} FROM "${cursor}"`,
     rowMode: 'array',
-    types: rawJsonTypes,
+    types: rawTextTypes,
   })
   return {
     fields: (res.fields ?? []) as FieldInfo[],
@@ -269,6 +276,9 @@ async function executeStatements(
       kind: 'data' as const,
       columns: r.page.fields.map((f) => f.name),
       columnTypes: r.page.fields.map((f) => typeNames.get(String(f.dataTypeID)) ?? ''),
+      columnTypeLengths: r.page.fields.map((f) =>
+        typeLength(typeNames.get(String(f.dataTypeID)) ?? '', f.dataTypeModifier),
+      ),
       rows: r.page.rows,
       rowCount: r.page.rows.length,
       truncated: r.page.hasMore,
@@ -277,6 +287,25 @@ async function executeStatements(
     }
   })
   const last = results[results.length - 1]
+
+  // Row-editing metadata: results are 1:1 with statements, so each data
+  // result can consult its own statement's shape. This is advisory only —
+  // a catalog failure costs the edit buttons, never the query result.
+  for (const [index, statement] of statements.entries()) {
+    const mappedResult = mapped[index]
+    if (mappedResult?.kind !== 'data') continue
+    const source = plainSelectTable(statement)
+    if (!source) continue
+    try {
+      const info = await fetchRowEditInfo(client, source.schema, source.table)
+      if (!info) continue
+      const editable = editableGrid(info, mappedResult.columns, source.columns)
+      if (editable) mappedResult.editable = editable
+    } catch {
+      // Metadata only: leave the result without edit support.
+    }
+  }
+
   return {
     mapped,
     openCursor,

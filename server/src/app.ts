@@ -7,6 +7,7 @@ import { metadataRoutes } from './routes/metadata.js'
 import { ddlRoutes } from './routes/ddl.js'
 import { queryRoutes } from './routes/query.js'
 import { tableEditRoutes } from './routes/tableedit.js'
+import { rowUpdateRoutes } from './routes/rowupdate.js'
 import { appVersion } from './version.js'
 
 // Application construction lives here rather than in index.ts so tests can
@@ -106,6 +107,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   await app.register(ddlRoutes)
   await app.register(queryRoutes)
   await app.register(tableEditRoutes)
+  await app.register(rowUpdateRoutes)
 
   const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))
   if (options.serveStatic !== false && existsSync(webDist)) {

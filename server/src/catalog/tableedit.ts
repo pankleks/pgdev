@@ -7,16 +7,13 @@ import type {
   TableEditRequest,
   TableEditState,
 } from '../schema-types.js'
+import { ident } from '../sqlident.js'
 
 // Table-editor catalog access: one read turns a table into the dialog state,
 // and a submitted dialog state is diffed against a fresh live read into a
 // change-only ALTER script. The browser payload is advisory only — every
 // read-only flag (pk, unique keys, identity/generated/serial) is recomputed
 // here, and the final diff always runs against what PostgreSQL actually has.
-
-function ident(s: string): string {
-  return `"${s.replace(/"/g, '""')}"`
-}
 
 function quoteLiteral(v: string): string {
   return `'${v.replace(/'/g, "''")}'`

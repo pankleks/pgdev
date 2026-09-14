@@ -2,6 +2,8 @@ import type {
   ConnectionConfig,
   FetchMoreResponse,
   QueryResponse,
+  RowUpdateRequest,
+  RowUpdateResponse,
   SchemaData,
   TableEditRequest,
   TableEditResponse,
@@ -91,5 +93,13 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     }).then((r) => unwrap<TableEditResponse>(r))
+  },
+
+  updateRow(id: string, request: RowUpdateRequest): Promise<RowUpdateResponse> {
+    return fetch(`/api/connections/${id}/row-update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    }).then((r) => unwrap<RowUpdateResponse>(r))
   },
 }
