@@ -57,9 +57,13 @@ export interface TableInfo {
 }
 
 export interface TableEditColumnInput {
-  /** Diff identity: the original catalog column name, or `new:<n>` for rows the
-   * user added in the editor. The emitted `name` may differ (rename). */
+  /** Row identity for diffing: the catalog attnum as a string for existing
+   * columns, or an editor-generated token for rows the user added. Never a
+   * column name — a table may contain a column literally named `new:1`. */
   id: string
+  /** True only for rows the user just added in the editor. Existing rows omit
+   * it; added rows must not reuse a live column's identity. */
+  added?: boolean
   name: string
   type: string
   nullable: boolean

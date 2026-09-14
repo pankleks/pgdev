@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { diffTableEdit, isNewColumnId, stateFingerprint, fkLabels, ukLabels } =
+const { diffTableEdit, stateFingerprint, fkLabels, ukLabels } =
   await load('server/catalog/tableedit.ts')
 
 // The diff decides which ALTER statements the table editor emits, so every
@@ -11,13 +11,13 @@ const { diffTableEdit, isNewColumnId, stateFingerprint, fkLabels, ukLabels } =
 // rejected edit the server should have accepted.
 
 const col = (name, extra = {}) => ({
+  id: name,
   name,
   type: 'integer',
   nullable: true,
   defaultValue: null,
   description: null,
   pk: false,
-  unique: false,
   locked: false,
   lockKind: undefined,
   ...extra,
@@ -34,6 +34,7 @@ const live = (columns, extra = {}) => ({
 
 const edit = (name, extra = {}) => ({
   id: extra.id ?? name,
+  added: extra.added ?? false,
   name,
   type: 'integer',
   nullable: true,
@@ -51,12 +52,28 @@ function errKind(outcome) {
   return outcome.error.kind
 }
 
-test('isNewColumnId accepts only the new:<n> shape', () => {
-  assert.equal(isNewColumnId('new:1'), true)
-  assert.equal(isNewColumnId('new:42'), true)
-  assert.equal(isNewColumnId('a'), false)
-  assert.equal(isNewColumnId('new:x'), false)
-  assert.equal(isNewColumnId('new:'), false)
+test('an existing column literally named new:1 is edited, never re-added', () => {
+  // The live column's identity is its attnum; its *name* is 'new:1'.
+  const l = live([col('new:1', { id: '1', type: 'text' })])
+  // An unchanged echo must produce no statements — a name-pattern check would
+  // have emitted a bogus ADD COLUMN here.
+  assert.deepEqual(
+    runOut(l, { description: null, columns: [edit('new:1', { id: '1', type: 'text' })] }),
+    { kind: 'ok', statements: [] },
+  )
+  // And renaming it is a rename, not an add.
+  const out = runOut(l, { description: null, columns: [edit('renamed', { id: '1', type: 'text' })] })
+  assert.deepEqual(out.statements, ['ALTER TABLE "public"."t"\n  RENAME COLUMN "new:1" TO "renamed"'])
+})
+
+test('an added row that reuses a live column identity is rejected', () => {
+  const l = live([col('a'), col('b')])
+  // 'b' echoes the live b; the added row claims live a's identity.
+  const out = runOut(l, {
+    description: null,
+    columns: [edit('b'), edit('c', { id: 'a', added: true })],
+  })
+  assert.equal(errKind(out), 'added-exists')
 })
 
 test('stateFingerprint is stable and reacts to any live change', () => {
@@ -127,6 +144,55 @@ test('default set, clear and whitespace-only differences', () => {
   ])
 })
 
+test('whitespace inside a string literal is a real edit and is emitted verbatim', () => {
+  const l = live([col('a', { defaultValue: "'North  America'" })])
+  // Identical literal: not an edit, whatever the spacing around it.
+  assert.deepEqual(
+    runOut(l, { description: null, columns: [edit('a', { defaultValue: "'North  America'" })] }),
+    { kind: 'ok', statements: [] },
+  )
+  const out = runOut(l, { description: null, columns: [edit('a', { defaultValue: "'North America'" })] })
+  assert.deepEqual(out.statements, [
+    `ALTER TABLE "public"."t"\n  ALTER COLUMN "a" SET DEFAULT 'North America'`,
+  ])
+})
+
+test('emitted defaults and types keep the exact text the user typed', () => {
+  const l = live([col('a', { defaultValue: 'now()', type: 'integer' })])
+  const out = runOut(l, {
+    description: null,
+    columns: [edit('a', { defaultValue: 'now(  )', type: 'character varying( 50 )' })],
+  })
+  assert.deepEqual(out.statements, [
+    'ALTER TABLE "public"."t"\n  ALTER COLUMN "a" TYPE character varying( 50 )',
+    'ALTER TABLE "public"."t"\n  ALTER COLUMN "a" SET DEFAULT now(  )',
+  ])
+})
+
+test('dollar-quoted bodies and quoted identifiers compare byte-for-byte', () => {
+  const l = live([col('a', { defaultValue: '$fn$SELECT  1;$fn$' })])
+  assert.deepEqual(
+    runOut(l, { description: null, columns: [edit('a', { defaultValue: '$fn$SELECT  1;$fn$' })] }),
+    { kind: 'ok', statements: [] },
+  )
+  const out = runOut(l, { description: null, columns: [edit('a', { defaultValue: '$fn$SELECT 1;$fn$' })] })
+  assert.deepEqual(out.statements, [
+    'ALTER TABLE "public"."t"\n  ALTER COLUMN "a" SET DEFAULT $fn$SELECT 1;$fn$',
+  ])
+})
+
+test('a line comment keeps its terminating newline, so moving code out of it is an edit', () => {
+  const l = live([col('a', { defaultValue: 'now() -- rest\n + 1' })])
+  assert.deepEqual(
+    runOut(l, { description: null, columns: [edit('a', { defaultValue: 'now() -- rest\n + 1' })] }),
+    { kind: 'ok', statements: [] },
+  )
+  // `+ 1` is now inside the comment — same text folded, different expression.
+  const out = runOut(l, { description: null, columns: [edit('a', { defaultValue: 'now() -- rest + 1' })] })
+  assert.equal(out.kind, 'ok')
+  assert.equal(out.statements.length, 1, JSON.stringify(out))
+})
+
 test('rename is emitted before later clauses use the new name', () => {
   const l = live([col('a')])
   const out = runOut(l, {
@@ -144,7 +210,7 @@ test('column and table comments are emitted only when they change', () => {
   const l = live([col('a', { description: 'old' })], { description: 'table old' })
   const out = runOut(l, {
     description: 'table new',
-    columns: [edit('a', { description: 'new' }), edit('z', { id: 'new:1', name: 'b', type: 'text', description: 'added note' })],
+    columns: [edit('a', { description: 'new' }), edit('z', { id: 'new:1', added: true, name: 'b', type: 'text', description: 'added note' })],
   })
   assert.deepEqual(out.statements, [
     'ALTER TABLE "public"."t"\n  ADD COLUMN "b" text',
@@ -179,7 +245,7 @@ test('added columns carry default before not null and validation', () => {
   const l = live([])
   const out = runOut(l, {
     description: null,
-    columns: [edit('flag', { id: 'new:1', type: 'boolean', nullable: false, defaultValue: 'false' })],
+    columns: [edit('flag', { id: 'new:1', added: true, type: 'boolean', nullable: false, defaultValue: 'false' })],
   })
   assert.deepEqual(out.statements, ['ALTER TABLE "public"."t"\n  ADD COLUMN "flag" boolean DEFAULT false NOT NULL'])
 })
@@ -279,7 +345,7 @@ test('duplicate new-column names are rejected', () => {
   const l = live([])
   const out = runOut(l, {
     description: null,
-    columns: [edit('x', { id: 'new:1', type: 'text' }), edit('x', { id: 'new:2', type: 'text' })],
+    columns: [edit('x', { id: 'new:1', added: true, type: 'text' }), edit('x', { id: 'new:2', added: true, type: 'text' })],
   })
   assert.equal(errKind(out), 'duplicate')
 })
@@ -288,7 +354,7 @@ test('empty names and types are rejected', () => {
   const l = live([col('a')])
   assert.equal(errKind(runOut(l, { description: null, columns: [edit('  ')] })), 'empty-name')
   assert.equal(
-    errKind(runOut(live([]), { description: null, columns: [edit('x', { id: 'new:1', type: '   ' })] })),
+    errKind(runOut(live([]), { description: null, columns: [edit('x', { id: 'new:1', added: true, type: '   ' })] })),
     'empty-type',
   )
   assert.equal(

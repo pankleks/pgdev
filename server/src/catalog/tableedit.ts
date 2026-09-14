@@ -23,6 +23,8 @@ function quoteLiteral(v: string): string {
 }
 
 export interface LiveColumn {
+  /** Catalog attnum as a string — the stable row identity. */
+  id: string
   name: string
   type: string
   nullable: boolean
@@ -46,6 +48,7 @@ export type DiffError =
   | { kind: 'pk-drop'; column: string }
   | { kind: 'pk-nullable'; column: string }
   | { kind: 'unknown-column'; id: string }
+  | { kind: 'added-exists'; column: string }
   | { kind: 'duplicate'; column: string }
   | { kind: 'empty-name' }
   | { kind: 'empty-type'; column: string }
@@ -54,11 +57,129 @@ export type DiffOutcome =
   | { kind: 'ok'; statements: string[] }
   | { kind: 'error'; error: DiffError }
 
-/** Collapse runs of whitespace so a re-typed default that only differs in
- * spacing is not emitted as a pointless SET DEFAULT. */
+/** Emission form for expressions (defaults, types): the user's text with only
+ * outer whitespace trimmed. Internal spacing is preserved byte-for-byte so
+ * generated DDL never rewrites a literal. */
+function trimExpr(expr: string | null): string {
+  if (expr === null) return ''
+  return expr.trim()
+}
+
+/**
+ * Comparison form for expressions: whitespace is collapsed and trimmed only
+ * OUTSIDE literals, identifiers, dollar-quoted bodies, and comments — those
+ * are preserved byte-for-byte, so `'North  America'` and `'North America'`
+ * are different expressions and a retyped `now( )` is not a pointless edit.
+ * A line comment keeps its terminating newline, since folding it away would
+ * move the following text into the comment. Emission always uses `trimExpr`;
+ * this form exists only for equality checks.
+ *
+ * Backslash escapes are recognised for `E'…'`/`U&'…'` like the statement
+ * splitter; a session-wide `standard_conforming_strings=off` is not tracked
+ * here, and mis-scanning it can only cost a redundant ALTER, never a missed
+ * literal difference.
+ */
 function normalizeExpr(expr: string | null): string {
   if (expr === null) return ''
-  return expr.trim().replace(/\s+/g, ' ')
+  let out = ''
+  let i = 0
+  const n = expr.length
+  while (i < n) {
+    const ch = expr[i]
+    // Line comment — kept verbatim including its terminating newline.
+    if (ch === '-' && expr[i + 1] === '-') {
+      const end = expr.indexOf('\n', i)
+      const stop = end === -1 ? n : end + 1
+      out += expr.slice(i, stop)
+      i = stop
+      continue
+    }
+    // Block comment (nested), verbatim.
+    if (ch === '/' && expr[i + 1] === '*') {
+      let depth = 1
+      let j = i + 2
+      while (j < n && depth > 0) {
+        if (expr[j] === '/' && expr[j + 1] === '*') {
+          depth++
+          j += 2
+        } else if (expr[j] === '*' && expr[j + 1] === '/') {
+          depth--
+          j += 2
+        } else {
+          j++
+        }
+      }
+      out += expr.slice(i, j)
+      i = j
+      continue
+    }
+    // Single-quoted string ('' escape; backslash only for E''/U&'').
+    if (ch === "'") {
+      const p1 = expr[i - 1] ?? ''
+      const p2 = expr[i - 2] ?? ''
+      const eString = /e/i.test(p1) && !/^[A-Za-z0-9_$]/.test(p2)
+      const uString = p1 === '&' && /u/i.test(p2) && !/^[A-Za-z0-9_$]/.test(expr[i - 3] ?? '')
+      const escapeBackslashes = eString || uString
+      let j = i + 1
+      while (j < n) {
+        if (expr[j] === "'") {
+          if (expr[j + 1] === "'") j += 2
+          else {
+            j++
+            break
+          }
+        } else if (escapeBackslashes && expr[j] === '\\' && j + 1 < n) {
+          j += 2
+        } else {
+          j++
+        }
+      }
+      out += expr.slice(i, j)
+      i = j
+      continue
+    }
+    // Double-quoted identifier, verbatim.
+    if (ch === '"') {
+      let j = i + 1
+      while (j < n) {
+        if (expr[j] === '"') {
+          if (expr[j + 1] === '"') j += 2
+          else {
+            j++
+            break
+          }
+        } else {
+          j++
+        }
+      }
+      out += expr.slice(i, j)
+      i = j
+      continue
+    }
+    // Dollar-quoted body, verbatim.
+    if (ch === '$') {
+      const previous = expr[i - 1]
+      const tag =
+        (!previous || !/[A-Za-z0-9_$]/.test(previous)) &&
+        /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(expr.slice(i))
+      if (tag) {
+        const close = expr.indexOf(tag[0], i + tag[0].length)
+        const stop = close === -1 ? n : close + tag[0].length
+        out += expr.slice(i, stop)
+        i = stop
+        continue
+      }
+    }
+    // Whitespace outside any protected region collapses to a single space.
+    if (/\s/.test(ch ?? '')) {
+      while (i < n && /\s/.test(expr[i] ?? '')) i++
+      out += ' '
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out.trim()
 }
 
 /** The editor treats an empty description as "no comment". */
@@ -67,10 +188,11 @@ function normalizeText(value: string | null): string | null {
   return value
 }
 
-const NEW_ID = /^new:\d+$/
-
-export function isNewColumnId(id: string): boolean {
-  return NEW_ID.test(id)
+/** True only for rows the editor marked as newly added. The id itself is
+ * opaque — a table may contain a column literally named `new:1`, so the name
+ * namespace must never be used to infer addedness. */
+function isAddedColumn(col: TableEditColumnInput): boolean {
+  return col.added === true
 }
 
 /**
@@ -108,6 +230,10 @@ export function stateFingerprint(state: Omit<TableEditState, 'fingerprint'>): st
  * ALTER statements, in dependency-safe order: drops, renames, per-column
  * alters, adds, then comments. Pure — the routes call it with a freshly
  * fetched `LiveTable`, and the unit suite drives it directly.
+ *
+ * Existing rows are matched by catalog attnum (`id`); addedness comes from the
+ * explicit `added` flag, never from an id pattern, so a real column named
+ * `new:1` can never be misread as a row the user just typed.
  */
 export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutcome {
   const table = `${ident(live.schema)}.${ident(live.name)}`
@@ -119,13 +245,20 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
     ids.add(col.id)
   }
   const byId = new Map(req.columns.map((col) => [col.id, col]))
+  const liveById = new Map(live.columns.map((col) => [col.id, col]))
 
   const finalNames = new Set<string>()
-  for (const [id, col] of byId) {
+  for (const col of req.columns) {
     const name = col.name.trim()
     if (!name) return { kind: 'error', error: { kind: 'empty-name' } }
-    if (!isNewColumnId(id) && !live.columns.some((c) => c.name === id)) {
-      return { kind: 'error', error: { kind: 'unknown-column', id } }
+    if (isAddedColumn(col)) {
+      // An added row must not reuse a live column's identity: the drop loop
+      // would keep the live column and the add loop would collide with it.
+      if (liveById.has(col.id)) {
+        return { kind: 'error', error: { kind: 'added-exists', column: name } }
+      }
+    } else if (!liveById.has(col.id)) {
+      return { kind: 'error', error: { kind: 'unknown-column', id: col.id } }
     }
     if (finalNames.has(name)) return { kind: 'error', error: { kind: 'duplicate', column: name } }
     finalNames.add(name)
@@ -133,14 +266,14 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
 
   // --- drops (before renames, so a rename may reuse a dropped name) ---------
   for (const col of live.columns) {
-    if (byId.has(col.name)) continue
+    if (byId.has(col.id)) continue
     if (col.pk) return { kind: 'error', error: { kind: 'pk-drop', column: col.name } }
     statements.push(`ALTER TABLE ${table}\n  DROP COLUMN ${ident(col.name)}`)
   }
 
   // --- renames, then per-column alters (renamed names are final here) ------
   for (const col of live.columns) {
-    const edit = byId.get(col.name)
+    const edit = byId.get(col.id)
     if (!edit) continue
     if (edit.name.trim() !== col.name) {
       statements.push(`ALTER TABLE ${table}\n  RENAME COLUMN ${ident(col.name)} TO ${ident(edit.name.trim())}`)
@@ -157,8 +290,9 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
     if (col.pk && edit.nullable) {
       return { kind: 'error', error: { kind: 'pk-nullable', column: col.name } }
     }
-    const type = normalizeExpr(edit.type)
-    if (!col.locked && type !== normalizeExpr(col.type)) {
+    const typeNorm = normalizeExpr(edit.type)
+    if (!col.locked && typeNorm !== normalizeExpr(col.type)) {
+      const type = trimExpr(edit.type)
       if (!type) return { kind: 'error', error: { kind: 'empty-type', column: col.name } }
       statements.push(`ALTER TABLE ${table}\n  ALTER COLUMN ${ident(edit.name.trim())} TYPE ${type}`)
     }
@@ -167,8 +301,8 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
     } else if (edit.nullable && !col.nullable) {
       statements.push(`ALTER TABLE ${table}\n  ALTER COLUMN ${ident(edit.name.trim())} DROP NOT NULL`)
     }
-    const reqDefault = normalizeExpr(edit.defaultValue)
-    if (reqDefault !== normalizeExpr(col.defaultValue)) {
+    if (normalizeExpr(edit.defaultValue) !== normalizeExpr(col.defaultValue)) {
+      const reqDefault = trimExpr(edit.defaultValue)
       if (reqDefault === '') {
         statements.push(`ALTER TABLE ${table}\n  ALTER COLUMN ${ident(edit.name.trim())} DROP DEFAULT`)
       } else {
@@ -179,12 +313,11 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
 
   // --- added columns, in dialog order --------------------------------------
   for (const col of req.columns) {
-    if (!isNewColumnId(col.id)) continue
+    if (!isAddedColumn(col)) continue
     const name = col.name.trim()
-    const type = normalizeExpr(col.type)
-    if (!type) return { kind: 'error', error: { kind: 'empty-type', column: name } }
-    const parts = [`ADD COLUMN ${ident(name)} ${type}`]
-    const reqDefault = normalizeExpr(col.defaultValue)
+    if (!normalizeExpr(col.type)) return { kind: 'error', error: { kind: 'empty-type', column: name } }
+    const parts = [`ADD COLUMN ${ident(name)} ${trimExpr(col.type)}`]
+    const reqDefault = trimExpr(col.defaultValue)
     if (reqDefault !== '') parts.push(`DEFAULT ${reqDefault}`)
     if (!col.nullable) parts.push('NOT NULL')
     statements.push(`ALTER TABLE ${table}\n  ${parts.join(' ')}`)
@@ -192,7 +325,7 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
 
   // --- comments last (a dropped column's comment must not be emitted) ------
   for (const col of live.columns) {
-    const edit = byId.get(col.name)
+    const edit = byId.get(col.id)
     if (!edit) continue
     const reqDesc = normalizeText(edit.description)
     if (reqDesc !== normalizeText(col.description)) {
@@ -202,7 +335,7 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
     }
   }
   for (const col of req.columns) {
-    if (!isNewColumnId(col.id)) continue
+    if (!isAddedColumn(col)) continue
     const reqDesc = normalizeText(col.description)
     if (reqDesc !== null) {
       statements.push(
@@ -370,7 +503,9 @@ export async function fetchTableEditState(pool: Pool, oid: string): Promise<Tabl
       !identity && row.sequence_name != null && SERIAL_TYPES.has(String(row.type))
     const locked = identity || generated || serial
     return {
-      id: String(row.name),
+      // The attnum is the row identity; the name is just an editable property
+      // (a table may contain a column literally named `new:1`).
+      id: String(row.attnum),
       name: String(row.name),
       type: String(row.type),
       nullable: row.nullable === true,
@@ -417,6 +552,7 @@ function validateRequest(live: LiveTable, request: TableEditRequest): void {
     if (typeof col.id !== 'string' || !col.id) validationError('Column identity is missing')
     if (seenIds.has(col.id)) validationError(`Duplicate column "${col.id}"`)
     seenIds.add(col.id)
+    if (col.added !== undefined && typeof col.added !== 'boolean') validationError('Invalid column row')
     if (typeof col.name !== 'string' || typeof col.type !== 'string' || typeof col.nullable !== 'boolean') {
       validationError('Invalid column row')
     }
@@ -431,6 +567,7 @@ function liveView(state: TableEditState): LiveTable {
     name: state.name,
     description: state.description,
     columns: state.columns.map((c) => ({
+      id: c.id,
       name: c.name,
       type: c.type,
       nullable: c.nullable,
@@ -469,8 +606,10 @@ export async function tableEditDdl(
           : e.kind === 'pk-nullable'
             ? `Column "${e.column}" is part of the primary key and must remain NOT NULL`
             : e.kind === 'unknown-column'
-              ? `Column "${e.id}" no longer matches the table — please reload`
-              : e.kind === 'duplicate'
+              ? 'A column no longer matches the table — please reload'
+              : e.kind === 'added-exists'
+                ? `Column "${e.column}" already exists — edit its existing row instead`
+                : e.kind === 'duplicate'
                 ? `Column name "${e.column}" is used more than once`
                 : e.kind === 'empty-name'
                   ? 'Every column needs a name'

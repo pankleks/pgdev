@@ -39,7 +39,7 @@ const from = (c, over = {}) => ({
   defaultValue: c.defaultValue, description: c.description, ...over,
 })
 const added = (id, name, over = {}) => ({
-  id, name, type: 'text', nullable: true, defaultValue: null, description: null, ...over,
+  id, added: true, name, type: 'text', nullable: true, defaultValue: null, description: null, ...over,
 })
 const request = (state, columns, description = state.description) => ({
   fingerprint: state.fingerprint, description, columns,
@@ -126,6 +126,71 @@ console.log('\n== no-op submits ==')
   const same = request(state, state.columns.map((c) => from(c)))
   const out = await tableedit.tableEditDdl(pool, await oidOfRel('te_all'), same)
   eq('an unchanged dialog returns null', out, null)
+}
+
+console.log('\n== default expressions with internal whitespace ==')
+{
+  await pool.query(`CREATE TABLE te_space (
+    label text DEFAULT 'North  America',
+    stamp timestamptz DEFAULT now(  )
+  )`)
+  const oid = await oidOfRel('te_space')
+  const state = await tableedit.fetchTableEditState(pool, oid)
+  const by = Object.fromEntries(state.columns.map((c) => [c.name, c]))
+
+  // Echoing the catalog text must not count as an edit — the double space
+  // inside the literal is data, not formatting.
+  const same = await tableedit.tableEditDdl(pool, oid, request(state, [from(by.label), from(by.stamp)]))
+  eq('a default with internal double spaces is not a phantom edit', same, null)
+
+  // Changing the literal is a real edit, emitted verbatim.
+  const changed = await tableedit.tableEditDdl(pool, oid, request(state, [
+    from(by.label, { defaultValue: "'North America'" }), from(by.stamp),
+  ]))
+  ok('the literal change is emitted verbatim',
+    typeof changed === 'string' && changed.includes(`SET DEFAULT 'North America'`), changed)
+  await pool.query(changed)
+  const after = await cols('te_space')
+  eq('the applied default keeps exactly one space', after.find((c) => c.name === 'label').default_expr, `'North America'::text`)
+
+  // And re-reading the edited table is stable again.
+  const state2 = await tableedit.fetchTableEditState(pool, oid)
+  const stable = await tableedit.tableEditDdl(pool, oid, request(state2, state2.columns.map((c) => from(c))))
+  eq('the edited default is stable on re-read', stable, null)
+}
+
+console.log('\n== column identity is the catalog attnum, not the name ==')
+{
+  // A real column literally named `new:1` must not be mistaken for a row the
+  // user just added — the editor's row tokens share no namespace with attnums.
+  await pool.query(`CREATE TABLE te_ident ("new:1" integer, plain text)`)
+  const oid = await oidOfRel('te_ident')
+  const state = await tableedit.fetchTableEditState(pool, oid)
+  ok('state identities are catalog attnums', state.columns.every((c) => /^\d+$/.test(c.id)),
+    JSON.stringify(state.columns.map((c) => c.id)))
+
+  const noop = await tableedit.tableEditDdl(pool, oid, request(state, state.columns.map((c) => from(c))))
+  eq('a column named new:1 is not re-added', noop, null)
+
+  const by = Object.fromEntries(state.columns.map((c) => [c.name, c]))
+  const renamed = await tableedit.tableEditDdl(pool, oid, request(state, [
+    from(by['new:1'], { name: 'renamed' }), from(by.plain),
+  ]))
+  ok('the awkward name renames through its identity',
+    typeof renamed === 'string' && renamed.includes(`RENAME COLUMN "new:1" TO "renamed"`), renamed)
+  await pool.query(renamed)
+
+  // An added row claiming a live attnum is refused instead of generating an
+  // ADD COLUMN that would collide with the existing column. The claimed live
+  // row is omitted from the request so the ids themselves are unique.
+  const state3 = await tableedit.fetchTableEditState(pool, oid)
+  const [first, ...rest] = state3.columns
+  const bad = await outcome(() => tableedit.tableEditDdl(pool, oid, request(state3, [
+    ...rest.map((c) => from(c)),
+    added(first.id, 'impostor'),
+  ])))
+  ok('an added row cannot reuse a live identity', !bad.ok && /already exists/i.test(bad.error.message),
+    bad.ok ? 'no error' : bad.error.message)
 }
 
 console.log('\n== guards ==')

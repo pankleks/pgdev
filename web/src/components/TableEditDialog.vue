@@ -22,6 +22,8 @@ export interface TableEditTarget {
 interface EditRow {
   id: string
   name: string
+  /** Catalog name at load time — only a placeholder hint for existing rows. */
+  catalogName: string
   type: string
   /** Drop-down selection: the base type, parsed from `type` on load. */
   base: string
@@ -72,6 +74,7 @@ function rowOf(state: TableEditColumnState): EditRow {
   return {
     id: state.id,
     name: state.name,
+    catalogName: state.name,
     type: state.type,
     base: parsed.base,
     len: parsed.len,
@@ -93,6 +96,7 @@ function addRow() {
   rows.push({
     id: `new:${++newCounter}`,
     name: '',
+    catalogName: '',
     type: '',
     base: '',
     len: '',
@@ -266,6 +270,7 @@ async function submit() {
         .filter((row) => !row.deleted)
         .map((row) => ({
           id: row.id,
+          added: row.added,
           name: row.name.trim(),
           type: row.type.trim(),
           nullable: row.nullable,
@@ -337,7 +342,7 @@ function onBackdrop() {
             class="tableedit-row"
             :class="{ deleted: row.deleted, meta: row.name.startsWith('_') }"
           >
-            <input v-model="row.name" :readonly="row.deleted" :placeholder="row.added ? 'new column' : row.id" spellcheck="false" />
+            <input v-model="row.name" :readonly="row.deleted" :placeholder="row.added ? 'new column' : row.catalogName" spellcheck="false" />
             <select v-model="row.base" :disabled="row.locked || row.deleted" :title="row.locked ? lockLabel[row.lockKind ?? ''] : 'Column type'" @change="rebuildType(row)">
               <option v-if="!row.base" value="" disabled>— select type —</option>
               <option v-for="t in typeChoices(row)" :key="t" :value="t">{{ t }}</option>

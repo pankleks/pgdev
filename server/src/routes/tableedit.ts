@@ -38,6 +38,7 @@ function parseEditBody(body: unknown): TableEditRequest {
     if (!entry || typeof entry !== 'object') throw invalid('Invalid column row')
     const c = entry as Partial<TableEditColumnInput>
     if (typeof c.id !== 'string' || !c.id || c.id.length > 255) throw invalid('Column identity is missing')
+    if (c.added !== undefined && typeof c.added !== 'boolean') throw invalid('Invalid column row')
     if (typeof c.name !== 'string' || c.name.length > 255) throw invalid('Column name is missing')
     if (typeof c.type !== 'string' || c.type.length > 2000) throw invalid('Column type is missing')
     if (typeof c.nullable !== 'boolean') throw invalid('Column nullability is missing')
@@ -47,6 +48,7 @@ function parseEditBody(body: unknown): TableEditRequest {
     if (c.description !== null && c.description.length > 5000) throw invalid('Column description is too long')
     columns.push({
       id: c.id,
+      added: c.added,
       name: c.name,
       type: c.type,
       nullable: c.nullable,
