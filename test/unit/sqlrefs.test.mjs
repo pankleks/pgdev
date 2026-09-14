@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { unquoteIdent, normIdent, quoteIdent, splitChain, matchDotChain, parseAliases, findRelation, resolveQualifier } =
+const { unquoteIdent, normIdent, quoteIdent, splitChain, matchDotChain, parseAliases, findRelation, resolveQualifier, findSchema } =
   await load('web/monaco/sqlrefs.ts')
 
 test('unquoteIdent strips surrounding quotes and unescapes doubled ones', () => {
@@ -106,4 +106,15 @@ test('quoted identifiers with escaped quotes resolve without splitting the name'
   assert.equal(resolveQualifier(quoted, splitChain(chain), new Map()), quoted[0])
   const aliases = parseAliases(`SELECT * FROM ${chain} AS "select" WHERE "select".`)
   assert.equal(resolveQualifier(quoted, ['"select"'], aliases), quoted[0])
+})
+
+test('findSchema folds unquoted parts and matches quoted ones exactly', () => {
+  const schemas = ['public', 'app', 'My Schema']
+  assert.equal(findSchema(schemas, 'app'), 'app')
+  assert.equal(findSchema(schemas, 'APP'), 'app', 'unquoted identifiers fold to lower case')
+  assert.equal(findSchema(schemas, '"app"'), 'app')
+  assert.equal(findSchema(schemas, '"My Schema"'), 'My Schema')
+  assert.equal(findSchema(schemas, 'My Schema'), null, 'unquoted spaces are not a schema name')
+  assert.equal(findSchema(schemas, 'nope'), null)
+  assert.equal(findSchema(schemas, '"App"'), null, 'quoted names are case-sensitive')
 })

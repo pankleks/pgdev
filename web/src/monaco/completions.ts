@@ -1,9 +1,10 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
-import type { SchemaData, TableInfo, ViewInfo } from '../types'
+import type { FunctionInfo, SchemaData, TableInfo, TypeInfo, ViewInfo } from '../types'
 import {
   matchDotChain,
   findRelation,
+  findSchema,
   parseAliases,
   quoteIdent,
   splitChain,
@@ -11,13 +12,21 @@ import {
 } from './sqlrefs'
 
 const KEYWORDS =
-  'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK'
+  'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK CALL FUNCTION PROCEDURE RETURNS LANGUAGE REPLACE'
 
 // Deduplicated (the old list contained AND twice).
 const KEYWORD_LIST = [...new Set(KEYWORDS.split(' '))]
 
 function qualified(schema: string, name: string): string {
   return schema === 'public' ? quoteIdent(name) : `${quoteIdent(schema)}.${quoteIdent(name)}`
+}
+
+/** Signature line for a function-like object; procedures have no result. */
+function functionDetail(f: FunctionInfo): string {
+  if (f.kind === 'procedure') return `(${f.args}) · procedure`
+  const returns = f.returns ? ` → ${f.returns}` : ''
+  const suffix = f.kind === 'aggregate' ? ' · aggregate' : f.kind === 'window' ? ' · window' : ''
+  return `(${f.args})${returns}${suffix}`
 }
 
 // The provider runs on every keystroke; the relations array only changes when
@@ -71,6 +80,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // share a name.
       const TIER: Partial<Record<Monaco.languages.CompletionItemKind, number>> = {
         [K.Function]: 1,
+        [K.Method]: 1,
         [K.Keyword]: 1,
         [K.Field]: 2,
         [K.Class]: 3,
@@ -101,6 +111,49 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       })
       const aliases = parseAliases(sqlBefore)
 
+      // One emitter per catalog object kind, shared between the generic list
+      // and the schema-qualifier list. `inSchema` suppresses re-qualification
+      // when the user already typed `schema.`.
+      const itemForTable = (t: TableInfo, inSchema: boolean): void => {
+        emit({
+          label: t.name,
+          kind: K.Class,
+          detail: `table · ${t.schema}`,
+          insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
+          range,
+        })
+      }
+      const itemForView = (v: ViewInfo, inSchema: boolean): void => {
+        emit({
+          label: v.name,
+          kind: K.Class,
+          detail: `${v.materialized ? 'materialized ' : ''}view · ${v.schema}`,
+          insertText: inSchema ? quoteIdent(v.name) : qualified(v.schema, v.name),
+          range,
+        })
+      }
+      const itemForType = (t: TypeInfo, inSchema: boolean): void => {
+        emit({
+          label: t.name,
+          kind: K.Class,
+          detail: `type (${t.kind}) · ${t.schema}`,
+          insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
+          range,
+        })
+      }
+      const itemForFunction = (f: FunctionInfo, inSchema: boolean): void => {
+        const name = inSchema ? quoteIdent(f.name) : qualified(f.schema, f.name)
+        emit({
+          label: f.name,
+          kind: f.kind === 'procedure' ? K.Method : K.Function,
+          detail: functionDetail(f),
+          insertText: `${name}($0)`,
+          insertTextRules:
+            monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+        })
+      }
+
       const chain = matchDotChain(lineBefore)
       if (chain) {
         const parts = splitChain(chain)
@@ -115,6 +168,27 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
               insertText: quoteIdent(c.name),
               range,
             })
+          }
+          return { suggestions }
+        }
+
+        // Not a relation: a single trailing part may name a schema (`app.`).
+        // A schema has no columns, so offer everything it holds instead.
+        if (parts.length === 1 && data) {
+          const schemas = [
+            ...new Set([
+              ...data.tables.map((o) => o.schema),
+              ...data.views.map((o) => o.schema),
+              ...data.types.map((o) => o.schema),
+              ...data.functions.map((o) => o.schema),
+            ]),
+          ]
+          const schema = findSchema(schemas, parts[0])
+          if (schema) {
+            for (const t of data.tables) if (t.schema === schema) itemForTable(t, true)
+            for (const v of data.views) if (v.schema === schema) itemForView(v, true)
+            for (const t of data.types) if (t.schema === schema) itemForType(t, true)
+            for (const f of data.functions) if (f.schema === schema) itemForFunction(f, true)
           }
         }
         return { suggestions }
@@ -156,44 +230,10 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         }
       }
 
-      for (const t of data?.tables ?? []) {
-        emit({
-          label: t.name,
-          kind: K.Class,
-          detail: `table · ${t.schema}`,
-          insertText: qualified(t.schema, t.name),
-          range,
-        })
-      }
-      for (const v of data?.views ?? []) {
-        emit({
-          label: v.name,
-          kind: K.Class,
-          detail: `${v.materialized ? 'materialized ' : ''}view · ${v.schema}`,
-          insertText: qualified(v.schema, v.name),
-          range,
-        })
-      }
-      for (const t of data?.types ?? []) {
-        emit({
-          label: t.name,
-          kind: K.Class,
-          detail: `type (${t.kind}) · ${t.schema}`,
-          insertText: qualified(t.schema, t.name),
-          range,
-        })
-      }
-      for (const f of data?.functions ?? []) {
-        emit({
-          label: f.name,
-          kind: K.Function,
-          detail: `(${f.args}) → ${f.returns}`,
-          insertText: `${quoteIdent(f.name)}($0)`,
-          insertTextRules:
-            monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-        })
-      }
+      for (const t of data?.tables ?? []) itemForTable(t, false)
+      for (const v of data?.views ?? []) itemForView(v, false)
+      for (const t of data?.types ?? []) itemForType(t, false)
+      for (const f of data?.functions ?? []) itemForFunction(f, false)
       return { suggestions }
     },
   }

@@ -58,6 +58,15 @@ export function quoteIdent(name: string): string {
 }
 
 /**
+ * Resolve a dotted-chain part to a loaded schema spelling, or null. Unquoted
+ * parts fold to lower case per PostgreSQL; quoted parts match exactly.
+ */
+export function findSchema(schemas: readonly string[], part: string): string | null {
+  const name = normIdent(part)
+  return schemas.includes(name) ? name : null
+}
+
+/**
  * Split a dotted chain (`sch."My Table".col`) into its parts,
  * keeping quoted segments intact.
  */

@@ -39,6 +39,11 @@ await pool.query(`
   CREATE VIEW v_items AS SELECT id, label FROM items;
   CREATE MATERIALIZED VIEW mv_items AS SELECT count(*) AS n FROM items;
   CREATE FUNCTION item_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM items $$;
+  CREATE PROCEDURE proc_noop() LANGUAGE sql AS $$ SELECT 1 $$;
+  CREATE SCHEMA app;
+  CREATE TABLE app.thing (id integer PRIMARY KEY);
+  CREATE VIEW app.v_thing AS SELECT id FROM app.thing;
+  CREATE FUNCTION app.thing_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM app.thing $$;
   INSERT INTO items (label) VALUES ('a'), ('b');
 `)
 
@@ -193,11 +198,34 @@ try {
       const counts = {}
       for (const i of items) counts[i.label] = (counts[i.label] ?? 0) + 1
       const dupes = Object.entries(counts).filter(([, n]) => n > 1)
-      return { total: items.length, unique: Object.keys(counts).length, dupes: dupes.map(([l, n]) => l + ' x' + n) }
+      return { total: items.length, unique: Object.keys(counts).length, labels: items.map((i) => i.label), dupes: dupes.map(([l, n]) => l + ' x' + n) }
     `)
     ok('completion provider returns suggestions in the browser', result.total > 0, `${result.total} items`)
     eq('no duplicated labels', result.dupes, [])
     ok('column names appear once each', result.total === result.unique, `${result.unique}/${result.total} unique`)
+    ok('user function suggested', result.labels.includes('item_count'))
+    ok('view suggested', result.labels.includes('v_items'))
+    ok('materialized view suggested', result.labels.includes('mv_items'))
+    ok('stored procedure suggested', result.labels.includes('proc_noop'))
+    ok('CALL keyword suggested', result.labels.includes('CALL'))
+  }
+
+  console.log('\n== IntelliSense offers schema contents after a schema qualifier ==')
+  {
+    await page.evaluate(`window.__pgdev.setValue('SELECT * FROM app.')`)
+    const fromSchema = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
+    ok('schema-qualified table suggested', fromSchema.includes('thing'), JSON.stringify(fromSchema.slice(0, 12)))
+    ok('schema-qualified view suggested', fromSchema.includes('v_thing'))
+    ok('schema-qualified function suggested', fromSchema.includes('thing_count'))
+
+    await page.evaluate(`window.__pgdev.setValue('SELECT app.')`)
+    const selectSchema = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
+    ok('schema contents after SELECT too', selectSchema.includes('thing_count'), JSON.stringify(selectSchema.slice(0, 12)))
+
+    // Relation qualifiers still offer columns.
+    await page.evaluate(`window.__pgdev.setValue('SELECT * FROM items i WHERE i.')`)
+    const cols = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
+    ok('alias qualifier still offers columns', cols.includes('id') && cols.includes('label'), JSON.stringify(cols))
   }
 
   console.log('\n== filtering makes collapse inert ==')

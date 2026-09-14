@@ -96,7 +96,8 @@ ORDER BY n.nspname, c.relname, t.tgname`
 const FUNCTIONS_SQL = `
 SELECT n.nspname AS schema, p.proname AS name,
   COALESCE(pg_get_function_identity_arguments(p.oid), '') AS args,
-  pg_get_function_result(p.oid) AS returns,
+  -- Procedures have no result type; COALESCE keeps the JSON contract string.
+  COALESCE(pg_get_function_result(p.oid), '') AS returns,
   COALESCE((SELECT string_agg(format_type(t.oid, NULL), ', ') FROM unnest(p.proargtypes) AS t(oid)), '') AS type_sig,
   CASE
     -- prorettype rather than a second pg_get_function_result call: a

@@ -146,6 +146,8 @@ Sessions are also closed when a tab is closed, a connection is disconnected, a p
 
 Schema metadata is harvested from PostgreSQL system catalogs and grouped into tables, views, functions, and user-defined types. Aggregates are harvested alongside functions (`prokind = 'a'`) and labelled as such in the browser. Table metadata includes columns, indexes, constraints, triggers, partition relationships, and type information for the browser and Monaco completion provider.
 
+The completion provider suggests keywords and every harvested object: tables, views (including materialized), types, functions, and stored procedures — each with its signature line (`(args) → result`, `(args) · procedure`, plus `· aggregate`/`· window` markers) and a `name($0)` snippet, schema-qualified unless the object lives in `public`. Relation aliases and qualifiers offer their columns; after a schema qualifier (`app.`) the provider lists that schema's tables, views, types, functions and procedures, since a schema has no columns of its own.
+
 DDL generation uses PostgreSQL deparser functions wherever possible, including `pg_get_constraintdef`, `pg_get_indexdef`, `pg_get_triggerdef`, `pg_get_functiondef`, and `pg_get_viewdef`.
 
 Table DDL additionally handles:
