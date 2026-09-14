@@ -181,3 +181,20 @@ test('command-only runs show Messages and selections are independent across edit
   assert.equal(results.state.byTab.one.showMessages, true)
   assert.equal(results.state.byTab.two.grids.length, 2)
 })
+
+test('transactionOpen follows the server flag and survives a failed statement', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, transactionOpen: true, results: [{ kind: 'command', command: 'UPDATE', rowCount: 1 }] })
+  await results.run('tab', 'db', 'BEGIN; UPDATE t SET x = 1')
+  assert.equal(results.state.byTab.tab.transactionOpen, true)
+
+  // A SQL error does not clear the flag: the transaction is still open
+  // (aborted) server-side and needs an explicit ROLLBACK.
+  api.query = async () => { throw Object.assign(new Error('boom'), { code: '25P02' }) }
+  await results.run('tab', 'db', 'SELECT 1')
+  assert.equal(results.state.byTab.tab.transactionOpen, true)
+
+  api.query = async () => ({ durationMs: 1, results: [{ kind: 'command', command: 'ROLLBACK', rowCount: 0 }] })
+  await results.run('tab', 'db', 'ROLLBACK')
+  assert.equal(results.state.byTab.tab.transactionOpen, false)
+})

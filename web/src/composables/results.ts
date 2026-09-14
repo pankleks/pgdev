@@ -59,6 +59,8 @@ export interface TabResult {
   readonly grid: GridResult | null
   messages: Message[]
   showMessages: boolean
+  /** A user-managed transaction is open for this tab (BEGIN without COMMIT yet). */
+  transactionOpen: boolean
 }
 
 /**
@@ -84,6 +86,7 @@ export function createResults(api: ResultsApi) {
         },
         messages: [],
         showMessages: false,
+        transactionOpen: false,
       })
       state.byTab[key] = r
     }
@@ -141,6 +144,9 @@ export function createResults(api: ResultsApi) {
     try {
       const res = await api.query(connectionId, sql, tabKey)
       if (!isCurrent(tabKey, r, operation)) return
+      // Errors deliberately leave this untouched: a failed statement inside an
+      // open transaction leaves it open (aborted) server-side.
+      r.transactionOpen = res.transactionOpen === true
       const multi = res.results.length > 1
       const messages: Message[] = [
         { text: `${res.results.length} statement(s) in ${res.durationMs} ms`, level: 'info' },

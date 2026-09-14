@@ -179,6 +179,8 @@ export type QueryResult = CommandResult | DataResult
 export interface QueryResponse {
   results: QueryResult[]
   durationMs: number
+  /** True when the batch left a user-managed transaction open for this tab. */
+  transactionOpen?: boolean
 }
 
 export interface FetchMoreResponse {

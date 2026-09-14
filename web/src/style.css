@@ -102,6 +102,18 @@ button {
     }
   }
 
+  /* Commits the open transaction — the affirmative counterpart to danger. */
+  &.commit {
+    background: #1e7a3c;
+    border-color: #1e7a3c;
+    color: #fff;
+
+    &:hover {
+      background: #2b9a4e;
+      border-color: #2b9a4e;
+    }
+  }
+
   &.icon {
     padding: 3px 6px;
     background: transparent;
@@ -953,6 +965,13 @@ body.dragging-results {
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 
+    /* Every header control shares one size: COPY/CSV, TXN Commit/Rollback,
+     * Run and Cancel must line up. */
+    button {
+      padding: 3px 10px;
+      font-size: 12px;
+    }
+
     .subtabs {
       min-width: 0;
       flex-shrink: 1;
@@ -978,6 +997,19 @@ body.dragging-results {
 
     .run-btn {
       flex-shrink: 0;
+    }
+
+    /* A manual transaction left open by the user (BEGIN without COMMIT yet). */
+    .txn-badge {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 12px;
+      color: #e5c07b;
+      background: rgba(229, 192, 123, 0.12);
+      border: 1px solid rgba(229, 192, 123, 0.5);
+      border-radius: 8px;
+      padding: 1px 6px;
     }
   }
 

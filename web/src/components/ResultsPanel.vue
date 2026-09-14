@@ -192,6 +192,13 @@ function loadMoreRows() {
   results.loadMore(tabs.state.activeKey, conn.state.id)
 }
 
+/** Commit/Rollback run through the normal run path for the active tab, so the
+ * per-tab running guard, messages and session release all apply. */
+function runControl(sql: 'COMMIT' | 'ROLLBACK') {
+  if (!conn.state.id || result.value?.running || result.value?.loadingMore) return
+  results.run(tabs.state.activeKey, conn.state.id, sql)
+}
+
 async function copyResult() {
   const g = activeGrid.value
   if (!g) return
@@ -307,6 +314,21 @@ async function exportCsv() {
         </button>
       </div>
       <span class="spacer" />
+      <template v-if="result?.transactionOpen">
+        <span class="txn-badge" title="A manual transaction is open for this tab">TXN</span>
+        <button
+          class="btn-sm commit"
+          :disabled="result?.running || result?.loadingMore"
+          title="Commit the open transaction"
+          @click="runControl('COMMIT')"
+        >COMMIT</button>
+        <button
+          class="btn-sm danger"
+          :disabled="result?.running || result?.loadingMore"
+          title="Roll back the open transaction"
+          @click="runControl('ROLLBACK')"
+        >ROLLBACK</button>
+      </template>
       <template v-if="activeGrid">
         <button class="btn-sm" title="Copy loaded rows to clipboard (TSV)" :disabled="result?.loadingMore" @click="copyResult()"><Copy :size="13" /> COPY</button>
         <button class="btn-sm" :title="activeGrid.limited ? 'Export only the retained rows to CSV (partial result)' : 'Export all rows to CSV'" :disabled="result?.loadingMore" @click="exportCsv()"><Download :size="13" /> {{ activeGrid.limited ? 'CSV (partial)' : 'CSV' }}</button>

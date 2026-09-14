@@ -48,7 +48,7 @@ The primary design goals are:
 - `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.
 - `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.
 - `web/src/components/QueryEditor.vue` hosts Monaco models and editor commands.
-- `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, and cancellation controls.
+- `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, cancellation controls, and the transaction indicator with Commit/Rollback buttons.
 - `web/src/components/SettingsDialog.vue` exposes the object-browser grouping preference.
 - `web/src/composables/connection.ts` manages connection state, remembered configurations, and connection switching.
 - `web/src/composables/schema.ts` manages schema loading and stale-request protection.
@@ -97,34 +97,37 @@ The query endpoint accepts SQL, a tab key, and `maxRows`. Runtime validation req
 The execution flow is:
 
 1. Reject malformed or empty input.
-2. Close any idle cursor session for the same connection and tab.
-3. Split the SQL batch with the PostgreSQL-aware statement splitter.
-4. Detect statements that PostgreSQL requires to run outside a transaction.
-5. Use a transaction for ordinary batches, including an initialization savepoint and an idle transaction timeout setting.
-6. Execute statements sequentially and preserve command or data results.
-7. Resolve result column type names on the same PostgreSQL client.
-8. Commit and release the client, or retain one cursor session when more rows are available.
+2. Continue a user-opened transaction session for the tab, if one exists.
+3. Close any idle cursor session for the same connection and tab.
+4. Split the SQL batch with the PostgreSQL-aware statement splitter.
+5. Detect statements that PostgreSQL requires to run outside a transaction.
+6. Use a transaction for ordinary batches, including an initialization savepoint and an idle transaction timeout setting.
+7. Execute statements sequentially and preserve command or data results.
+8. Resolve result column type names on the same PostgreSQL client.
+9. Commit and release the client, retain one cursor session when more rows are available, or pin the client as a transaction session when the batch leaves a user transaction open.
 
 Commands detected for autocommit execution include `VACUUM`, `CLUSTER`, `CHECKPOINT`, database and tablespace operations, `ALTER SYSTEM`, subscription operations, concurrent index operations, concurrent `REINDEX`, and concurrent materialized-view refreshes.
 
 Only the final statement in an all-cursor-compatible batch can retain a cursor. Earlier result sets are fully materialized, so the frontend never displays `Load more` for a cursor that has already been closed. Batches containing writes or other non-cursor statements are completed in the current request and committed instead of leaving mutations in a pageable transaction.
 
+Manual transactions span query runs. A batch that opens a transaction without closing it (`BEGIN; …`) runs directly on a fresh client — no implicit wrapper — and the client is kept pinned as a **transaction session**, so the user's transaction is never committed behind their back. Subsequent batches on the same tab run on that client; `COMMIT`/`ROLLBACK` end the session, `COMMIT AND CHAIN` keeps a new transaction open, and a failed statement leaves PostgreSQL's aborted transaction open for `ROLLBACK`. An error in the batch that opened the transaction rolls it back immediately instead. Cursor paging is disabled inside a manual transaction (the session keeps the transaction, not a cursor), so large results are bounded like non-cursor statements. Each query response carries `transactionOpen`, which the results panel turns into a TXN indicator with Commit/Rollback buttons; the transaction is bounded by the same five-minute idle reaper as cursor sessions, and closing the tab or disconnecting rolls it back.
+
 Cursor pages fetch one lookahead row beyond the requested page size. That row is stored as `pendingRow` in the session. This avoids consuming a row that the next request would otherwise skip. A failed `FETCH` is treated as a query failure and is never retried by executing the original SQL a second time.
 
 The running-query map prevents concurrent execution for the same tab. The client identity is checked when clearing that map so an older request cannot clear tracking for a newer request.
 
-## Cursor Sessions and Cleanup
+## Cursor and Transaction Sessions
 
-Each retained result cursor is associated with `connectionId` and `tabKey`. Sessions hold:
+Each retained session is associated with `connectionId` and `tabKey` and holds:
 
 - The checked-out PostgreSQL client.
-- The active cursor name.
-- The lookahead row.
+- The session kind: `cursor` (open transaction with a server-side cursor) or `transaction` (a user-opened transaction with no cursor).
+- The active cursor name and the lookahead row (cursor sessions).
 - An idle reaper timer.
 - A busy flag for active page fetches.
 - A close-request flag for tab or connection cleanup races.
 
-Session operations are serialized with `beginSession` and `finishSession`. The idle reaper is paused while a page is being fetched and re-armed only while a cursor remains open. Closing a busy session requests cancellation rather than releasing the client while it is in use.
+Session operations are serialized with `beginSession` and `finishSession`. The idle reaper is paused while a page is being fetched and re-armed while a cursor or user transaction remains open. Closing a busy session requests cancellation rather than releasing the client while it is in use. A session released after the user's own `COMMIT`/`ROLLBACK` hands the client back without issuing another control statement.
 
 The following endpoints are available:
 

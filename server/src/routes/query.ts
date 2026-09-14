@@ -22,14 +22,6 @@ function mapError(error: BatchError): { code: number; body: unknown } {
   switch (error.kind) {
     case 'empty':
       return { code: 400, body: { error: 'Empty query' } }
-    case 'open-transaction':
-      return {
-        code: 400,
-        body: {
-          error:
-            'Open transactions cannot span query runs. Include COMMIT or ROLLBACK in the same selection or batch. No statements were executed.',
-        },
-      }
     case 'running':
       return { code: 409, body: { error: 'A query is already running for this tab' } }
     case 'connect':
@@ -58,7 +50,7 @@ export async function queryRoutes(app: FastifyInstance) {
     if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
     const outcome = await runBatch(id, tabKey ?? '', sql, cap)
     if (outcome.kind === 'error') return errorReply(reply, outcome.error)
-    return { results: outcome.results, durationMs: outcome.durationMs }
+    return { results: outcome.results, durationMs: outcome.durationMs, transactionOpen: outcome.transactionOpen }
   })
 
   app.post('/api/connections/:id/query/more', async (req, reply) => {

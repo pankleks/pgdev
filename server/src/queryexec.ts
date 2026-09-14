@@ -47,14 +47,13 @@ export type MappedResult = MappedCommand | MappedData
 
 export type BatchError =
   | { kind: 'empty' }
-  | { kind: 'open-transaction' }
   | { kind: 'running' }
   | { kind: 'connect'; message: string }
   | { kind: 'no-more' }
   | { kind: 'sql'; message: string; position: string | null; code: string | null }
 
 export type BatchOutcome =
-  | { kind: 'ok'; results: MappedResult[]; durationMs: number }
+  | { kind: 'ok'; results: MappedResult[]; durationMs: number; transactionOpen: boolean }
   | { kind: 'error'; error: BatchError }
 
 export type MoreOutcome =
@@ -159,6 +158,171 @@ const sqlError = (err: unknown): BatchError => {
   }
 }
 
+/** Transaction state shared with the statement loop, so a failure mid-batch
+ * knows whether a transaction is still open. */
+interface TxnState {
+  inTxn: boolean
+}
+
+/**
+ * Execute the batch's statements on one client, resolving result metadata on
+ * the same client. Cursor DECLARE is attempted only for the final statement
+ * (and only when the caller allows cursors); `txn` tracks user-typed
+ * transaction control so the caller knows what to keep or close.
+ */
+async function executeStatements(
+  client: PoolClient,
+  statements: string[],
+  cap: number,
+  useCursors: boolean,
+  txn: TxnState,
+): Promise<{ mapped: MappedResult[]; openCursor: string | null; pendingRow: unknown[] | null }> {
+  const results: (
+    | { kind: 'command'; command: string; rowCount: number }
+    | { kind: 'data'; page: DataPage }
+  )[] = []
+  let seq = 0
+  let openCursor: string | null = null
+
+  // Direct execution for non-cursor statements. Throws on error so the batch
+  // aborts with the statement's real message (never masked). Also tracks
+  // user-typed transaction control (COMMIT/ROLLBACK/END).
+  const execDirect = async (stmt: string): Promise<void> => {
+    const control = transactionControl(stmt)
+    const bounded = await boundedQuery(client, stmt, cap)
+    const res = bounded.result
+    if (control === 'end' || control === 'chain') {
+      // Ends the transaction server-side, taking any open cursor with it.
+      openCursor = null
+    }
+    if (control === 'end') txn.inTxn = false
+    if (control === 'start' || control === 'chain') txn.inTxn = true
+    if (!res.fields || res.fields.length === 0) {
+      results.push({
+        kind: 'command',
+        command: res.command ?? 'OK',
+        rowCount: res.rowCount ?? 0,
+      })
+    } else {
+      const rows = bounded.rows.map((row: unknown[]) =>
+        row.map((cell) => normalizeCell(cell)),
+      )
+      results.push({
+        kind: 'data',
+        page: {
+          fields: (res.fields ?? []) as FieldInfo[],
+          rows,
+          hasMore: false,
+          pendingRow: null,
+          limited: bounded.totalRowCount > cap,
+          totalRowCount: bounded.totalRowCount,
+        },
+      })
+    }
+  }
+
+  for (const [index, stmt] of statements.entries()) {
+    const cursor = `pgdev_cur_${++seq}`
+    const cursorForThisStatement = useCursors && index === statements.length - 1
+    if (!txn.inTxn || !cursorForThisStatement) {
+      await execDirect(stmt)
+      continue
+    }
+    await client.query('SAVEPOINT pgdev_sp')
+    try {
+      await client.query(`DECLARE "${cursor}" NO SCROLL CURSOR FOR ${stmt}`)
+    } catch (declareError) {
+      // Not a cursor-compatible statement (DDL, writes, EXPLAIN, …):
+      // roll back to the savepoint so the failed DECLARE doesn't poison
+      // the transaction, then run it directly.
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT pgdev_sp')
+      } catch {
+        throw declareError
+      }
+      await execDirect(stmt)
+      continue
+    }
+    // A FETCH failure is a query failure, not evidence that the statement
+    // should be executed again without a cursor.
+    const page = await fetchPage(client, cursor, cap)
+    if (page.hasMore) {
+      // Only the last result set is pageable in the UI; earlier
+      // truncated cursors are closed (their counts stay in Messages).
+      if (openCursor) await closeCursor(client, openCursor)
+      openCursor = cursor
+    } else {
+      await closeCursor(client, cursor)
+    }
+    results.push({ kind: 'data', page })
+  }
+
+  const typeNames = await typeNamesFor(
+    client,
+    results.flatMap((r) => (r.kind === 'data' ? [r.page] : [])),
+  )
+  const mapped: MappedResult[] = results.map((r) => {
+    if (r.kind === 'command') {
+      return { kind: 'command' as const, command: r.command, rowCount: r.rowCount }
+    }
+    return {
+      kind: 'data' as const,
+      columns: r.page.fields.map((f) => f.name),
+      columnTypes: r.page.fields.map((f) => typeNames.get(String(f.dataTypeID)) ?? ''),
+      rows: r.page.rows,
+      rowCount: r.page.rows.length,
+      truncated: r.page.hasMore,
+      limited: r.page.limited ?? false,
+      totalRowCount: r.page.totalRowCount,
+    }
+  })
+  const last = results[results.length - 1]
+  return {
+    mapped,
+    openCursor,
+    pendingRow: last?.kind === 'data' ? last.page.pendingRow : null,
+  }
+}
+
+/**
+ * Continue a user-opened transaction on its pinned client. No implicit BEGIN
+ * and no cursor paging: the user's COMMIT/ROLLBACK ends the session, and a
+ * failed statement leaves the transaction open in PostgreSQL's aborted state
+ * so the same ROLLBACK semantics as psql apply.
+ */
+async function runOnTransactionSession(
+  connId: string,
+  runKey: string,
+  statements: string[],
+  cap: number,
+): Promise<BatchOutcome> {
+  if (getRunning(runKey)) return { kind: 'error', error: { kind: 'running' } }
+  const sess = beginSession(runKey)
+  if (!sess) return { kind: 'error', error: { kind: 'running' } }
+  setRunning(runKey, sess.client)
+  const start = performance.now()
+  const txn: TxnState = { inTxn: true }
+  try {
+    const { mapped } = await executeStatements(sess.client, statements, cap, false, txn)
+    if (txn.inTxn) {
+      await finishSession(runKey, sess, 'keep')
+      return { kind: 'ok', results: mapped, durationMs: Math.round(performance.now() - start), transactionOpen: true }
+    }
+    // The user's COMMIT/ROLLBACK ran as part of the batch: hand the client
+    // back without issuing another control statement.
+    await finishSession(runKey, sess, 'none')
+    return { kind: 'ok', results: mapped, durationMs: Math.round(performance.now() - start), transactionOpen: false }
+  } catch (err) {
+    // Keep an open (aborted) transaction so the user can roll back; if the
+    // batch already ended it, there is nothing to keep.
+    if (txn.inTxn) await finishSession(runKey, sess, 'keep')
+    else await finishSession(runKey, sess, 'none')
+    return { kind: 'error', error: sqlError(err) }
+  } finally {
+    deleteRunning(runKey, sess.client)
+  }
+}
+
 /** Execute a SQL batch for one tab. See routes/query.ts for the HTTP mapping. */
 export async function runBatch(
   connId: string,
@@ -168,17 +332,25 @@ export async function runBatch(
 ): Promise<BatchOutcome> {
   const statements = splitStatements(sql)
   if (!statements.length) return { kind: 'error', error: { kind: 'empty' } }
-  // Validate the whole batch before executing anything (or closing an old
-  // result cursor). Never silently commit a transaction the user left open.
-  if (hasOpenTransaction(statements)) {
-    return { kind: 'error', error: { kind: 'open-transaction' } }
-  }
   const pool = getPool(connId)
   const runKey = sessionKey(connId, tabKey)
   if (getRunning(runKey)) return { kind: 'error', error: { kind: 'running' } }
+
+  // A user-opened transaction keeps its client pinned for the tab; continue it
+  // instead of checking out a new one.
+  const active = getSession(runKey)
+  if (active?.kind === 'transaction') {
+    return runOnTransactionSession(connId, runKey, statements, cap)
+  }
+
   // Drop any idle-open cursor from a previous truncated query on this tab.
   await teardownSession(runKey, 'rollback')
   const autocommit = statements.some(requiresAutocommit)
+  // A batch that opens a transaction without closing it is user-managed: it
+  // runs without the implicit wrapper, and the client is kept pinned as a
+  // transaction session so the user's transaction is never committed behind
+  // their back.
+  const manual = hasOpenTransaction(statements)
 
   const start = performance.now()
   let client: PoolClient
@@ -191,134 +363,42 @@ export async function runBatch(
     client.release()
     return { kind: 'error', error: { kind: 'running' } }
   }
-  // Cursor sessions hold this client for the life of the session; without a
+  // Pinned sessions hold this client for the life of the session; without a
   // listener a backend-side termination crashes the process (see checkout.ts).
   guardCheckedOutClient(client)
 
-  // From here the client is owned either by the session map (kept open
-  // for FETCH MORE) or released explicitly on every exit path.
+  // From here the client is owned either by the session map (kept open for
+  // FETCH MORE or a user transaction) or released explicitly on every exit.
   let sessionKept = false
-  let inTxn = false
+  const txn: TxnState = { inTxn: false }
   setRunning(runKey, client)
   try {
-    if (!autocommit) {
+    if (!autocommit && !manual) {
       await client.query('BEGIN')
-      inTxn = true
+      txn.inTxn = true
       // Bounds how long a paged session may sit idle in its transaction
       // server-side; the reaper and explicit teardown back this up.
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
     }
 
-    const results: (
-      | { kind: 'command'; command: string; rowCount: number }
-      | { kind: 'data'; page: DataPage }
-    )[] = []
-    let seq = 0
-    let openCursor: string | null = null
     // Only the final statement may retain a cursor. Earlier result sets are
-    // bounded and drained, so the UI never advertises a closed cursor as pageable.
-    // A mutation-containing batch also finishes and commits in this request.
-    const useCursors = !autocommit && statements.every(canUseCursor)
+    // bounded and drained, so the UI never advertises a closed cursor as
+    // pageable. Manual transactions never page: the session must keep the
+    // transaction, not a cursor.
+    const useCursors = !autocommit && !manual && statements.every(canUseCursor)
+    const { mapped, openCursor, pendingRow } = await executeStatements(client, statements, cap, useCursors, txn)
 
-    // Direct execution for non-cursor statements. Throws on error so the
-    // batch aborts with the statement's real message (never masked).
-    // Also tracks user-typed transaction control (COMMIT/ROLLBACK/END).
-    const execDirect = async (stmt: string): Promise<void> => {
-      const control = transactionControl(stmt)
-      const bounded = await boundedQuery(client, stmt, cap)
-      const res = bounded.result
-      if (control === 'end' || control === 'chain') {
-        // Ends our transaction server-side, taking any open cursor with it.
-        openCursor = null
-      }
-      if (control === 'end') inTxn = false
-      if (control === 'start' || control === 'chain') inTxn = true
-      if (!res.fields || res.fields.length === 0) {
-        results.push({
-          kind: 'command',
-          command: res.command ?? 'OK',
-          rowCount: res.rowCount ?? 0,
-        })
-      } else {
-        const rows = bounded.rows.map((row: unknown[]) =>
-          row.map((cell) => normalizeCell(cell)),
-        )
-        results.push({
-          kind: 'data',
-          page: {
-            fields: (res.fields ?? []) as FieldInfo[],
-            rows,
-            hasMore: false,
-            pendingRow: null,
-            limited: bounded.totalRowCount > cap,
-            totalRowCount: bounded.totalRowCount,
-          },
-        })
-      }
-    }
-
-    for (const [index, stmt] of statements.entries()) {
-      const cursor = `pgdev_cur_${++seq}`
-      const cursorForThisStatement = useCursors && index === statements.length - 1
-      if (!inTxn || !cursorForThisStatement) {
-        await execDirect(stmt)
-        continue
-      }
-      await client.query('SAVEPOINT pgdev_sp')
-      try {
-        await client.query(`DECLARE "${cursor}" NO SCROLL CURSOR FOR ${stmt}`)
-      } catch (declareError) {
-        // Not a cursor-compatible statement (DDL, writes, EXPLAIN, …):
-        // roll back to the savepoint so the failed DECLARE doesn't poison
-        // the transaction, then run it directly.
-        try {
-          await client.query('ROLLBACK TO SAVEPOINT pgdev_sp')
-        } catch {
-          throw declareError
-        }
-        await execDirect(stmt)
-        continue
-      }
-      // A FETCH failure is a query failure, not evidence that the statement
-      // should be executed again without a cursor.
-      const page = await fetchPage(client, cursor, cap)
-      if (page.hasMore) {
-        // Only the last result set is pageable in the UI; earlier
-        // truncated cursors are closed (their counts stay in Messages).
-        if (openCursor) await closeCursor(client, openCursor)
-        openCursor = cursor
-      } else {
-        await closeCursor(client, cursor)
-      }
-      results.push({ kind: 'data', page })
-    }
-
-    const typeNames = await typeNamesFor(
-      client,
-      results.flatMap((r) => (r.kind === 'data' ? [r.page] : [])),
-    )
-    const mapped: MappedResult[] = results.map((r) => {
-      if (r.kind === 'command') {
-        return { kind: 'command' as const, command: r.command, rowCount: r.rowCount }
-      }
-      return {
-        kind: 'data' as const,
-        columns: r.page.fields.map((f) => f.name),
-        columnTypes: r.page.fields.map((f) => typeNames.get(String(f.dataTypeID)) ?? ''),
-        rows: r.page.rows,
-        rowCount: r.page.rows.length,
-        truncated: r.page.hasMore,
-        limited: r.page.limited ?? false,
-        totalRowCount: r.page.totalRowCount,
-      }
-    })
-
-    const last = results[results.length - 1]
-    if (last?.kind === 'data' && last.page.hasMore && openCursor) {
-      setSession(runKey, connId, client, openCursor, last.page.pendingRow)
+    if (openCursor) {
+      setSession(runKey, connId, client, openCursor, pendingRow)
+      sessionKept = true
+    } else if (manual && txn.inTxn) {
+      // A forgotten transaction must not pin this client forever: bound its
+      // idle life server-side the same way paged sessions are bounded.
+      await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
+      setSession(runKey, connId, client, null, null, 'transaction')
       sessionKept = true
     } else {
-      if (inTxn) {
+      if (txn.inTxn) {
         try {
           await client.query('COMMIT')
         } catch (err) {
@@ -332,14 +412,19 @@ export async function runBatch(
       }
       client.release()
     }
-    return { kind: 'ok', results: mapped, durationMs: Math.round(performance.now() - start) }
+    return {
+      kind: 'ok',
+      results: mapped,
+      durationMs: Math.round(performance.now() - start),
+      transactionOpen: !openCursor && manual && txn.inTxn,
+    }
   } catch (err) {
     await teardownSession(runKey, 'rollback')
     if (!sessionKept) {
       // Error before any session was kept: the client may still hold the
       // open (possibly aborted) transaction — roll back explicitly so a
       // dirty client never returns to the pool.
-      if (inTxn) {
+      if (txn.inTxn) {
         try {
           await client.query('ROLLBACK')
         } catch {

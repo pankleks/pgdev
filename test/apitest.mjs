@@ -262,28 +262,60 @@ ok('bounded direct results keep JSON text too',
   jsonDirect.body.results[0].rows[0][0].includes('9007199254740993'),
   jsonDirect.body.results[0].rows[0][0])
 
-console.log('\n== transaction safety ==')
+console.log('\n== manual transactions across runs ==')
 eq('transaction fixture created', (await q('CREATE TABLE tx_check (id integer PRIMARY KEY)', 'tx')).status, 200)
 const observer = new Client({ ...base, database: DB })
 await observer.connect()
 try {
-  for (const sql of [
-    'BEGIN; INSERT INTO tx_check VALUES (1)',
-    'INSERT INTO tx_check VALUES (1); BEGIN',
-    'BEGIN; INSERT INTO tx_check VALUES (1); COMMIT; BEGIN',
-    'BEGIN; SAVEPOINT s; ROLLBACK TO s',
-    'COMMIT AND CHAIN',
-  ]) {
-    const rejected = await q(sql, 'tx')
-    eq(`unfinished batch rejected: ${sql}`, rejected.status, 400)
-    ok('rejection explains that nothing ran', /No statements were executed/.test(rejected.body.error))
-    eq('rejected batch made no persistent changes', (await observer.query('SELECT count(*)::int AS n FROM tx_check')).rows[0].n, 0)
-  }
-  eq('complete commit succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (1); COMMIT', 'tx')).status, 200)
-  eq('complete rollback succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (2); ROLLBACK', 'tx')).status, 200)
-  eq('savepoint rollback leaves enclosing transaction tracked', (await q('INSERT INTO tx_check VALUES (3); SAVEPOINT s; INSERT INTO tx_check VALUES (4); ROLLBACK TO SAVEPOINT s', 'tx')).status, 200)
-  eq('chained transactions with final rollback succeed', (await q('BEGIN; INSERT INTO tx_check VALUES (5); COMMIT AND CHAIN; INSERT INTO tx_check VALUES (6); ROLLBACK', 'tx')).status, 200)
-  eq('independent connection sees only committed rows', (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map(r => r.id), [1, 3, 5])
+  // An unfinished batch now runs and keeps the transaction open for its tab.
+  const begun = await q('BEGIN; INSERT INTO tx_check VALUES (1); INSERT INTO tx_check VALUES (2)', 'tx')
+  eq('unfinished batch succeeds', begun.status, 200)
+  eq('response reports the open transaction', begun.body.transactionOpen, true)
+  eq('its prefix executed on the open transaction',
+    (await q('SELECT count(*)::int AS n FROM tx_check', 'tx')).body.results[0].rows[0][0], 2)
+  eq('the open transaction is invisible to other connections', (await observer.query('SELECT count(*)::int AS n FROM tx_check')).rows[0].n, 0)
+
+  const rolled = await q('ROLLBACK', 'tx')
+  eq('ROLLBACK closes the transaction', rolled.status, 200)
+  eq('transactionOpen clears', rolled.body.transactionOpen, false)
+  eq('the rollback discarded the rows', (await observer.query('SELECT count(*)::int AS n FROM tx_check')).rows[0].n, 0)
+
+  // COMMIT AND CHAIN commits what is there and opens a fresh transaction.
+  eq('begin again', (await q('BEGIN; INSERT INTO tx_check VALUES (3)', 'tx')).body.transactionOpen, true)
+  const chained = await q('COMMIT AND CHAIN', 'tx')
+  eq('COMMIT AND CHAIN keeps a transaction open', chained.status, 200)
+  eq('chained commit reports it', chained.body.transactionOpen, true)
+  eq('the chained commit persisted its rows',
+    (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map((r) => r.id), [3])
+  eq('closing the chained transaction', (await q('ROLLBACK', 'tx')).body.transactionOpen, false)
+
+  // A failed statement leaves PostgreSQL's transaction open (aborted); only
+  // ROLLBACK can end it, and the response clears the flag.
+  eq('begin for the error case', (await q('BEGIN; INSERT INTO tx_check VALUES (4)', 'tx')).body.transactionOpen, true)
+  eq('a statement error inside the transaction is reported', (await q('SELECT 1/0', 'tx')).status, 400)
+  const aborted = await q('SELECT 1', 'tx')
+  eq('the transaction stays open (aborted) until ROLLBACK', aborted.body.code, '25P02')
+  eq('ROLLBACK closes the aborted transaction', (await q('ROLLBACK', 'tx')).body.transactionOpen, false)
+  eq('the aborted transaction discarded its rows',
+    (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map((r) => r.id), [3])
+
+  // Begin/insert and commit across two runs.
+  eq('begin+insert across runs', (await q('BEGIN; INSERT INTO tx_check VALUES (10)', 'tx2')).body.transactionOpen, true)
+  eq('commit across runs', (await q('COMMIT', 'tx2')).body.transactionOpen, false)
+  eq('committed row is visible to other connections', (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map((r) => r.id), [3, 10])
+
+  // Closing the tab rolls an open transaction back.
+  eq('begin on a third tab', (await q('BEGIN; INSERT INTO tx_check VALUES (11)', 'tx3')).body.transactionOpen, true)
+  eq('tab close succeeds', (await call('POST', `/api/connections/${id}/query/close`, { tabKey: 'tx3' })).status, 200)
+  eq('tab close rolled the transaction back',
+    (await observer.query('SELECT count(*)::int AS n FROM tx_check WHERE id = 11')).rows[0].n, 0)
+  eq('the tab is usable again', (await q('SELECT 1', 'tx3')).status, 200)
+
+  // Balanced batches behave exactly as before.
+  eq('complete commit succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (20); COMMIT', 'tx4')).status, 200)
+  eq('complete rollback succeeds', (await q('BEGIN; INSERT INTO tx_check VALUES (21); ROLLBACK', 'tx4')).status, 200)
+  eq('savepoint rollback leaves enclosing transaction tracked', (await q('INSERT INTO tx_check VALUES (22); SAVEPOINT s; INSERT INTO tx_check VALUES (23); ROLLBACK TO SAVEPOINT s', 'tx4')).status, 200)
+  eq('independent connection sees only committed rows', (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map(r => r.id), [3, 10, 20, 22])
   eq('no transaction leaked into idle pool clients', (await observer.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'pgDEV' AND state LIKE 'idle in transaction%'")).rows[0].n, 0)
 } finally {
   await observer.end()
