@@ -252,7 +252,14 @@ provide('pgdev:run', runActive)
         @click="saveActive(true)"
       ><FileOutput :size="15" /></button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
-      <span v-if="version" class="app-version" :title="`pgDEV ${version}`">v{{ version }}</span>
+      <a
+        v-if="version"
+        class="app-version"
+        href="https://github.com/pankleks/pgdev"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Open the pgDEV project page on GitHub"
+      >{{ version }}</a>
     </header>
     <input
       ref="fileInput"

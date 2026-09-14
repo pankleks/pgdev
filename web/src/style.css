@@ -767,6 +767,12 @@ body.dragging-results {
   border-radius: 9px;
   white-space: nowrap;
   user-select: text;
+  text-decoration: none;
+
+  &:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
+  }
 }
 
 .editor-tabs {
