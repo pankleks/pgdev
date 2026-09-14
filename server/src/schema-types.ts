@@ -154,6 +154,9 @@ export interface SchemaData {
   views: ViewInfo[]
   functions: FunctionInfo[]
   types: TypeInfo[]
+  /** Built-in pg_catalog functions for completion only: internal helpers are
+   * filtered out, and the object browser never lists them. */
+  builtins?: FunctionInfo[]
 }
 
 export interface CommandResult {

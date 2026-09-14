@@ -23,10 +23,13 @@ function qualified(schema: string, name: string): string {
 
 /** Signature line for a function-like object; procedures have no result. */
 function functionDetail(f: FunctionInfo): string {
-  if (f.kind === 'procedure') return `(${f.args}) · procedure`
+  // public and pg_catalog objects are callable unqualified; a non-public
+  // schema is named so same-named functions stay distinguishable.
+  const schema = f.schema === 'public' || f.schema === 'pg_catalog' ? '' : ` · ${f.schema}`
+  if (f.kind === 'procedure') return `(${f.args}) · procedure${schema}`
   const returns = f.returns ? ` → ${f.returns}` : ''
   const suffix = f.kind === 'aggregate' ? ' · aggregate' : f.kind === 'window' ? ' · window' : ''
-  return `(${f.args})${returns}${suffix}`
+  return `(${f.args})${returns}${suffix}${schema}`
 }
 
 // The provider runs on every keystroke; the relations array only changes when
@@ -86,18 +89,24 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         [K.Class]: 3,
       }
       const emitted = new Map<string, { item: Monaco.languages.CompletionItem; index: number }>()
-      const emit = (item: Monaco.languages.CompletionItem): Monaco.languages.CompletionItem => {
+      const emit = (
+        item: Monaco.languages.CompletionItem,
+        key?: string,
+      ): Monaco.languages.CompletionItem => {
         // Every label below is a plain string; normalize for the lookup key
-        // because the Monaco type also allows structured labels.
-        const key = typeof item.label === 'string' ? item.label : item.label.label
-        const prev = emitted.get(key)
+        // because the Monaco type also allows structured labels. Functions
+        // pass a composite key: overloads and same-named functions in other
+        // schemas (or a function sharing a column's name) are distinct
+        // suggestions, not duplicates.
+        const k = key ?? (typeof item.label === 'string' ? item.label : item.label.label)
+        const prev = emitted.get(k)
         if (!prev) {
-          emitted.set(key, { item, index: suggestions.push(item) - 1 })
+          emitted.set(k, { item, index: suggestions.push(item) - 1 })
           return item
         }
         if ((TIER[item.kind] ?? 0) > (TIER[prev.item.kind] ?? 0)) {
           suggestions[prev.index] = item
-          emitted.set(key, { item, index: prev.index })
+          emitted.set(k, { item, index: prev.index })
           return item
         }
         return prev.item
@@ -143,15 +152,35 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       }
       const itemForFunction = (f: FunctionInfo, inSchema: boolean): void => {
         const name = inSchema ? quoteIdent(f.name) : qualified(f.schema, f.name)
-        emit({
-          label: f.name,
-          kind: f.kind === 'procedure' ? K.Method : K.Function,
-          detail: functionDetail(f),
-          insertText: `${name}($0)`,
-          insertTextRules:
-            monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-        })
+        const detail = functionDetail(f)
+        emit(
+          {
+            label: f.name,
+            kind: f.kind === 'procedure' ? K.Method : K.Function,
+            detail,
+            insertText: `${name}($0)`,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+          },
+          `${f.name}\u0000${name}\u0000${detail}`,
+        )
+      }
+      // Built-ins are always callable unqualified (pg_catalog is implicitly in
+      // the search path), so their insert text is never schema-qualified.
+      const itemForBuiltin = (f: FunctionInfo): void => {
+        const detail = functionDetail(f)
+        const insertText = `${quoteIdent(f.name)}($0)`
+        emit(
+          {
+            label: f.name,
+            kind: K.Function,
+            detail,
+            insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+          },
+          `${f.name}\u0000${insertText}\u0000${detail}`,
+        )
       }
 
       const chain = matchDotChain(lineBefore)
@@ -234,6 +263,14 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const v of data?.views ?? []) itemForView(v, false)
       for (const t of data?.types ?? []) itemForType(t, false)
       for (const f of data?.functions ?? []) itemForFunction(f, false)
+      // Built-ins run into the thousands; only offer the ones the user has
+      // already started to type, so the list stays focused and cheap.
+      const prefix = word.word.toLowerCase()
+      if (data && prefix.length >= 2) {
+        for (const f of data.builtins ?? []) {
+          if (f.name.toLowerCase().startsWith(prefix)) itemForBuiltin(f)
+        }
+      }
       return { suggestions }
     },
   }

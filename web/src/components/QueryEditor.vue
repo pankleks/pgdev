@@ -72,7 +72,14 @@ onMounted(() => {
         return completionSuggestions(model, {
           lineNumber: position.endLineNumber,
           column: position.endColumn,
-        } as never).map((s) => ({ label: String(s.label), kind: s.kind, detail: s.detail }))
+        } as never).map((s) => ({
+          label: String(s.label),
+          kind: s.kind,
+          detail: s.detail,
+          // Snippet insert text (functions) is a plain string here; the
+          // browser suite asserts it carries the call parentheses.
+          insertText: typeof s.insertText === 'string' ? s.insertText : undefined,
+        }))
       },
     }
   }

@@ -51,11 +51,14 @@ await pool.query(`
   CREATE VIEW v_items AS SELECT id, label FROM items;
   CREATE MATERIALIZED VIEW mv_items AS SELECT count(*) AS n FROM items;
   CREATE FUNCTION item_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM items $$;
+  CREATE FUNCTION label(p integer) RETURNS integer LANGUAGE sql AS $$ SELECT p $$;
   CREATE PROCEDURE proc_noop() LANGUAGE sql AS $$ SELECT 1 $$;
   CREATE SCHEMA app;
   CREATE TABLE app.thing (id integer PRIMARY KEY);
   CREATE VIEW app.v_thing AS SELECT id FROM app.thing;
   CREATE FUNCTION app.thing_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM app.thing $$;
+  CREATE FUNCTION app.item_count(p integer) RETURNS integer LANGUAGE sql AS $$ SELECT p $$;
+  CREATE FUNCTION app.item_count(p_label text) RETURNS integer LANGUAGE sql AS $$ SELECT length(p_label) $$;
   INSERT INTO items (label, qty, active, due_at, payload, tags, flags, matrix) VALUES
     ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}', '{red,green}', '{TRUE,FALSE}', '{{1,2},{3,4}}'),
     ('b', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
@@ -204,24 +207,63 @@ try {
   await page.waitFor(`window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })
   eq('function tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
 
-  console.log('\n== IntelliSense has no duplicate labels ==')
+  console.log('\n== IntelliSense lists objects without exact duplicates ==')
   {
     await page.evaluate(`window.__pgdev.setValue('SELECT ')`)
     const result = await page.evaluate(`
       const items = window.__pgdev.suggestions()
+      const keys = items.map((i) => [i.label, i.detail ?? '', i.insertText ?? ''].join('|'))
       const counts = {}
-      for (const i of items) counts[i.label] = (counts[i.label] ?? 0) + 1
-      const dupes = Object.entries(counts).filter(([, n]) => n > 1)
-      return { total: items.length, unique: Object.keys(counts).length, labels: items.map((i) => i.label), dupes: dupes.map(([l, n]) => l + ' x' + n) }
+      for (const k of keys) counts[k] = (counts[k] ?? 0) + 1
+      return {
+        total: items.length,
+        dupes: Object.entries(counts).filter(([, n]) => n > 1).map(([k]) => k),
+        labels: items.map((i) => i.label),
+      }
     `)
     ok('completion provider returns suggestions in the browser', result.total > 0, `${result.total} items`)
-    eq('no duplicated labels', result.dupes, [])
-    ok('column names appear once each', result.total === result.unique, `${result.unique}/${result.total} unique`)
+    eq('no exactly duplicated suggestions', result.dupes, [])
+    ok('built-ins stay out of the unfiltered list', !result.labels.includes('json_build_object'))
     ok('user function suggested', result.labels.includes('item_count'))
     ok('view suggested', result.labels.includes('v_items'))
     ok('materialized view suggested', result.labels.includes('mv_items'))
     ok('stored procedure suggested', result.labels.includes('proc_noop'))
     ok('CALL keyword suggested', result.labels.includes('CALL'))
+
+    // Overloads and same-named functions in other schemas are separate rows.
+    const funcs = await page.evaluate(`
+      return window.__pgdev.suggestions()
+        .filter((i) => i.label === 'item_count')
+        .map((i) => ({ insert: i.insertText, detail: i.detail }))
+    `)
+    eq('overloads are listed separately', funcs.length, 3)
+    eq('the public function inserts unqualified',
+      funcs.filter((f) => f.insert === 'item_count($0)').length, 1)
+    eq('both app overloads are schema-qualified and distinct',
+      funcs.filter((f) => f.insert === 'app.item_count($0)' && /· app/.test(String(f.detail))).length, 2)
+
+    // A function named like a column must not be hidden by the column.
+    const labelItems = await page.evaluate(`
+      return window.__pgdev.suggestions()
+        .filter((i) => i.label === 'label')
+        .map((i) => i.insertText)
+    `)
+    ok('a function sharing a column name is still suggested',
+      labelItems.includes('label($0)') && labelItems.includes('label'), JSON.stringify(labelItems))
+  }
+
+  console.log('\n== IntelliSense offers built-in functions while typing ==')
+  {
+    await page.evaluate(`window.__pgdev.setValue('SELECT json_')`)
+    const jsonItems = await page.evaluate(`return window.__pgdev.suggestions()`)
+    const build = jsonItems.find((i) => i.label === 'json_build_object')
+    ok('built-in json_build_object suggested', !!build, JSON.stringify(jsonItems.slice(0, 5)))
+    eq('built-in insert text is a call snippet', build?.insertText, 'json_build_object($0)')
+    ok('built-in shows its signature', /→/.test(String(build?.detail)), String(build?.detail))
+
+    await page.evaluate(`window.__pgdev.setValue('SELECT pg_')`)
+    const pgLabels = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
+    ok('pg_-prefixed internals are never suggested', !pgLabels.some((l) => l.startsWith('pg_')))
   }
 
   console.log('\n== IntelliSense offers schema contents after a schema qualifier ==')
@@ -235,6 +277,12 @@ try {
     await page.evaluate(`window.__pgdev.setValue('SELECT app.')`)
     const selectSchema = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
     ok('schema contents after SELECT too', selectSchema.includes('thing_count'), JSON.stringify(selectSchema.slice(0, 12)))
+    const appItems = await page.evaluate(`return window.__pgdev.suggestions()`)
+    const appOverloads = appItems.filter((i) => i.label === 'item_count')
+    eq('both app overloads appear after the schema qualifier', appOverloads.length, 2)
+    ok('schema-qualified inserts stay unqualified after the dot',
+      appOverloads.every((i) => i.insertText === 'item_count($0)'),
+      JSON.stringify(appOverloads.map((i) => i.insertText)))
 
     // Relation qualifiers still offer columns.
     await page.evaluate(`window.__pgdev.setValue('SELECT * FROM items i WHERE i.')`)

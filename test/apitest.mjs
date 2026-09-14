@@ -178,6 +178,13 @@ eq('generated column surfaced', emp.columns.find((c) => c.name === 'total').type
 ok('indexes attached', emp.indexes.length >= 3, `${emp.indexes.length}`)
 ok('constraints attached', emp.constraints.some((c) => c.type === 'f'), JSON.stringify(emp.constraints.map((c) => c.type)))
 ok('trigger attached', emp.triggers.length === 1, JSON.stringify(emp.triggers.map((t) => t.name)))
+ok('built-in functions harvested for completion',
+  (schema.body.builtins ?? []).some((f) => f.name === 'json_build_object'),
+  `${(schema.body.builtins ?? []).length} built-ins`)
+ok('internal pg_ helpers are excluded from built-ins',
+  !(schema.body.builtins ?? []).some((f) => f.name.startsWith('pg_')))
+ok('built-ins never appear in the browsable function list',
+  schema.body.functions.every((f) => f.schema !== 'pg_catalog'))
 
 console.log('\n== GET /ddl for every object type ==')
 const ddlOf = async (type, name, extra = {}) => {

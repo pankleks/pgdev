@@ -113,10 +113,35 @@ FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE p.prokind IN ('f', 'p', 'w', 'a')
   AND ${USER_SCHEMA_SQL}
-ORDER BY n.nspname, p.proname`
+ORDER BY n.nspname, p.proname, p.oid`
 
-const TYPES_SQL = `
-SELECT n.nspname AS schema, t.typname AS name, t.oid::text AS oid,
+// Built-in functions for completion: SQL-callable pg_catalog functions only.
+// `pg_`-prefixed helpers, and anything taking or returning an internal type,
+// are C-level machinery that no one types; `void` results (setseed and other
+// side-effect helpers) add noise without a call shape worth completing.
+const BUILTINS_SQL = `
+SELECT p.proname AS name,
+  COALESCE(pg_get_function_identity_arguments(p.oid), '') AS args,
+  COALESCE(pg_get_function_result(p.oid), '') AS returns,
+  CASE WHEN p.prokind = 'w' THEN 'window' WHEN p.prokind = 'a' THEN 'aggregate' ELSE 'function' END AS kind,
+  p.oid::text AS oid
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'pg_catalog'
+  AND p.prokind IN ('f', 'a', 'w')
+  AND p.proname NOT LIKE 'pg\\_%'
+  AND p.prorettype NOT IN (
+    'internal'::regtype, 'cstring'::regtype, 'trigger'::regtype,
+    'event_trigger'::regtype, 'void'::regtype
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM unnest(p.proargtypes) t(oid)
+    JOIN pg_type ty ON ty.oid = t.oid
+    WHERE ty.typname IN ('internal', 'cstring', 'opaque', 'trigger', 'event_trigger', 'void', 'anynonarray')
+  )
+ORDER BY p.proname, p.oid`
+
+const TYPES_SQL = `SELECT n.nspname AS schema, t.typname AS name, t.oid::text AS oid,
   CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'c' THEN 'composite' WHEN 'd' THEN 'domain' ELSE 'range' END AS kind,
   COALESCE(en.labels, ca.attrs, dm.base, format_type(r.rngsubtype, NULL), '') AS detail
 FROM pg_type t
@@ -156,7 +181,7 @@ function groupBy<Row, T>(
 }
 
 export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
-  const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, indexesRes, constraintsRes, triggersRes] =
+  const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, indexesRes, constraintsRes, triggersRes, builtinsRes] =
     await Promise.all([
       pool.query(TABLES_SQL),
       pool.query(VIEWS_SQL),
@@ -166,6 +191,7 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
       pool.query(INDEXES_SQL),
       pool.query(CONSTRAINTS_SQL),
       pool.query(TRIGGERS_SQL),
+      pool.query(BUILTINS_SQL),
     ])
 
   const relKey = (schema: string, name: string) => `${schema}\u0000${name}`
@@ -239,5 +265,15 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     detail: r.detail ?? '',
   }))
 
-  return { tables, views, functions, types }
+  const builtins: FunctionInfo[] = builtinsRes.rows.map((r) => ({
+    schema: 'pg_catalog',
+    name: r.name,
+    args: r.args,
+    returns: r.returns,
+    typeSig: '',
+    kind: r.kind,
+    oid: r.oid,
+  }))
+
+  return { tables, views, functions, types, builtins }
 }
