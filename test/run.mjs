@@ -65,7 +65,7 @@ if (!process.env.PGDEV_TEST_URL) {
     console.log(`\n${'='.repeat(72)}`)
     console.log('SKIPPED: browser/app.mjs')
     console.log('Set PGDEV_BROWSER=1 to drive Chrome. It needs a Chrome binary, and it')
-    console.log('starts its own API + Vite on ports 3000/5173, so those must be free.')
+    console.log('starts its own API + Vite on ports 3010/5173, so those must be free.')
     console.log('The origin guard only permits that exact cross-port pair.')
     console.log('='.repeat(72))
   }

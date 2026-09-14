@@ -14,7 +14,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..')
 // Must match the pair the origin guard allows (see allowedOrigin in
 // server/src/app.ts): the Vite dev proxy is the one cross-port exception.
-const API_PORT = 3000
+const API_PORT = 3010
 const WEB_PORT = 5173
 
 if (!existsSync(join(REPO, 'web', 'dist'))) {

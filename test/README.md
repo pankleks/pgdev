@@ -82,7 +82,7 @@ enough. It is opt-in because it needs a Chrome binary (`CHROME_PATH` overrides
 the search) and, crucially, **a network path from Chrome to the dev servers**.
 
 It binds Vite to `127.0.0.1` explicitly: Vite otherwise listens on `[::1]`
-only, which Chrome cannot reach, and it uses ports 3000/5173 because the origin
+only, which Chrome cannot reach, and it uses ports 3010/5173 because the origin
 guard permits exactly that cross-port pair (the Vite dev proxy is the one
 exception in `allowedOrigin`). Those ports must therefore be free.
 

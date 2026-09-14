@@ -7,8 +7,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       // PGDEV_API_PORT lets the browser suite run the API on a spare port;
-      // the dev default stays 3000.
-      '/api': `http://127.0.0.1:${process.env.PGDEV_API_PORT ?? 3000}`,
+      // the dev default stays 3010.
+      '/api': `http://127.0.0.1:${process.env.PGDEV_API_PORT ?? 3010}`,
     },
   },
   build: {

@@ -15,7 +15,7 @@
 - Build gate: `npm run build` (vue-tsc + vite + server tsc).
 - Tests: `npm test` (unit + live suites; live suites need `PGDEV_TEST_URL`
   from `.env`, browser suite needs `PGDEV_BROWSER=1` + `CHROME_PATH` and
-  ports 3000/5173 free — stop the dev server first).
+  ports 3010/5173 free — stop the dev server first).
 - Scratch databases are PID-suffixed (`pgdev_*_<pid>`); `.env` is gitignored
   and must never be committed.
 - PostgreSQL 14+ is the supported server baseline.

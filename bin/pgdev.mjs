@@ -27,7 +27,7 @@ if (has('--help') || has('-h')) {
 
 Usage: pgdev [options]
 
-  --port <n>     listen on this port (default 3000, or $PORT)
+  --port <n>     listen on this port (default 3010, or $PORT)
   --no-open      do not open a browser
   --version, -v  print the version
   --help, -h     this message
@@ -38,7 +38,7 @@ connection is yours: nothing is sent anywhere else.`)
 }
 
 const NO_OPEN = has('--no-open') || process.env.PGDEV_NO_OPEN === '1'
-const DEFAULT_PORT = Number(valueOf('--port') ?? process.env.PORT ?? 3000)
+const DEFAULT_PORT = Number(valueOf('--port') ?? process.env.PORT ?? 3010)
 
 /** True when nothing is listening on the port. */
 function portFree(port) {

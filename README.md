@@ -14,7 +14,7 @@ pgdev
 `pgdev` starts the server and opens your browser. Press `Ctrl+C` to stop.
 
 ```
---port <n>     listen on this port (default 3000)
+--port <n>     listen on this port (default 3010)
 --no-open      don't open a browser
 --version      print the version
 --help         usage

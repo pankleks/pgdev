@@ -211,7 +211,7 @@ NULL and boolean cells render as badges (a dark steel-blue `null` chip; green `t
 The API has no authentication and can open arbitrary database connections, so `/api/*` requests are protected against drive-by browser requests.
 
 - Requests with an `Origin` header must match the request scheme, hostname, and effective port. The three loopback spellings (`localhost`, `127.0.0.1`, `::1`) are treated as the same host, because browsers and the launcher choose between them inconsistently; both sides must still be loopback.
-- The Vite development origin on port 5173 is explicitly allowed to proxy to the backend on port 3000 when both hosts are loopback addresses.
+- The Vite development origin on port 5173 is explicitly allowed to proxy to the backend on port 3010 when both hosts are loopback addresses.
 - Same-origin browser GET requests that omit `Origin` may use the browser-controlled `Sec-Fetch-Site: same-origin` signal.
 - Other requests without `Origin`, invalid origins, cross-origin hosts, schemes, or ports are rejected.
 
@@ -220,7 +220,7 @@ This is not a replacement for authentication or network access control. The appl
 ## Distribution
 
 The package ships a launcher, `bin/pgdev.mjs`, exposed as the `pgdev` command.
-It picks a free port (walking upward from 3000 if the requested one is taken),
+It picks a free port (walking upward from 3010 if the requested one is taken),
 starts the server, waits until `/api/version` answers, opens the default
 browser, and forwards SIGINT/SIGTERM to the server for a clean shutdown. It
 takes `--port`, `--no-open`, `--version` and `--help`.

@@ -49,7 +49,7 @@ export function allowedOrigin(reqUrl: URL, originUrl: URL): boolean {
   const hostA = originUrl.hostname.toLowerCase()
   const hostB = reqUrl.hostname.toLowerCase()
   // localhost, 127.0.0.1 and ::1 are the same machine, and browsers and the
-  // launcher pick between them inconsistently: opening http://localhost:3000
+  // launcher pick between them inconsistently: opening http://localhost:3010
   // while the request host is 127.0.0.1 must not be rejected as cross-origin.
   // This widens nothing — both sides are still loopback.
   const sameHost = hostA === hostB || (isLoopback(hostA) && isLoopback(hostB))
@@ -60,7 +60,7 @@ export function allowedOrigin(reqUrl: URL, originUrl: URL): boolean {
   const viteProxy =
     reqUrl.protocol === 'http:' &&
     originUrl.protocol === 'http:' &&
-    effectivePort(reqUrl) === 3000 &&
+    effectivePort(reqUrl) === 3010 &&
     effectivePort(originUrl) === 5173 &&
     isLoopback(originUrl.hostname) &&
     isLoopback(reqUrl.hostname)
