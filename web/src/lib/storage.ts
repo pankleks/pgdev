@@ -1,4 +1,6 @@
 import type { FileHandle } from './files'
+import type { TabSession } from './tabsession'
+import { sanitizeSession } from './tabsession'
 
 export interface StoredPinnedFile {
   id: string
@@ -31,17 +33,19 @@ interface ConnectionsRecord {
 }
 
 const DB_NAME = 'pgdev'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const SETTINGS_STORE = 'settings'
 const CONNECTIONS_STORE = 'connections'
 const PINNED_FILES_STORE = 'pinnedFiles'
+const TABS_STORE = 'tabs'
 
 const LEGACY_SETTINGS_KEY = 'pgdev.settings'
 const LEGACY_SAVED_CONNECTIONS_KEY = 'pgdev.savedConnections'
 const LEGACY_LAST_CONNECTION_KEY = 'pgdev.lastConnection'
 const LEGACY_PINNED_FILES_KEY = 'pgdev.pinnedFiles'
+const LEGACY_TABS_KEY = 'pgdev.tabs'
 
-type StoreName = typeof SETTINGS_STORE | typeof CONNECTIONS_STORE | typeof PINNED_FILES_STORE
+type StoreName = typeof SETTINGS_STORE | typeof CONNECTIONS_STORE | typeof PINNED_FILES_STORE | typeof TABS_STORE
 
 let databasePromise: Promise<IDBDatabase> | null = null
 let writeQueue = Promise.resolve()
@@ -59,6 +63,7 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!database.objectStoreNames.contains(SETTINGS_STORE)) database.createObjectStore(SETTINGS_STORE, { keyPath: 'id' })
       if (!database.objectStoreNames.contains(CONNECTIONS_STORE)) database.createObjectStore(CONNECTIONS_STORE, { keyPath: 'id' })
       if (!database.objectStoreNames.contains(PINNED_FILES_STORE)) database.createObjectStore(PINNED_FILES_STORE, { keyPath: 'id' })
+      if (!database.objectStoreNames.contains(TABS_STORE)) database.createObjectStore(TABS_STORE, { keyPath: 'id' })
     }
     request.onblocked = () => reject(new Error('IndexedDB is blocked by another browser tab'))
     request.onsuccess = () => resolve(request.result)
@@ -328,4 +333,35 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
       }
     }
   })
+}
+
+/** Persist the global tab session (user-created query tabs). A failed write
+ * rejects so the caller can retry on its next interval tick. */
+export function saveTabSession(session: TabSession): Promise<void> {
+  return queueWrite(async () => {
+    if (!indexedDbAvailable) {
+      writeLegacyJsonOrThrow(LEGACY_TABS_KEY, session)
+      return
+    }
+    const db = await database()
+    await putRecord(db, TABS_STORE, { id: 'current', ...session } satisfies { id: string } & TabSession)
+  })
+}
+
+/**
+ * The session restored at startup. Never throws: corrupt or unreadable data
+ * simply means "nothing saved".
+ */
+export async function loadTabSession(): Promise<TabSession | null> {
+  try {
+    // storageReady sets indexedDbAvailable and runs the legacy migration;
+    // awaiting it also keeps this first read from racing the module probe.
+    await storageReady
+    if (!indexedDbAvailable) return sanitizeSession(readLegacyJson(LEGACY_TABS_KEY).value)
+    const db = await database()
+    const record = await getRecord<{ id: string; tabs: unknown; activeIndex: unknown }>(db, TABS_STORE, 'current')
+    return record ? sanitizeSession(record) : null
+  } catch {
+    return null
+  }
 }

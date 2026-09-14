@@ -52,13 +52,14 @@ The primary design goals are:
 - `web/src/components/SettingsDialog.vue` exposes the object-browser grouping preference.
 - `web/src/composables/connection.ts` manages connection state, remembered configurations, and connection switching.
 - `web/src/composables/schema.ts` manages schema loading and stale-request protection.
-- `web/src/composables/tabs.ts` stores editor tabs, pinned-file state, and active-tab state.
+- `web/src/composables/tabs.ts` stores editor tabs, pinned-file state, active-tab state, and the tab session machinery.
 - `web/src/composables/results.ts` stores per-tab query state and protects asynchronous operations with operation tokens.
 - `web/src/composables/settings.ts` persists user preferences.
 - `web/src/composables/toast.ts` shows transient status messages.
 - `web/src/lib/sqlformat.ts` wraps `sql-formatter` while preserving non-routine dollar-quoted bodies.
 - `web/src/lib/gridio.ts` implements clipboard, delimited text, and safe CSV export.
-- `web/src/lib/storage.ts` owns IndexedDB persistence for settings, connections, and pinned files, including one-way migration from the earlier `localStorage` keys.
+- `web/src/lib/storage.ts` owns IndexedDB persistence for settings, connections, pinned files, and the tab session, including one-way migration from the earlier `localStorage` keys.
+- `web/src/lib/tabsession.ts` serializes and restores the user-tab session (pure helpers).
 - `web/src/lib/files.ts` wraps the File System Access API with a download fallback.
 - `web/src/lib/objectgroups.ts` groups objects by common underscore-separated name prefixes.
 - `web/src/lib/tablegroups.ts` adapts that grouping for tables.
@@ -201,6 +202,8 @@ Schema loads use a version token. Only the latest load may update schema data, e
 Each tab result has an operation token. Query, page-load, and export operations check that token and the current tab result before updating rows, messages, or loading flags. A new query cannot begin while a page load or export drain is active.
 
 Closing a tab drops its local result state and calls the backend session-close endpoint. Context-menu operations apply the same cleanup to all affected tabs.
+
+The tab session saves user-created query tabs — and only those: DDL tabs, generated SQL from the table editor, file tabs, and pinned files are never part of it. A signature over the persistable tabs (keys, titles, contents, and the active tab) is compared every `SESSION_SAVE_INTERVAL_MS` (10 seconds, a constant in `composables/tabs.ts`) and again on `pagehide`; the write is skipped while nothing changed, and a rejected write is retried on the next tick. The session is global — connection state plays no part, so switching connections or disconnecting never swaps, closes, or rebinds tabs. At startup `sessionsReady` restores the saved tabs (fresh unsaved query tabs with their order, titles, contents, and active selection) before the default tab is created. Storage is a `tabs` IndexedDB store, with a `pgdev.tabs` localStorage fallback; unreadable data simply means nothing to restore.
 
 The result grid is virtualized and supports column resizing, cell copying, TSV copying, incremental loading, cancellation, and CSV export. CSV cells beginning with spreadsheet formula characters are prefixed with an apostrophe to prevent formula execution when opened by spreadsheet software.
 

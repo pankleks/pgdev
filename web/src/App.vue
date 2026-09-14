@@ -161,8 +161,14 @@ onMounted(() => {
   window.addEventListener('pagehide', flushSizes)
   // Capture editor shortcuts before Monaco or the browser handles them.
   window.addEventListener('keydown', onKeyDown, true)
-  if (!tabs.state.tabs.length) tabs.newQuery()
-  void Promise.all([conn.ready, settings.ready, tabs.pinsReady]).then(() => conn.autoConnect())
+  // Restore the saved tab session before the default tab is created, then
+  // connect. The session is global: connection state plays no part in it.
+  void tabs.sessionsReady
+    .then(() => {
+      if (!tabs.state.tabs.length) tabs.newQuery()
+      return Promise.all([conn.ready, settings.ready, tabs.pinsReady])
+    })
+    .then(() => conn.autoConnect())
 })
 
 onBeforeUnmount(() => {

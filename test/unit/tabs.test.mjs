@@ -35,3 +35,18 @@ test('moveTabToIndex reorders forward, backward and in place', () => {
   tabs.moveTabToIndex(b, 99)
   assert.deepEqual(keys(), [a, c, b])
 })
+
+test('only user-created query tabs are marked for session persistence', () => {
+  tabs.newQuery()
+  const created = tabs.state.tabs[tabs.state.tabs.length - 1]
+  assert.equal(created.persist, true, 'New query tabs join the session')
+
+  tabs.openDdl('table', 'public', 'persist_probe', 'CREATE TABLE probe ()', '', true, '', 'conn-id')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'DDL tabs do not')
+
+  tabs.openSqlTab('Edit probe', 'ALTER TABLE probe ADD COLUMN c int', 'conn-id')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'generated SQL does not')
+
+  tabs.openFile('probe.sql', 'select 1')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'file tabs do not')
+})

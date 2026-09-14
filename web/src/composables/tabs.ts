@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { readTextFileHandle, type FileHandle } from '../lib/files'
-import { savePinnedFiles, storageReady, type StoredPinnedFile } from '../lib/storage'
+import { loadTabSession, savePinnedFiles, saveTabSession, storageReady, type StoredPinnedFile } from '../lib/storage'
+import { restoreSession, serializeSession } from '../lib/tabsession'
 import { useToast } from './toast'
 
 export interface EditorTab {
@@ -15,6 +16,9 @@ export interface EditorTab {
   pinnedId?: string
   /** Connection a DDL tab was generated from (absent for query/file tabs). */
   connectionId?: string
+  /** True only for user-created query tabs — the ones the tab session saves
+   * and restores. DDL tabs, generated SQL, file tabs and pins never set it. */
+  persist?: boolean
 }
 
 export interface PinnedFile {
@@ -66,6 +70,70 @@ function newPinId(): string {
   return `pin-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+// --- tab session -----------------------------------------------------------
+// User-created query tabs are snapshotted every SESSION_SAVE_INTERVAL_MS and
+// on exit, and restored once at startup. A cheap signature comparison skips
+// the write while nothing changed; connection state is deliberately not part
+// of any of this.
+
+export const SESSION_SAVE_INTERVAL_MS = 10_000
+
+let sessionLoaded = false
+let lastSessionSignature = ''
+
+function sessionSignature(): string {
+  return JSON.stringify({
+    active: state.activeKey,
+    tabs: state.tabs
+      .filter((tab) => tab.persist === true)
+      .map((tab) => [tab.key, tab.title, tab.content]),
+  })
+}
+
+async function saveSessionIfChanged(): Promise<void> {
+  if (!sessionLoaded) return
+  const signature = sessionSignature()
+  if (signature === lastSessionSignature) return
+  lastSessionSignature = signature
+  try {
+    await saveTabSession(serializeSession(state.tabs, state.activeKey))
+  } catch {
+    // Let the next tick retry rather than silently dropping the change.
+    lastSessionSignature = ''
+  }
+}
+
+/**
+ * Loads and restores the saved session exactly once. `sessionsReady` resolves
+ * after the restore so App.vue can create the default tab only when nothing
+ * came back.
+ */
+export const sessionsReady = (async () => {
+  try {
+    const session = await loadTabSession()
+    if (session && session.tabs.length) {
+      const restored = restoreSession(session, () => `query-${state.counter++}`)
+      state.tabs.splice(0, state.tabs.length, ...restored)
+      state.activeKey = restored[session.activeIndex]?.key ?? restored[0]?.key ?? ''
+    }
+  } catch {
+    // Storage is unavailable; start from an empty strip.
+  }
+  sessionLoaded = true
+  lastSessionSignature = sessionSignature()
+})()
+
+// Timers and unload handlers exist only in the browser, so unit tests that
+// import this module are not kept alive by a pending interval.
+if (typeof window !== 'undefined') {
+  window.setInterval(() => {
+    void saveSessionIfChanged()
+  }, SESSION_SAVE_INTERVAL_MS)
+  window.addEventListener('pagehide', () => {
+    void saveSessionIfChanged()
+  })
+}
+
 function updatePinnedFile(id: string, fileName: string, content: string, handle?: FileHandle) {
   const pin = state.pinnedFiles.find((entry) => entry.id === id)
   if (!pin) return
@@ -92,6 +160,7 @@ export function useTabs() {
       content: '',
       savedContent: null,
       readOnly: false,
+      persist: true,
     })
     state.counter++
     state.activeKey = key
@@ -360,6 +429,7 @@ export function useTabs() {
     isDirty,
     displayTitle,
     pinsReady,
+    sessionsReady,
     pinTab,
     unpinFile,
     isPinned,
