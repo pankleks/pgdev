@@ -225,6 +225,55 @@ export function stateFingerprint(state: Omit<TableEditState, 'fingerprint'>): st
   return createHash('sha256').update(parts.join('\u0000')).digest('hex')
 }
 
+export interface PlannedRename {
+  from: string
+  to: string
+}
+
+/**
+ * Order column renames so every target name is free when it is used. Chains
+ * reverse as needed (`b → c` before `a → b`), and cycles (`a ↔ b`) unroll
+ * through a collision-free temporary name (`a → tmp`, `b → a`, `tmp → b`).
+ * `taken` starts as every current name still in play after the drops run.
+ * Pure and exported for the unit suite; the diff turns each step into one
+ * RENAME statement.
+ */
+export function planRenames(
+  renames: { id: string; from: string; to: string }[],
+  taken: Set<string>,
+): PlannedRename[] {
+  const steps: PlannedRename[] = []
+  const pending = renames.filter((r) => r.from !== r.to).map((r) => ({ ...r }))
+  const names = new Set(taken)
+  let tempCounter = 0
+  while (pending.length) {
+    const free = pending.find((r) => !names.has(r.to))
+    if (free) {
+      steps.push({ from: free.from, to: free.to })
+      names.delete(free.from)
+      names.add(free.to)
+      pending.splice(pending.indexOf(free), 1)
+      continue
+    }
+    // Every pending target is still held — a rename cycle. Move one column to
+    // a temporary name and rotate it to the back, so each member gets broken
+    // in turn instead of the same one looping forever. The next iterations
+    // then free the cycle's real names one by one.
+    const victim = pending.shift()
+    if (!victim) break
+    let tempName: string
+    do {
+      tempName = `pgdev_rename_${++tempCounter}`
+    } while (names.has(tempName))
+    steps.push({ from: victim.from, to: tempName })
+    names.delete(victim.from)
+    names.add(tempName)
+    victim.from = tempName
+    pending.push(victim)
+  }
+  return steps
+}
+
 /**
  * Compare the desired column set against the live catalog and produce the
  * ALTER statements, in dependency-safe order: drops, renames, per-column
@@ -271,13 +320,26 @@ export function diffTableEdit(live: LiveTable, req: TableEditRequest): DiffOutco
     statements.push(`ALTER TABLE ${table}\n  DROP COLUMN ${ident(col.name)}`)
   }
 
-  // --- renames, then per-column alters (renamed names are final here) ------
+  // --- renames, dependency-ordered (chains reversed, cycles through a temp).
+  // A dropped column's name is free because the drops above ran first, and
+  // every rename completes before the property alters that use final names.
+  const keptNames = new Set(
+    live.columns.filter((col) => byId.has(col.id)).map((col) => col.name),
+  )
+  const renameSteps = planRenames(
+    live.columns
+      .filter((col) => byId.has(col.id))
+      .map((col) => ({ id: col.id, from: col.name, to: byId.get(col.id)?.name.trim() ?? col.name })),
+    keptNames,
+  )
+  for (const step of renameSteps) {
+    statements.push(`ALTER TABLE ${table}\n  RENAME COLUMN ${ident(step.from)} TO ${ident(step.to)}`)
+  }
+
+  // --- per-column alters (all renames are done; names here are final) ------
   for (const col of live.columns) {
     const edit = byId.get(col.id)
     if (!edit) continue
-    if (edit.name.trim() !== col.name) {
-      statements.push(`ALTER TABLE ${table}\n  RENAME COLUMN ${ident(col.name)} TO ${ident(edit.name.trim())}`)
-    }
     if (col.locked) {
       const typeChanged = normalizeExpr(edit.type) !== normalizeExpr(col.type)
       const defaultChanged = normalizeExpr(edit.defaultValue) !== normalizeExpr(col.defaultValue)

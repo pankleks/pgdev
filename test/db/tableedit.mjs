@@ -193,6 +193,44 @@ console.log('\n== column identity is the catalog attnum, not the name ==')
     bad.ok ? 'no error' : bad.error.message)
 }
 
+console.log('\n== rename chains and swaps apply in one script ==')
+{
+  const SHAPE = `SELECT attname, format_type(atttypid, atttypmod) AS type FROM pg_attribute
+    WHERE attrelid = 'public.te_swap'::regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum`
+  await pool.query(`CREATE TABLE te_swap (a integer, b text, c text)`)
+  const oid = await oidOfRel('te_swap')
+
+  // Swap a and b: a integer <-> b text. Names and types must stay attached.
+  const state = await tableedit.fetchTableEditState(pool, oid)
+  const by = Object.fromEntries(state.columns.map((c) => [c.name, c]))
+  const swap = await tableedit.tableEditDdl(pool, oid, request(state, [
+    from(by.a, { name: 'b' }), from(by.b, { name: 'a' }), from(by.c),
+  ]))
+  ok('a swap unrolls through a temporary rename',
+    typeof swap === 'string' && /pgdev_rename_/.test(swap), swap)
+  await pool.query(swap)
+  eq('the swapped names keep their types', (await pool.query(SHAPE)).rows, [
+    { attname: 'b', type: 'integer' },
+    { attname: 'a', type: 'text' },
+    { attname: 'c', type: 'text' },
+  ])
+
+  // Chain on the same table: b -> c and c -> d, with a untouched.
+  const state2 = await tableedit.fetchTableEditState(pool, oid)
+  const by2 = Object.fromEntries(state2.columns.map((c) => [c.name, c]))
+  const chain = await tableedit.tableEditDdl(pool, oid, request(state2, [
+    from(by2.a), from(by2.b, { name: 'c' }), from(by2.c, { name: 'd' }),
+  ]))
+  await pool.query(chain)
+  // Rows come back in attnum order: attnum 1 was renamed b→c, so the integer
+  // now sits under 'c'; attnum 2 stayed 'a' (text); attnum 3 went c→d.
+  eq('the chain applies cleanly', (await pool.query(SHAPE)).rows, [
+    { attname: 'c', type: 'integer' },
+    { attname: 'a', type: 'text' },
+    { attname: 'd', type: 'text' },
+  ])
+}
+
 console.log('\n== guards ==')
 {
   const oid = await oidOfRel('te_all')

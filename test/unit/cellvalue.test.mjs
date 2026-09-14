@@ -15,6 +15,27 @@ test('jsonb objects reprint with a two-space indent', () => {
   )
 })
 
+test('large integers and number spellings survive verbatim', () => {
+  // JSON.parse + JSON.stringify would turn 9007199254740993 into
+  // 9007199254740992 and 1.0 into 1 — the formatter must only move tokens.
+  assert.equal(
+    formatCellValue('{"id":9007199254740993,"small":1.0,"e":1e999,"neg":-0.50}', 'jsonb'),
+    '{\n  "id": 9007199254740993,\n  "small": 1.0,\n  "e": 1e999,\n  "neg": -0.50\n}',
+  )
+})
+
+test('string escapes are never re-escaped', () => {
+  assert.equal(formatCellValue('"a\\"b\\\\c\\u0041"', 'jsonb'), '"a\\"b\\\\c\\u0041"')
+  assert.equal(
+    formatCellValue('[{"k":"line\\ntext"}]', 'json'),
+    '[\n  {\n    "k": "line\\ntext"\n  }\n]',
+  )
+})
+
+test('formatting normalises whitespace only', () => {
+  assert.equal(formatCellValue('{ "a" : 1 , "b" : [ ] }', 'jsonb'), '{\n  "a": 1,\n  "b": []\n}')
+})
+
 test('json nested arrays pretty-print too', () => {
   assert.equal(formatCellValue('[{"x":1},{"y":"z"}]', 'json'), '[\n  {\n    "x": 1\n  },\n  {\n    "y": "z"\n  }\n]')
 })

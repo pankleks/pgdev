@@ -1,4 +1,5 @@
 import { Query, type PoolClient, type QueryResult, type QueryArrayConfig } from 'pg'
+import { rawJsonTypes } from './pgtypes.js'
 
 export interface BoundedResult {
   result: QueryResult<unknown[]>
@@ -11,7 +12,7 @@ export function boundedQuery(client: PoolClient, sql: string, cap: number): Prom
   return new Promise((resolve, reject) => {
     // A row listener with no callback disables node-postgres's internal row
     // accumulation. Slicing the result of a promise-based query is too late.
-    const config: QueryArrayConfig = { text: sql, rowMode: 'array' }
+    const config: QueryArrayConfig = { text: sql, rowMode: 'array', types: rawJsonTypes }
     const query = new Query<unknown[]>(config)
     const rows: unknown[][] = []
     let totalRowCount = 0

@@ -241,6 +241,27 @@ eq('insert with trigger ok', ins.status, 200)
 const cap = await q("SELECT first_name FROM employees WHERE email='bob@example.com'", 'tab6')
 eq('trigger fired (initcap)', cap.body.results[0].rows[0][0], 'Bob')
 
+// JSON/JSONB travel as raw server text: big integers, number spellings and
+// string scalars survive, and JSON null is distinguishable from SQL NULL.
+// The first batch runs through the cursor path (single SELECT), the second
+// through the bounded direct path (the final statement is not the only one).
+const jsonSel = await q(
+  `SELECT '{"big": 9007199254740993, "small": 1.0}'::jsonb AS j, '"abc"'::jsonb AS s, 'null'::jsonb AS n, NULL::jsonb AS z`,
+  'tab7',
+)
+{
+  const row = jsonSel.body.results[0].rows[0]
+  ok('large JSON integers survive the round trip', row[0].includes('9007199254740993'), row[0])
+  ok('number spellings survive the round trip', row[0].includes('1.0'), row[0])
+  eq('JSON string scalars keep their quotes', row[1], '"abc"')
+  eq('JSON null is not SQL NULL', row[2], 'null')
+  eq('SQL NULL stays null', row[3], null)
+}
+const jsonDirect = await q(`SELECT '{"big": 9007199254740993}'::jsonb AS j; SELECT 1`, 'tab8')
+ok('bounded direct results keep JSON text too',
+  jsonDirect.body.results[0].rows[0][0].includes('9007199254740993'),
+  jsonDirect.body.results[0].rows[0][0])
+
 console.log('\n== transaction safety ==')
 eq('transaction fixture created', (await q('CREATE TABLE tx_check (id integer PRIMARY KEY)', 'tx')).status, 200)
 const observer = new Client({ ...base, database: DB })

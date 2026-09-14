@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg'
 import { getPool, setRunning, getRunning, deleteRunning, runningKeysForConnection } from './pools.js'
+import { rawJsonTypes } from './pgtypes.js'
 import { cancelClientQuery } from './pgcancel.js'
 import { guardCheckedOutClient } from './checkout.js'
 import { splitStatements } from './sqlsplit.js'
@@ -95,6 +96,7 @@ async function fetchRows(
     // Cursor names are server-generated (`pgdev_cur_N`), never user input.
     text: `FETCH FORWARD ${count} FROM "${cursor}"`,
     rowMode: 'array',
+    types: rawJsonTypes,
   })
   return {
     fields: (res.fields ?? []) as FieldInfo[],

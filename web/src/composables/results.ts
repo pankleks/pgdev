@@ -12,6 +12,10 @@ export interface ResultsApi {
 export interface GridResult extends DataResult {
   key: string
   statementNumber: number
+  /** Set when a file-stream export drained the remaining cursor: the grid
+   * keeps its first page, `rows` is the exported total, and the backend no
+   * longer has anything to page. */
+  exported?: { rows: number }
 }
 
 export interface Message {
@@ -216,33 +220,58 @@ export function createResults(api: ResultsApi) {
   }
 
   /**
-   * Drain all remaining pages into the grid, handing every page — starting
-   * with the rows already loaded — to `sink`. The CSV export streams pages to
-   * disk through it instead of building one giant string. Returns true when
-   * every row was loaded.
+   * Drain all remaining pages, handing every page — starting with the rows
+   * already loaded — to `sink`. `grid` is the explicit capture being exported:
+   * a selection change while the save picker or the drain is open must not
+   * switch the target, so callers pass the grid they captured. Every step
+   * re-checks the result identity and operation token.
+   *
+   * `retain: false` is the file-streaming mode: drained pages are written but
+   * NOT appended to the grid, so memory stays flat. Once the cursor is
+   * consumed the grid keeps its first page, stops advertising pagination, and
+   * records the exported total (`exported`) because Load more can no longer
+   * work. Returns true when the drain reached the end of the cursor.
    */
   async function exportAll(
     tabKey: string,
     connectionId: string,
-    sink: (rows: unknown[][]) => void,
+    grid: GridResult,
+    sink: (rows: unknown[][]) => void | Promise<void>,
+    retain: boolean,
   ): Promise<boolean> {
     const r = state.byTab[tabKey]
-    if (!r?.grid || r.running || r.loadingMore) return (r?.grid && !r.grid.truncated) || false
-    const g = r.grid
+    if (!r || r.running || r.loadingMore) return false
+    const g = grid
+    if (!r.grids.includes(g)) return false
     const operation = r.operation
     r.loadingMore = true
+    let exported = 0
     try {
-      sink([...g.rows])
+      await sink([...g.rows])
+      exported += g.rows.length
       while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running) {
-        const res = await fetchPageFor(tabKey, connectionId, r, operation, g)
-        if (!res) return false
-        sink(res.rows)
+        const res = await api.fetchMore(connectionId, tabKey)
+        if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
+        await sink(res.rows)
+        exported += res.rows.length
+        if (retain) {
+          g.rows.push(...res.rows)
+          g.rowCount = g.rows.length
+          g.truncated = res.truncated
+        } else if (!res.truncated) {
+          // Cursor consumed into the file: the grid keeps its first page and
+          // can no longer offer Load more.
+          g.truncated = false
+          g.exported = { rows: exported }
+        }
       }
-      if (!isCurrent(tabKey, r, operation)) return false
-      const complete = r.grids.includes(g) && !g.truncated
+      if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
+      const complete = !g.truncated
       r.messages.push({
         text: complete
-          ? `Statement ${g.statementNumber}: all rows loaded (${g.rows.length} total).`
+          ? retain
+            ? `Statement ${g.statementNumber}: all rows loaded (${g.rows.length} total).`
+            : `Statement ${g.statementNumber}: ${exported} row(s) exported to the file; the grid keeps its first ${g.rows.length}.`
           : 'Stopped early — grid changed during load.',
         level: complete ? 'info' : 'error',
       })
@@ -259,8 +288,8 @@ export function createResults(api: ResultsApi) {
   }
 
   /** Drain all remaining pages into the grid (in-place export helper). */
-  async function loadAll(tabKey: string, connectionId: string): Promise<boolean> {
-    return exportAll(tabKey, connectionId, () => undefined)
+  async function loadAll(tabKey: string, connectionId: string, grid: GridResult): Promise<boolean> {
+    return exportAll(tabKey, connectionId, grid, () => undefined, true)
   }
 
   return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll }

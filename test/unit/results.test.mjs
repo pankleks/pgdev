@@ -75,12 +75,73 @@ test('export draining retains its target across result switches', async () => {
   const page = deferred()
   api.fetchMore = () => page.promise
   results.selectGrid('tab', r.grids[1].key)
-  const loading = results.loadAll('tab', 'db')
+  const loading = results.loadAll('tab', 'db', r.grids[1])
   results.selectGrid('tab', r.grids[0].key)
   page.resolve({ rows: [[21]], truncated: false })
   assert.equal(await loading, true)
   assert.deepEqual(r.grid.rows, [[1]])
   assert.deepEqual(r.grids[1].rows, [[20], [21]])
+})
+
+test('streaming export drains into the sink without retaining pages', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, results: [data('a', [[1]], { truncated: true })] })
+  await results.run('tab', 'db', 'q')
+  const r = results.state.byTab.tab
+  const g = r.grid
+  let calls = 0
+  api.fetchMore = async () => {
+    calls++
+    return calls === 1 ? { rows: [[2], [3]], truncated: true } : { rows: [[4]], truncated: false }
+  }
+  const pages = []
+  const complete = await results.exportAll('tab', 'db', g, (rows) => { pages.push(...rows) }, false)
+  assert.equal(complete, true)
+  assert.deepEqual(pages, [[1], [2], [3], [4]], 'every page reached the sink')
+  assert.deepEqual(g.rows, [[1]], 'drained pages are not retained in the grid')
+  assert.equal(g.truncated, false)
+  assert.deepEqual(g.exported, { rows: 4 })
+  assert.equal(r.loadingMore, false)
+  // The cursor is consumed: Load more must not touch the API again.
+  await results.loadMore('tab', 'db')
+  assert.equal(calls, 2)
+})
+
+test('export writes to the captured grid, not the current selection', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({
+    durationMs: 1,
+    results: [data('a', [[1]], { truncated: true }), data('b', [[9]], { truncated: true })],
+  })
+  await results.run('tab', 'db', 'batch')
+  const r = results.state.byTab.tab
+  const captured = r.grids[0]
+  // The user switches sub-tabs while the save picker is open: the export must
+  // still drain the grid it was started from.
+  results.selectGrid('tab', r.grids[1].key)
+  api.fetchMore = async () => ({ rows: [[2]], truncated: false })
+  const sink = []
+  const complete = await results.exportAll('tab', 'db', captured, (rows) => { sink.push(...rows) }, false)
+  assert.equal(complete, true)
+  assert.deepEqual(sink, [[1], [2]])
+  assert.deepEqual(captured.exported, { rows: 2 })
+  assert.equal(r.grids[1].exported, undefined)
+})
+
+test('a streaming export aborts when the result is dropped mid-drain', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, results: [data('a', [[1]], { truncated: true })] })
+  await results.run('tab', 'db', 'q')
+  const g = results.state.byTab.tab.grid
+  const page = deferred()
+  api.fetchMore = () => page.promise
+  const sink = []
+  const exporting = results.exportAll('tab', 'db', g, (rows) => { sink.push(...rows) }, false)
+  results.drop('tab')
+  page.resolve({ rows: [[2]], truncated: false })
+  assert.equal(await exporting, false)
+  assert.deepEqual(sink, [[1]], 'the page arriving after the drop is discarded')
+  assert.equal(g.exported, undefined)
 })
 
 test('dropped results ignore outstanding pages and new runs replace all grids', async () => {

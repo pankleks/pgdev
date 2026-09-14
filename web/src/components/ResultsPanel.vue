@@ -214,14 +214,17 @@ async function exportCsv() {
   const connectionId = conn.state.id
   if (!connectionId) return
   const tabKey = tabs.state.activeKey
+  // The grid is captured here, before any await: the save picker and the
+  // drain run later, and a selection change meanwhile must not switch what
+  // gets exported (the store re-validates this capture every step).
   const g = results.state.byTab[tabKey]?.grid
   if (!g) return
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
   const filename = `pgDEV-statement-${g.statementNumber}-${stamp}${g.limited ? '-partial' : ''}.csv`
 
-  // Stream pages straight to disk when the browser can, so export memory does
-  // not grow with the result. The sink receives each page as the drain loads
-  // it; the grid keeps its normal Load more / truncated state throughout.
+  // Stream pages straight to disk when the browser can: memory stays flat
+  // (drained pages are not retained in the grid) and every write is awaited
+  // so a failed write aborts the file instead of vanishing into a void.
   const picker = (window as unknown as SavePicker).showSaveFilePicker
   if (picker) {
     let handle
@@ -231,19 +234,25 @@ async function exportCsv() {
       if ((e as Error).name !== 'AbortError') toast.show(`Export failed: ${(e as Error).message}`)
       return
     }
-    const writable = await handle.createWritable()
+    let writable
+    try {
+      writable = await handle.createWritable()
+    } catch (e) {
+      toast.show(`Export failed: ${(e as Error).message}`)
+      return
+    }
     let rows = 0
     try {
       await writable.write(csvHeader(g.columns))
-      const complete = await results.exportAll(tabKey, connectionId, (page) => {
+      const complete = await results.exportAll(tabKey, connectionId, g, async (page) => {
         rows += page.length
-        void writable.write(csvRows(page))
-      })
+        await writable.write(csvRows(page))
+      }, false)
       if (!complete) {
         // Stale drain (connection/tab/result changed): discard the partial
         // file rather than leaving truncated data on disk.
         await writable.abort()
-        toast.show('Export canceled because the active connection, tab, or result changed')
+        toast.show('Export canceled because the connection or result changed')
         return
       }
       await writable.close()
@@ -260,11 +269,7 @@ async function exportCsv() {
   // Fallback: drain into the grid, then download one Blob.
   if (g.truncated) {
     toast.show('Loading all rows for export…')
-    const ok = await results.loadAll(tabKey, connectionId)
-    if (tabs.state.activeKey !== tabKey || conn.state.id !== connectionId || results.state.byTab[tabKey]?.grid !== g) {
-      toast.show('Export canceled because the active connection, tab, or result changed')
-      return
-    }
+    const ok = await results.loadAll(tabKey, connectionId, g)
     if (!ok) {
       toast.show('Export failed — see Messages')
       return
@@ -382,6 +387,7 @@ async function exportCsv() {
         {{ result?.grid?.rowCount ?? 0 }} row(s)
         <span v-if="grid.g.truncated">· more available</span>
         <span v-else-if="grid.g.limited">· first {{ grid.g.rows.length }} of {{ grid.g.totalRowCount }} · row limit reached; remaining rows were not retained</span>
+        <span v-else-if="grid.g.exported">· first {{ grid.g.rows.length }} shown · {{ grid.g.exported.rows }} row(s) exported to CSV</span>
         <button
           v-if="grid.g.truncated"
           class="btn-sm"

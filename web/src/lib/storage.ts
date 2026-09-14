@@ -157,6 +157,12 @@ function writeLegacyJson(key: string, value: unknown) {
   }
 }
 
+/** The pinned-file fallback must know whether the write landed: unlike
+ * writeLegacyJson it lets a quota or unavailable-storage error propagate. */
+function writeLegacyJsonOrThrow(key: string, value: unknown) {
+  localStorage.setItem(key, JSON.stringify(value))
+}
+
 function isStoredPinnedFile(value: unknown): value is StoredPinnedFile {
   if (!value || typeof value !== 'object') return false
   const pin = value as Partial<StoredPinnedFile>
@@ -291,12 +297,14 @@ export function saveConnections(saved: unknown, last: unknown): Promise<void> {
 
 export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
   return queueWrite(async () => {
+    const withoutHandles = pins.map(({ handle: _handle, ...pin }) => pin)
     if (!indexedDbAvailable) {
-      writeLegacyJson(LEGACY_PINNED_FILES_KEY, pins.map(({ handle: _handle, ...pin }) => pin))
+      // No IndexedDB: the legacy key is the only home left. A failed write
+      // rejects so the caller can warn instead of losing the pins silently.
+      writeLegacyJsonOrThrow(LEGACY_PINNED_FILES_KEY, withoutHandles)
       return false
     }
     const db = await database()
-    const withoutHandles = pins.map(({ handle: _handle, ...pin }) => pin)
     try {
       await replacePinnedFiles(db, pins)
       return true
@@ -306,14 +314,15 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
       try {
         await replacePinnedFiles(db, withoutHandles)
         return false
-      } catch (err) {
+      } catch (idbError) {
         // Last resort before the pins are lost (e.g. quota): legacy
-        // localStorage. If even that fails, surface the original error so
-        // the caller can warn the user instead of losing data silently.
+        // localStorage. If even that fails, the pins live only in memory —
+        // surface the failure so the caller can warn instead of reporting a
+        // save that never happened.
         try {
-          writeLegacyJson(LEGACY_PINNED_FILES_KEY, withoutHandles)
-        } catch {
-          throw err
+          writeLegacyJsonOrThrow(LEGACY_PINNED_FILES_KEY, withoutHandles)
+        } catch (legacyError) {
+          throw legacyError instanceof Error ? legacyError : idbError
         }
         return false
       }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { diffTableEdit, stateFingerprint, fkLabels, ukLabels } =
+const { diffTableEdit, stateFingerprint, planRenames, fkLabels, ukLabels } =
   await load('server/catalog/tableedit.ts')
 
 // The diff decides which ALTER statements the table editor emits, so every
@@ -270,6 +270,80 @@ test('drops come before renames, so a rename may reuse a dropped name', () => {
   assert.deepEqual(out.statements, [
     'ALTER TABLE "public"."t"\n  DROP COLUMN "b"',
     'ALTER TABLE "public"."t"\n  RENAME COLUMN "a" TO "b"',
+  ])
+})
+
+test('rename chains reverse so each target name is free', () => {
+  const l = live([col('a'), col('b')])
+  const out = runOut(l, {
+    description: null,
+    columns: [edit('b', { id: 'a' }), edit('c', { id: 'b' })],
+  })
+  // a→b must wait for b→c: emitting a→b first would collide with the live b.
+  assert.deepEqual(out.statements, [
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "b" TO "c"',
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "a" TO "b"',
+  ])
+})
+
+test('rename swaps unroll through a temporary name', () => {
+  const l = live([col('a'), col('b')])
+  const out = runOut(l, {
+    description: null,
+    columns: [edit('b', { id: 'a' }), edit('a', { id: 'b' })],
+  })
+  assert.deepEqual(out.statements, [
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "a" TO "pgdev_rename_1"',
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "b" TO "a"',
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "pgdev_rename_1" TO "b"',
+  ])
+})
+
+test('planRenames orders chains, unrolls cycles, and uses dropped names freely', () => {
+  // Chain: c is free, so b→c first.
+  assert.deepEqual(
+    planRenames(
+      [{ id: '1', from: 'a', to: 'b' }, { id: '2', from: 'b', to: 'c' }],
+      new Set(['a', 'b']),
+    ),
+    [{ from: 'b', to: 'c' }, { from: 'a', to: 'b' }],
+  )
+  // Three-cycle a→b→c→a.
+  const cycle = planRenames(
+    [
+      { id: '1', from: 'a', to: 'b' },
+      { id: '2', from: 'b', to: 'c' },
+      { id: '3', from: 'c', to: 'a' },
+    ],
+    new Set(['a', 'b', 'c']),
+  )
+  assert.deepEqual(cycle, [
+    { from: 'a', to: 'pgdev_rename_1' },
+    { from: 'c', to: 'a' },
+    { from: 'b', to: 'c' },
+    { from: 'pgdev_rename_1', to: 'b' },
+  ])
+  // A dropped column's name is simply not in `taken`.
+  assert.deepEqual(
+    planRenames([{ id: '1', from: 'a', to: 'gone' }], new Set(['a'])),
+    [{ from: 'a', to: 'gone' }],
+  )
+})
+
+test('renames complete before property changes on renamed columns', () => {
+  const l = live([col('a'), col('b', { type: 'integer' })])
+  const out = runOut(l, {
+    description: null,
+    columns: [
+      edit('b', { id: 'a' }),
+      edit('c', { id: 'b', type: 'text', nullable: false }),
+    ],
+  })
+  assert.deepEqual(out.statements, [
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "b" TO "c"',
+    'ALTER TABLE "public"."t"\n  RENAME COLUMN "a" TO "b"',
+    'ALTER TABLE "public"."t"\n  ALTER COLUMN "c" TYPE text',
+    'ALTER TABLE "public"."t"\n  ALTER COLUMN "c" SET NOT NULL',
   ])
 })
 

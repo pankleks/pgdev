@@ -1758,8 +1758,12 @@ body.dragging-results {
 
 /* --- value dialog (results-grid cell values) ----------------------------- */
 
-.valuedialog-modal {
-  width: min(760px, calc(100vw - 48px));
+/* Scoped like the table-editor modal: the base `.modal-backdrop .modal` rule
+ * (width: 420px) outranks a flat `.valuedialog-modal`, so the dialog would
+ * silently stay narrow without the full selector. 50% wider than the intended
+ * 760px, capped by the viewport. */
+.modal-backdrop .modal.valuedialog-modal {
+  width: min(1140px, calc(100vw - 48px));
   display: flex;
   flex-direction: column;
 
