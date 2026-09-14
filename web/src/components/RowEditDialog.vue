@@ -7,6 +7,8 @@ import { formatCellForDisplay } from '../lib/gridio'
 import {
   editorKind,
   fromEditorValue,
+  isArrayType,
+  isMultiDimensionalArray,
   isReadOnlyType,
   jsonSyntaxError,
   numberStep,
@@ -77,11 +79,16 @@ function buildFields(target: RowEditTarget): Field[] {
     const original = row[index] ?? null
     const wasNull = original === null || original === undefined
     const kind = editorKind(type)
+    // The single-line array literal control cannot represent more than one
+    // dimension faithfully, so such values are shown locked.
+    const multiDimensional =
+      isArrayType(type) && !wasNull && isMultiDimensionalArray(String(original))
     let tag: string | null = null
     if (!info) tag = 'not a plain column'
     else if (info.pk) tag = 'primary key'
     else if (info.generated) tag = 'generated'
     else if (isReadOnlyType(type)) tag = 'binary'
+    else if (multiDimensional) tag = 'multi-dimensional'
     const initialText = wasNull ? '' : toEditorValue(String(original), type)
     return {
       index,
@@ -89,7 +96,9 @@ function buildFields(target: RowEditTarget): Field[] {
       type,
       kind,
       tag,
-      editable: info !== undefined && !info.pk && !info.generated && !isReadOnlyType(type),
+      editable:
+        info !== undefined && !info.pk && !info.generated && !isReadOnlyType(type) &&
+        !multiDimensional,
       nullable: info?.nullable === true,
       maxLength: grid.columnTypeLengths?.[index] ?? null,
       original,

@@ -41,6 +41,9 @@ await pool.query(`
     active boolean,
     due_at timestamp,
     payload jsonb,
+    tags text[],
+    flags boolean[],
+    matrix integer[],
     code varchar(20)
   );
   CREATE TABLE grp_alpha (id serial PRIMARY KEY);
@@ -53,9 +56,9 @@ await pool.query(`
   CREATE TABLE app.thing (id integer PRIMARY KEY);
   CREATE VIEW app.v_thing AS SELECT id FROM app.thing;
   CREATE FUNCTION app.thing_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM app.thing $$;
-  INSERT INTO items (label, qty, active, due_at, payload) VALUES
-    ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}'),
-    ('b', NULL, NULL, NULL, NULL);
+  INSERT INTO items (label, qty, active, due_at, payload, tags, flags, matrix) VALUES
+    ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}', '{red,green}', '{TRUE,FALSE}', '{{1,2},{3,4}}'),
+    ('b', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 `)
 
 const children = []
@@ -363,6 +366,13 @@ try {
         codeType: byName('code')?.querySelector('input')?.type,
         codeMax: byName('code')?.querySelector('input')?.maxLength,
         labelMax: byName('label')?.querySelector('textarea')?.maxLength,
+        tagType: byName('tags')?.querySelector('input')?.type,
+        tagValue: byName('tags')?.querySelector('input')?.value,
+        flagType: byName('flags')?.querySelector('input')?.type,
+        flagValue: byName('flags')?.querySelector('input')?.value,
+        matrixTag: byName('matrix')?.querySelector('.rowedit-tag')?.textContent,
+        matrixLocked: !!byName('matrix')?.querySelector('.rowedit-locked'),
+        matrixInput: !!byName('matrix')?.querySelector('input'),
         labelTag: byName('label')?.querySelector('textarea') ? 'textarea' : (byName('label')?.querySelector('input')?.tagName ?? null),
         labelNull: !!byName('label')?.querySelector('.rowedit-null'),
         qtyNull: !!byName('qty')?.querySelector('.rowedit-null'),
@@ -372,7 +382,7 @@ try {
     `)
     eq('dialog title and table', [dialog.title, dialog.table], ['Edit row', 'public.items'])
     eq('dialog lists every result column, underscore columns last',
-      dialog.names, ['id', 'label', 'qty', 'active', 'due_at', 'payload', 'code', '_meta'])
+      dialog.names, ['id', 'label', 'qty', 'active', 'due_at', 'payload', 'tags', 'flags', 'matrix', 'code', '_meta'])
     eq('the primary key is locked and tagged', [dialog.idLocked, dialog.idTag], [true, 'primary key'])
     eq('numeric columns get a number input', dialog.qtyType, 'number')
     eq('booleans get a value checkbox and a NULL checkbox', dialog.activeCheckboxes, 2)
@@ -385,9 +395,13 @@ try {
     eq('varchar columns get a single-line text input', dialog.codeType, 'text')
     eq('varchar(n) input carries the declared maxlength', dialog.codeMax, 20)
     eq('text columns have no maxlength', dialog.labelMax, -1)
+    eq('array columns get a single-line literal input', [dialog.tagType, dialog.tagValue], ['text', '{red,green}'])
+    eq('boolean arrays get a single-line literal input', [dialog.flagType, dialog.flagValue], ['text', '{t,f}'])
+    eq('multi-dimensional arrays are locked',
+      [dialog.matrixTag, dialog.matrixLocked, dialog.matrixInput], ['multi-dimensional', true, false])
     eq('NOT NULL columns offer no NULL checkbox', dialog.labelNull, false)
     eq('nullable columns offer a NULL checkbox', dialog.qtyNull, true)
-    eq('one NULL checkbox per nullable field', dialog.nullChecks, 6)
+    eq('one NULL checkbox per nullable field', dialog.nullChecks, 8)
     eq('SAVE starts disabled', dialog.saveDisabled, true)
 
     // Native date/time controls otherwise render with the browser's default
@@ -440,6 +454,7 @@ try {
     await page.evaluate(`document.querySelector('.rowedit-open')?.click()`)
     await page.waitFor(`!!document.querySelector('.rowedit-modal')`, { timeout: 10000 })
     await setField('label', 'edited-in-browser')
+    await setField('tags', '{blue, green}')
     await page.evaluate(`${saveButton}?.click()`)
     await page.waitFor(`!document.querySelector('.rowedit-modal')`, { timeout: 20000 })
     ok('the dialog closes after a successful save', true)
@@ -448,14 +463,24 @@ try {
       { timeout: 20000 },
     ).then(() => true).catch(() => false)
     ok('the grid cell shows the saved value', patched)
+    const arrayPatched = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === '{blue,green}')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('the grid shows the saved array literal', arrayPatched)
 
-    // And the value is really in the database.
-    await runQuery("SELECT label FROM items WHERE id = 1")
+    // And both values are really in the database.
+    await runQuery('SELECT label, tags FROM items WHERE id = 1')
     const stored = await page.waitFor(
       `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === 'edited-in-browser')`,
       { timeout: 20000 },
     ).then(() => true).catch(() => false)
     ok('the saved value is stored in the database', stored)
+    const arrayStored = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === '{blue,green}')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('the array change is stored in the database', arrayStored)
   }
 
   console.log('\n== disconnecting disables running ==')

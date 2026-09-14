@@ -39,6 +39,45 @@ export function isReadOnlyType(type: string): boolean {
   return READ_ONLY_TYPES.has(baseType(type))
 }
 
+export function isArrayType(type: string): boolean {
+  return baseType(type).endsWith('[]')
+}
+
+/**
+ * True when an array literal holds nested arrays (`{{1,2},{3,4}}`). The row
+ * editor edits arrays as single-line literals, which cannot represent
+ * dimensions faithfully, so such values stay read-only. Quoted elements are
+ * skipped, so a brace inside a string (`{"{x}",y}`) is not a dimension.
+ */
+export function isMultiDimensionalArray(text: string): boolean {
+  const s = text.trim()
+  if (!s.startsWith('{')) return false
+  let i = 1
+  const n = s.length
+  while (i < n) {
+    const ch = s[i]
+    if (ch === '"') {
+      i++
+      while (i < n) {
+        if (s[i] === '\\') {
+          i += 2
+          continue
+        }
+        if (s[i] === '"') {
+          i++
+          break
+        }
+        i++
+      }
+      continue
+    }
+    if (ch === '{') return true
+    if (ch === '}') return false
+    i++
+  }
+  return false
+}
+
 /** Only `text` and JSON/JSONB get a multi-line control; `varchar(n)`, `char`,
  * uuid, enums and everything else use a single-line text input. */
 export function usesTextarea(type: string): boolean {

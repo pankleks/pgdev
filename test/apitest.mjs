@@ -536,12 +536,15 @@ console.log('\n== row editor ==')
     active boolean,
     due_at timestamptz,
     payload jsonb,
+    nums integer[],
+    tags text[],
+    flags boolean[],
     blob bytea,
     total numeric GENERATED ALWAYS AS (qty * 2) STORED
   )`, 're0')
-  await q(`INSERT INTO rowedit_probe (label, qty, active, due_at, payload) VALUES
-    ('first', 1.50, true, '2024-01-15 10:30:00+00', '{"b":2,"a":1}'),
-    ('second', NULL, NULL, NULL, NULL)`, 're0')
+  await q(`INSERT INTO rowedit_probe (label, qty, active, due_at, payload, nums, tags, flags) VALUES
+    ('first', 1.50, true, '2024-01-15 10:30:00+00', '{"b":2,"a":1}', '{10,20}', '{red,green}', '{TRUE,FALSE}'),
+    ('second', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`, 're0')
 
   const grid = (await q('SELECT * FROM rowedit_probe ORDER BY id', 're1')).body.results[0]
   ok('editable metadata present', !!grid.editable, JSON.stringify(grid.editable))
@@ -553,6 +556,14 @@ console.log('\n== row editor ==')
   eq('not-null column is not nullable', editableByName.get('label')?.nullable, false)
   eq('nullable column is flagged', editableByName.get('qty')?.nullable, true)
   ok('plain columns listed', ['label', 'payload', 'due_at'].every((n) => editableByName.has(n)))
+
+  // Boolean, integer and text arrays travel as PostgreSQL literals, so the
+  // row editor edits them in a single-line control instead of a JSON value.
+  const arrayGrid = (await q('SELECT id, nums, tags, flags FROM rowedit_probe ORDER BY id', 're-array'))
+    .body.results[0]
+  eq('integer arrays arrive as literals', arrayGrid.rows[0][1], '{10,20}')
+  eq('text arrays arrive as literals', arrayGrid.rows[0][2], '{red,green}')
+  eq('boolean arrays arrive as PG literals', arrayGrid.rows[0][3], '{t,f}')
 
   const explicit = (await q('SELECT id, label FROM rowedit_probe', 're2')).body.results[0]
   ok('explicit column list is editable', !!explicit.editable)
@@ -593,6 +604,20 @@ console.log('\n== row editor ==')
     })
     eq('NULL set status', nulled.status, 200)
     eq('NULL values are stored', [nulled.body.row.qty, nulled.body.row.active], [null, null])
+
+    const arrays = await rowUpdate({
+      schema: 'public', table: 'rowedit_probe', key: { id: 1 },
+      set: { nums: '{10, 30}', tags: '{"a b",c}', flags: '{TRUE,FALSE}' },
+    })
+    eq('array update status', arrays.status, 200)
+    eq('arrays round-trip as literals',
+      [arrays.body.row.nums, arrays.body.row.tags, arrays.body.row.flags],
+      ['{10,30}', '{"a b",c}', '{t,f}'])
+    eq('the stored arrays are visible to other connections',
+      (await watcher.query(
+        'SELECT nums::text AS n, tags::text AS t, flags::text AS f FROM rowedit_probe WHERE id = 1',
+      )).rows[0],
+      { n: '{10,30}', t: '{"a b",c}', f: '{t,f}' })
 
     // timestamptz: the control sends wall time without an offset, PostgreSQL
     // interprets it in the session timezone, and the text comes back raw.

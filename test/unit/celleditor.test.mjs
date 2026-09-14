@@ -4,8 +4,8 @@ import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
 const {
-  editorKind, isReadOnlyType, jsonSyntaxError, numberStep, fromEditorValue, toBool,
-  toEditorValue, usesTextarea,
+  editorKind, isArrayType, isMultiDimensionalArray, isReadOnlyType, jsonSyntaxError,
+  numberStep, fromEditorValue, toBool, toEditorValue, usesTextarea,
 } = await load('web/lib/celleditor.ts')
 
 // The row dialog picks a control from the column type and converts the
@@ -40,6 +40,20 @@ test('numeric steps and binary read-only detection', () => {
   assert.equal(numberStep('double precision'), 'any')
   assert.equal(isReadOnlyType('bytea'), true)
   assert.equal(isReadOnlyType('text'), false)
+})
+
+test('array types are recognised, and nested literals are locked', () => {
+  assert.equal(isArrayType('integer[]'), true)
+  assert.equal(isArrayType('character varying[]'), true)
+  assert.equal(isArrayType('integer'), false)
+  assert.equal(isMultiDimensionalArray('{1,2,3}'), false)
+  assert.equal(isMultiDimensionalArray('{}'), false)
+  assert.equal(isMultiDimensionalArray('{NULL,"a b"}'), false)
+  // A brace inside a quoted element is data, not a dimension.
+  assert.equal(isMultiDimensionalArray('{"{x}",y}'), false)
+  assert.equal(isMultiDimensionalArray('{{1,2},{3,4}}'), true)
+  assert.equal(isMultiDimensionalArray('{{}}'), true)
+  assert.equal(isMultiDimensionalArray('not an array'), false)
 })
 
 test('only text and JSON/JSONB get a textarea', () => {
