@@ -5,7 +5,8 @@ import { useResults } from '../composables/results'
 import { useConnection } from '../composables/connection'
 import { useTabs } from '../composables/tabs'
 import { useToast } from '../composables/toast'
-import { copyGrid, copyText, downloadCsv, csvHeader, csvRows, cellToText, formatCellForDisplay } from '../lib/gridio'
+import { copyGrid, copyText, downloadCsv, csvHeader, csvRows, formatCellForDisplay } from '../lib/gridio'
+import ValueDialog, { type CellValueTarget } from './ValueDialog.vue'
 
 const results = useResults()
 const conn = useConnection()
@@ -150,8 +151,33 @@ function fmt(v: unknown): string {
   return formatCellForDisplay(v)
 }
 
+/** Double-click behaviour: JSON/JSONB cells open the value dialog (pretty
+ * printed, with its own COPY), everything else copies straight to the
+ * clipboard like it used to. NULL stays inert — the badge says it all. */
+const cellValue = ref<CellValueTarget | null>(null)
+
+function isJsonColumn(j: number): boolean {
+  const type = activeGrid.value?.columnTypes[j]
+  return type === 'json' || type === 'jsonb'
+}
+
+function openCell(v: unknown, j: number) {
+  if (v === null || v === undefined) return
+  const g = activeGrid.value
+  if (!g) return
+  if (g.columnTypes[j] === 'json' || g.columnTypes[j] === 'jsonb') {
+    cellValue.value = {
+      column: g.columns[j] ?? '',
+      type: g.columnTypes[j],
+      value: typeof v === 'string' ? v : String(v),
+    }
+    return
+  }
+  void copyCell(v)
+}
+
 async function copyCell(v: unknown) {
-  const ok = await copyText(cellToText(v))
+  const ok = await copyText(typeof v === 'string' ? v : String(v))
   toast.show(ok ? 'Value copied.' : 'Copy to clipboard failed')
 }
 
@@ -336,10 +362,16 @@ async function exportCsv() {
               class="grid-cell"
               :class="{ nul: cell === null || cell === undefined }"
               :style="{ width: colWidth(j) + 'px' }"
-              title="Double-click to copy"
-              @dblclick="copyCell(cell)"
+              :title="isJsonColumn(j) ? 'Double-click to open value' : 'Double-click to copy'"
+              @dblclick="openCell(cell, j)"
             >
-              {{ fmt(cell) }}
+              <span v-if="cell === null || cell === undefined" class="null-badge">null</span>
+              <span
+                v-else-if="grid.g.columnTypes[j] === 'boolean'"
+                class="bool-badge"
+                :class="cell === true || cell === 'true' ? 'true' : 'false'"
+              >{{ cell === true || cell === 'true' ? 'true' : 'false' }}</span>
+              <template v-else>{{ fmt(cell) }}</template>
             </div>
           </div>
         </div>
@@ -361,5 +393,7 @@ async function exportCsv() {
         </button>
       </div>
     </div>
+
+    <ValueDialog v-if="cellValue" :target="cellValue" @close="cellValue = null" />
   </div>
 </template>

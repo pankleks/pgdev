@@ -204,6 +204,8 @@ Closing a tab drops its local result state and calls the backend session-close e
 
 The result grid is virtualized and supports column resizing, cell copying, TSV copying, incremental loading, cancellation, and CSV export. CSV cells beginning with spreadsheet formula characters are prefixed with an apostrophe to prevent formula execution when opened by spreadsheet software.
 
+NULL and boolean cells render as badges (a dark steel-blue `null` chip; green `true` and gray `false`) so sentinel values cannot be mistaken for stored strings; exports still write the empty string for NULL. Double-clicking a `json`/`jsonb` cell opens a value dialog that pretty-prints the JSON with a two-space indent and offers a COPY button (which closes the dialog); every other cell type copies its value straight to the clipboard, and NULL stays inert. The formatter (`web/src/lib/cellvalue.ts`) falls back to the raw text when JSON does not parse.
+
 ## API Protection
 
 The API has no authentication and can open arbitrary database connections, so `/api/*` requests are protected against drive-by browser requests.

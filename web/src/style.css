@@ -1040,7 +1040,47 @@ body.dragging-results {
 
     &.nul {
       color: var(--text-dim);
-      font-style: italic;
+
+      /* null renders as a dark steel-blue badge (same family as the table
+       * editor's underscore-prefixed columns), so it cannot be mistaken for a
+       * stored string at a glance. */
+      .null-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-style: normal;
+        font-weight: 600;
+        line-height: 12px;
+        color: #6d95b8;
+        background: #1e252e;
+        border: 1px solid #2e4256;
+        border-radius: 8px;
+        padding: 0 6px;
+        vertical-align: middle;
+      }
+    }
+
+    /* Booleans get the same badge treatment: green for true, gray for false,
+     * so NULL keeps its blue to itself. */
+    .bool-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 12px;
+      border-radius: 8px;
+      padding: 0 6px;
+      vertical-align: middle;
+
+      &.true {
+        color: var(--ok);
+        background: rgba(137, 209, 133, 0.16);
+        border: 1px solid rgba(137, 209, 133, 0.5);
+      }
+
+      &.false {
+        color: var(--text-dim);
+        background: rgba(133, 133, 133, 0.16);
+        border: 1px solid rgba(133, 133, 133, 0.45);
+      }
     }
 
     .col-resize-handle {
@@ -1716,8 +1756,105 @@ body.dragging-results {
   max-width: 420px;
 }
 
-/* --- table editor dialog ------------------------------------------------ */
+/* --- value dialog (results-grid cell values) ----------------------------- */
 
+.valuedialog-modal {
+  width: min(760px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+
+  > h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 15px;
+    margin: 0 0 12px;
+    padding-right: 24px;
+    min-width: 0;
+  }
+
+  .valuedialog-column {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .valuedialog-type {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-weight: 400;
+    flex-shrink: 0;
+  }
+
+  .valuedialog-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .valuedialog-text {
+    margin: 0;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 11px;
+    height: 52vh;
+    min-height: 220px;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 2;
+  }
+
+  .valuedialog-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+
+    .valuedialog-length {
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    .valuedialog-actions {
+      display: flex;
+      gap: 10px;
+
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 14px;
+        font-size: 13px;
+        cursor: pointer;
+        border-radius: 6px;
+
+        &.primary {
+          background: var(--accent);
+          border: 1px solid var(--accent);
+          color: #fff;
+
+          &:hover:not(:disabled) {
+            filter: brightness(1.1);
+          }
+
+          &:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+          }
+        }
+      }
+    }
+  }
+}
+
+/* --- table editor dialog ------------------------------------------------ */
 /* Scoped to .modal-backdrop .modal: the base .modal rule (width: 420px) is
  * itself nested under .modal-backdrop, so a flat .tableedit-modal selector
  * would lose the specificity fight and the dialog would stay narrow. */
