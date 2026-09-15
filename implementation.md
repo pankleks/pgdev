@@ -68,6 +68,7 @@ The primary design goals are:
 - `web/src/lib/cellvalue.ts` formats result cells for the value dialog (token-preserving JSON pretty-printing).
 - `web/src/lib/celleditor.ts` maps column types to row-editor controls and converts temporal values between PostgreSQL text and native control values.
 - `web/src/lib/storage.ts` owns IndexedDB persistence for settings, connections, pinned files, and the tab session, including one-way migration from the earlier `localStorage` keys.
+- `web/src/lib/connectionref.ts` parses the `?connect=N` deep link and assigns stable connection numbers (pure helpers).
 - `web/src/lib/tabsession.ts` serializes and restores the user-tab session (pure helpers).
 - `web/src/lib/files.ts` wraps the File System Access API with a download fallback.
 - `web/src/lib/objectgroups.ts` groups objects by common underscore-separated name prefixes.
@@ -96,6 +97,8 @@ The frontend supports two local persistence modes:
 
 - With `Remember in this browser`, the configuration is stored in the saved connection list and as the last connection.
 - Without it, the current connection is not written to the last-connection key. Existing last-connection data is removed after a successful non-remembered manual connection.
+
+Every remembered connection carries a stable number (`1`, `2`, …) shown in the connection list. A number is assigned when the configuration is first remembered, survives re-saving, and is never reused: the connections record keeps a high-water mark, so forgetting a connection does not hand its number to a later one. On startup `?connect=N` connects to the numbered saved connection for that session; it does not replace the last connection used by a normal launch, and an unknown number is reported and falls back to the usual last-connection auto-connect.
 
 Connection attempts use monotonically increasing attempt identifiers. A stale connection response is disconnected and cannot replace a newer connection. Schema data is reset when switching connections.
 

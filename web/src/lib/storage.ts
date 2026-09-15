@@ -13,6 +13,9 @@ export interface StoredPinnedFile {
 export interface StoredConnections {
   saved: unknown
   last: unknown
+  /** High-water mark for connection numbers, so a forgotten number is never
+   * handed to a different connection. */
+  nextSeq?: number
 }
 
 export interface StoredAppState {
@@ -30,6 +33,7 @@ interface ConnectionsRecord {
   id: 'current'
   saved: unknown
   last: unknown
+  nextSeq?: number
 }
 
 const DB_NAME = 'pgdev'
@@ -248,7 +252,7 @@ async function loadStorage(): Promise<StoredAppState> {
     return {
       settings,
       connections: connections
-        ? { saved: connections.saved, last: connections.last }
+        ? { saved: connections.saved, last: connections.last, nextSeq: connections.nextSeq }
         : undefined,
       pinnedFiles,
     }
@@ -280,7 +284,7 @@ export function saveSettings(value: unknown): Promise<void> {
   })
 }
 
-export function saveConnections(saved: unknown, last: unknown): Promise<void> {
+export function saveConnections(saved: unknown, last: unknown, nextSeq: number): Promise<void> {
   return queueWrite(async () => {
     if (!indexedDbAvailable) {
       writeLegacyJson(LEGACY_SAVED_CONNECTIONS_KEY, saved)
@@ -296,7 +300,7 @@ export function saveConnections(saved: unknown, last: unknown): Promise<void> {
       return
     }
     const db = await database()
-    await putRecord(db, CONNECTIONS_STORE, { id: 'current', saved, last } satisfies ConnectionsRecord)
+    await putRecord(db, CONNECTIONS_STORE, { id: 'current', saved, last, nextSeq } satisfies ConnectionsRecord)
   })
 }
 

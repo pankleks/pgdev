@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 import { api } from '../api'
 import type { ConnectionConfig } from '../types'
 import { saveConnections, storageReady } from '../lib/storage'
+import { assignSeqs, maxSeq, parseConnectNumber } from '../lib/connectionref'
 import { useSchema } from './schema'
 import { useSettings } from './settings'
 import { useToast } from './toast'
@@ -20,9 +21,13 @@ let lastConnection: ConnectionConfig | null = null
 let readyPromise: Promise<void> | null = null
 let locallyChanged = false
 let connectionAttempt = 0
+// High-water mark for connection numbers: a forgotten number is never reused.
+let seqHighWater = 0
 
 export interface SavedConnection extends ConnectionConfig {
   label: string
+  /** Stable, never-reused number, addressable with `?connect=N`. */
+  seq: number
 }
 
 function labelOf(cfg: ConnectionConfig): string {
@@ -30,6 +35,19 @@ function labelOf(cfg: ConnectionConfig): string {
     return cfg.connectionString.replace(/\/\/([^:]+):[^@]+@/, '//$1:***@')
   }
   return `${cfg.user ?? 'postgres'}@${cfg.host ?? 'localhost'}:${cfg.port ?? 5432}/${cfg.database ?? ''}`
+}
+
+/** A saved entry's connectable config, without the `label`/`seq` bookkeeping. */
+function configOf(connection: SavedConnection): ConnectionConfig {
+  if (connection.connectionString) return { connectionString: connection.connectionString }
+  return {
+    host: connection.host,
+    port: connection.port,
+    database: connection.database,
+    user: connection.user,
+    password: connection.password,
+    ssl: connection.ssl,
+  }
 }
 
 function isConnectionConfig(value: unknown): value is ConnectionConfig {
@@ -48,11 +66,14 @@ function isConnectionConfig(value: unknown): value is ConnectionConfig {
 
 function parseSavedConnections(value: unknown): SavedConnection[] {
   if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is SavedConnection => {
+  const entries = value.filter((entry): entry is ConnectionConfig & { label: string; seq?: unknown } => {
     if (!entry || typeof entry !== 'object') return false
     const saved = entry as Record<string, unknown>
     return typeof saved.label === 'string' && isConnectionConfig(entry)
   })
+  // Entries saved before numbering existed have no seq; fill those in while
+  // preserving any number already assigned.
+  return assignSeqs(entries)
 }
 
 function ensureReady(): Promise<void> {
@@ -62,6 +83,9 @@ function ensureReady(): Promise<void> {
         if (locallyChanged || !connections) return
         savedConnections.splice(0, savedConnections.length, ...parseSavedConnections(connections.saved))
         lastConnection = isConnectionConfig(connections.last) ? { ...connections.last } : null
+        const stored = connections.nextSeq
+        const storedNext = typeof stored === 'number' && Number.isInteger(stored) && stored > 0 ? stored : 0
+        seqHighWater = Math.max(storedNext, maxSeq(savedConnections))
       })
       .catch(() => undefined)
   }
@@ -71,7 +95,7 @@ function ensureReady(): Promise<void> {
 function persist() {
   const saved = savedConnections.map((connection) => ({ ...connection }))
   const last = lastConnection ? { ...lastConnection } : null
-  void ensureReady().then(() => saveConnections(saved, last)).catch(() => undefined)
+  void ensureReady().then(() => saveConnections(saved, last, seqHighWater)).catch(() => undefined)
 }
 
 export function useConnection() {
@@ -82,8 +106,11 @@ export function useConnection() {
 
   function remember(cfg: ConnectionConfig) {
     const label = labelOf(cfg)
+    const existing = savedConnections.find((c) => c.label === label)
+    if (!existing) seqHighWater += 1
+    const seq = existing ? existing.seq : seqHighWater
     const list = savedConnections.filter((c) => c.label !== label)
-    savedConnections.splice(0, savedConnections.length, { ...cfg, label }, ...list.slice(0, 9))
+    savedConnections.splice(0, savedConnections.length, { ...cfg, label, seq }, ...list.slice(0, 9))
   }
 
   function rememberLast(cfg: ConnectionConfig) {
@@ -179,8 +206,24 @@ export function useConnection() {
 
   async function autoConnect() {
     await ensureReady()
+    if (state.id || state.connecting) return
+    const requested = typeof window === 'undefined' ? null : parseConnectNumber(window.location.search)
+    if (requested !== null) {
+      const target = savedConnections.find((connection) => connection.seq === requested)
+      if (target) {
+        // A deep link connects for this session only; it does not replace the
+        // remembered last connection used by a normal startup.
+        await connect(configOf(target), false, true)
+        if (!state.id) {
+          state.dialog = true
+          useToast().show(`Could not connect to #${requested}: ${state.error}`)
+        }
+        return
+      }
+      useToast().show(`No saved connection #${requested}`)
+    }
     const cfg = lastConfig()
-    if (!cfg || state.id || state.connecting) return
+    if (!cfg) return
     await connect(cfg, false, true)
     if (!state.id) {
       state.dialog = true

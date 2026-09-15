@@ -40,6 +40,8 @@ interface ConnectionRow {
   saved: SavedConnection | null
   /** Currently connected — highlighted, and its action is Disconnect. */
   active: boolean
+  /** Stable number shown for saved connections; null for an unsaved active one. */
+  seq: number | null
 }
 
 /** Saved connections plus a synthetic row when connected without remembering. */
@@ -49,9 +51,10 @@ const allConnections = computed<ConnectionRow[]>(() => {
     sub: c.connectionString ? 'connection string' : `${c.host}:${c.port} • ${c.database}`,
     saved: c,
     active: c.label === conn.state.label,
+    seq: c.seq,
   }))
   if (conn.state.id && !items.some((item) => item.active)) {
-    items.unshift({ label: conn.state.label, sub: '', saved: null, active: true })
+    items.unshift({ label: conn.state.label, sub: '', saved: null, active: true, seq: null })
   }
   return items
 })
@@ -124,6 +127,7 @@ async function submit() {
               @click="c.saved && pick(c.saved)"
             >
               <Database class="saved-icon" :size="17" />
+              <span v-if="c.seq !== null" class="saved-seq" :title="`Connection #${c.seq}`">#{{ c.seq }}</span>
               <span class="saved-text">
                 <strong>{{ c.label }}</strong>
                 <small v-if="c.sub">{{ c.sub }}</small>
