@@ -290,6 +290,48 @@ try {
     ok('alias qualifier still offers columns', cols.includes('id') && cols.includes('label'), JSON.stringify(cols))
   }
 
+  console.log('\n== SQL token colors ==')
+  {
+    // The bundled grammar files UPDATE under its built-in functions, which
+    // `vs-dark` paints magenta, and it paints strings pure red; the derived
+    // pgdev-dark theme corrects both. Assert on the rendered token colors.
+    await page.evaluate(`window.__pgdev.setValue("update product set x = 1;\\nselect 'p' from product")`)
+    const colors = await page.waitFor(`
+      (() => {
+        const spans = [...document.querySelectorAll('.view-line span')]
+        const pick = (text) => {
+          const el = spans.find((s) => s.textContent.trim() === text)
+          return el ? getComputedStyle(el).color : null
+        }
+        const update = pick('update')
+        const select = pick('select')
+        const string = pick("'p'")
+        return update && select && string ? { update, select, string } : null
+      })()
+    `, { timeout: 15000 })
+    eq('UPDATE is painted like the other keywords', colors.update, colors.select)
+    eq('string literals use the muted string color', colors.string, 'rgb(206, 145, 120)')
+
+    // Function calls stand out from column and table names.
+    await page.evaluate(`window.__pgdev.setValue("select jsonb_build_object('p', _active) from product")`)
+    const fnColors = await page.waitFor(`
+      (() => {
+        const spans = [...document.querySelectorAll('.view-line span')]
+        const pick = (text) => {
+          const el = spans.find((s) => s.textContent.trim() === text)
+          return el ? getComputedStyle(el).color : null
+        }
+        const fn = pick('jsonb_build_object')
+        const column = pick('_active')
+        const table = pick('product')
+        return fn && column && table ? { fn, column, table } : null
+      })()
+    `, { timeout: 15000 })
+    eq('function calls get their own color', fnColors.fn, 'rgb(220, 220, 170)')
+    eq('column and table names stay default', [fnColors.column, fnColors.table],
+      ['rgb(212, 212, 212)', 'rgb(212, 212, 212)'])
+  }
+
   console.log('\n== filtering makes collapse inert ==')
   {
     await page.evaluate(`

@@ -220,6 +220,8 @@ Indentation is configured consistently:
 - SQL formatter: tab characters with a four-column tab width.
 - Monaco: four-column visual tabs, tabs inserted instead of spaces, and automatic indentation detection disabled.
 
+The editor uses a derived Monaco theme (`pgdev-dark`, defined in `web/src/monaco.ts`) instead of raw `vs-dark`: the bundled SQL grammar files `UPDATE` — and other SQL Server spellings such as `COUNT` or `GETDATE` — under its built-in functions, which `vs-dark` paints magenta, and it paints every string literal pure red. The theme maps those two tokens to the keyword blue and the familiar muted string colour, leaving the rest of the palette untouched. The bundled SQL grammar is also extended with one rule: a word directly followed by `(` that is neither a keyword nor an operator is tokenized as a function call (function yellow), so calls stand out from column and table names while constructs like `IN (`, `VALUES (` or `OVER (` keep their colour. The grammar object is mutated before the lazy language loader registers it, so the extension survives registration.
+
 ## Frontend State and Race Protection
 
 Schema loads use a version token. Only the latest load may update schema data, errors, or loading state. DDL requests capture the connection ID and discard responses received after a connection switch.

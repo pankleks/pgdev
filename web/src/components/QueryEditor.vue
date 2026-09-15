@@ -22,7 +22,7 @@ onMounted(() => {
   if (!el.value) return
   editor = monaco.editor.create(el.value, {
     language: 'sql',
-    theme: 'vs-dark',
+    theme: 'pgdev-dark',
     automaticLayout: true,
     minimap: { enabled: false },
     fontSize: settings.state.editorFontSize,
