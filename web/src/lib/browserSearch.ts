@@ -44,9 +44,16 @@ export function parseSearch(query: string): ParsedSearch {
   return { term: q, type: null }
 }
 
-/** The search term splits into per-word terms on spaces and `+`. */
-export function searchTerms(term: string): string[] {
-  return term.split(/[+\s]+/).filter(Boolean)
+/** Space-separated groups are ORed; `+`-joined terms inside a group are ANDed.
+ * `employee+labor` needs both, `employee labor` needs either. */
+export type SearchTerms = string[][]
+
+export function searchTerms(term: string): SearchTerms {
+  return term
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((group) => group.split('+').filter(Boolean))
+    .filter((group) => group.length > 0)
 }
 
 export function escapeHtml(value: string): string {
@@ -70,9 +77,16 @@ function highlightPattern(rawTerms: string[]): RegExp | null {
   return pattern
 }
 
-/** Escape everything, then wrap case-insensitive term hits in `<mark>`. */
-export function highlightTerms(value: string, rawTerms: string[]): string {
-  const pattern = highlightPattern(rawTerms)
+/** Escape everything, then wrap case-insensitive term hits in `<mark>`. Only
+ * the terms of the groups that actually match are marked: under an AND search
+ * like `employee+labor`, a column matching only `employee` marks nothing,
+ * while an OR search `employee labor` marks whichever term it contains. */
+export function highlightTerms(value: string, groups: SearchTerms): string {
+  const candidate = value.toLowerCase()
+  const matched = groups
+    .filter((group) => group.every((term) => candidate.includes(term)))
+    .flat()
+  const pattern = highlightPattern(matched)
   if (!pattern) return escapeHtml(value)
 
   let result = ''
@@ -86,20 +100,35 @@ export function highlightTerms(value: string, rawTerms: string[]): string {
   return result + escapeHtml(value.slice(lastIndex))
 }
 
-/** Every term must appear somewhere in the value. */
-export function matchesTerms(value: string, terms: string[]): boolean {
-  const candidate = value.toLowerCase()
-  return terms.every((term) => candidate.includes(term))
+/** Highlight a label only when its kind belongs to the active search type.
+ * `scopes` lists the types that make the label a search target; an empty list
+ * marks supporting detail (indexes, type text), highlighted only when the
+ * search is untyped. So a `table` search never marks a column inside a matched
+ * table. */
+export function scopedHighlight(
+  value: string,
+  groups: SearchTerms,
+  queryType: SearchType | null,
+  scopes: SearchType[],
+): string {
+  if (queryType !== null && !scopes.includes(queryType)) return escapeHtml(value)
+  return highlightTerms(value, groups)
 }
 
-export function nameMatches(name: string, schema: string, terms: string[]): boolean {
+/** A value matches when every term of at least one group appears in it. */
+export function matchesTerms(value: string, groups: SearchTerms): boolean {
+  const candidate = value.toLowerCase()
+  return groups.some((group) => group.every((term) => candidate.includes(term)))
+}
+
+export function nameMatches(name: string, schema: string, groups: SearchTerms): boolean {
   const nameText = name.toLowerCase()
   const schemaText = schema.toLowerCase()
-  return terms.every((term) => nameText.includes(term) || schemaText.includes(term))
+  return groups.some((group) => group.every((term) => nameText.includes(term) || schemaText.includes(term)))
 }
 
-export function columnsMatch(cols: { name: string }[], terms: string[]): boolean {
-  return cols.some((c) => matchesTerms(c.name, terms))
+export function columnsMatch(cols: { name: string }[], groups: SearchTerms): boolean {
+  return cols.some((c) => matchesTerms(c.name, groups))
 }
 
 export function splitArgs(args: string): string[] {
@@ -172,9 +201,9 @@ export function paramRows(args: string, returns: string): ParamRow[] {
   return rows
 }
 
-/** Any non-returns parameter matches every term. */
-export function paramsMatch(args: string, terms: string[]): boolean {
-  return paramRows(args, '').some((p) => p.kind !== 'returns' && matchesTerms(p.name, terms))
+/** Any non-returns parameter matches at least one term group. */
+export function paramsMatch(args: string, groups: SearchTerms): boolean {
+  return paramRows(args, '').some((p) => p.kind !== 'returns' && matchesTerms(p.name, groups))
 }
 
 /** While filtering, a relation whose columns match but whose name does not opens itself. */
@@ -183,9 +212,9 @@ export function autoExpandRelation(
   schema: string,
   cols: { name: string }[],
   filtering: boolean,
-  terms: string[],
+  groups: SearchTerms,
 ): boolean {
-  return filtering && !nameMatches(name, schema, terms) && columnsMatch(cols, terms)
+  return filtering && !nameMatches(name, schema, groups) && columnsMatch(cols, groups)
 }
 
 export function autoExpandFunction(
@@ -194,11 +223,11 @@ export function autoExpandFunction(
   typeSig: string,
   args: string,
   filtering: boolean,
-  terms: string[],
+  groups: SearchTerms,
 ): boolean {
   return (
     filtering &&
-    !nameMatches(name, schema, terms) &&
-    (matchesTerms(typeSig, terms) || paramsMatch(args, terms))
+    !nameMatches(name, schema, groups) &&
+    (matchesTerms(typeSig, groups) || paramsMatch(args, groups))
   )
 }

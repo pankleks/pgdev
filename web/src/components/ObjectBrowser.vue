@@ -50,14 +50,15 @@ import {
   autoExpandFunction,
   autoExpandRelation,
   columnsMatch,
-  highlightTerms,
   matchesTerms,
   nameMatches,
   paramRows,
   paramsMatch,
   parseSearch,
+  scopedHighlight,
   searchTerms,
   type ParamKind,
+  type SearchType,
 } from '../lib/browserSearch'
 import TableEditDialog, { type TableEditTarget } from './TableEditDialog.vue'
 
@@ -269,8 +270,15 @@ const isFiltering = computed(() => filter.value.trim().length > 0)
 
 // Thin bindings over lib/browserSearch.ts: the template and the filters keep
 // their original names while the pure logic lives in a unit-tested module.
+// `highlightIn` limits marking to the section being searched, so a table-only
+// search never lights up a column and vice versa; `highlightText` is the
+// untyped-only form used for supporting detail (indexes, type text).
+function highlightIn(value: string, ...scopes: SearchType[]): string {
+  return scopedHighlight(value, queryTerms.value, searchType.value, scopes)
+}
+
 function highlightText(value: string): string {
-  return highlightTerms(value, queryTerms.value)
+  return highlightIn(value)
 }
 
 function matchesAll(value: string): boolean {
@@ -686,7 +694,7 @@ async function refresh() {
 
       <template v-else>
         <div class="browser-search">
-          <input v-model="filter" placeholder='Search… e.g. "unit table", "id col", "user param"' />
+          <input v-model="filter" placeholder='Search… "employee labor" any, "employee+labor" all, "id col"' />
           <button v-if="filter" class="icon" title="Clear search" @click="filter = ''"><X :size="14" /></button>
           <button
             class="icon"
@@ -717,7 +725,7 @@ async function refresh() {
             >
               <span class="caret" :class="{ open: tableGroupOpen(entry) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="tableGroupOpen(entry) ? FolderOpen : Folder" :size="14" /></span>
-              <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
+              <span class="obj-name" v-html="highlightIn(displayName(entry.schema, entry.name), 'table')" />
               <span class="node-badges"></span>
               <span class="count">{{ entry.tables.length }}</span>
             </div>
@@ -747,7 +755,7 @@ async function refresh() {
                         :size="12"
                       />
                     </span>
-                    <span class="obj-name" v-html="highlightText(displayName(t.schema, t.name))" />
+                    <span class="obj-name" v-html="highlightIn(displayName(t.schema, t.name), 'table')" />
                     <span class="node-badges">
                       <span v-if="isTbd(t.name)" class="void-badge tbd-badge">tbd</span>
                     </span>
@@ -772,7 +780,7 @@ async function refresh() {
                         :title="`${c.name} · ${c.type}`"
                         @contextmenu="openNodeMenu($event, browserNode('table-column', `t-${t.oid}-cols-${c.name}`, []), false)"
                       >
-                        <span class="obj-name" v-html="highlightText(c.name)" />
+                        <span class="obj-name" v-html="highlightIn(c.name, 'column')" />
                         <span class="node-badges"><span v-if="isTbd(c.name)" class="void-badge tbd-badge">tbd</span></span>
                         <span class="dim">{{ c.type }}</span>
                       </div>
@@ -885,7 +893,7 @@ async function refresh() {
             >
               <span class="caret" :class="{ open: objectGroupOpen(entry, expandedViewGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedViewGroups) ? FolderOpen : Folder" :size="14" /></span>
-              <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
+              <span class="obj-name" v-html="highlightIn(displayName(entry.schema, entry.name), 'view')" />
               <span class="node-badges"></span>
               <span class="count">{{ entry.objects.length }}</span>
             </div>
@@ -900,7 +908,7 @@ async function refresh() {
                       @dblclick.stop @click.stop="!isFiltering && toggleChildren('v-' + v.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Eye :size="14" /></span>
-                    <span class="obj-name" v-html="highlightText(displayName(v.schema, v.name))" />
+                    <span class="obj-name" v-html="highlightIn(displayName(v.schema, v.name), 'view')" />
                     <span class="node-badges"><span v-if="v.materialized" class="void-badge">mat</span><span v-if="isTbd(v.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('v-' + v.oid) || autoExpandRel(v.name, v.schema, v.columns)">
@@ -911,7 +919,7 @@ async function refresh() {
                       :title="`${c.name} · ${c.type}`"
                       @contextmenu="openNodeMenu($event, browserNode('view-column', `v-${v.oid}-${c.name}`, []), false)"
                     >
-                      <span class="obj-name" v-html="highlightText(c.name)" />
+                      <span class="obj-name" v-html="highlightIn(c.name, 'column')" />
                       <span class="node-badges"></span>
                       <span class="dim">{{ c.type }}</span>
                     </div>
@@ -941,7 +949,7 @@ async function refresh() {
             >
               <span class="caret" :class="{ open: objectGroupOpen(entry, expandedTypeGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedTypeGroups) ? FolderOpen : Folder" :size="14" /></span>
-              <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
+              <span class="obj-name" v-html="highlightIn(displayName(entry.schema, entry.name), 'type')" />
               <span class="node-badges"></span>
               <span class="count">{{ entry.objects.length }}</span>
             </div>
@@ -962,7 +970,7 @@ async function refresh() {
                       @dblclick.stop @click.stop="!isFiltering && toggleChildren('ty-' + t.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><Shapes :size="14" /></span>
-                    <span class="obj-name" v-html="highlightText(displayName(t.schema, t.name))" />
+                    <span class="obj-name" v-html="highlightIn(displayName(t.schema, t.name), 'type')" />
                     <span class="node-badges"><span class="void-badge">{{ t.kind }}</span><span v-if="isTbd(t.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('ty-' + t.oid)">
@@ -996,7 +1004,7 @@ async function refresh() {
             >
               <span class="caret" :class="{ open: objectGroupOpen(entry, expandedFunctionGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
               <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedFunctionGroups) ? FolderOpen : Folder" :size="14" /></span>
-              <span class="obj-name" v-html="highlightText(displayName(entry.schema, entry.name))" />
+              <span class="obj-name" v-html="highlightIn(displayName(entry.schema, entry.name), 'function')" />
               <span class="node-badges"></span>
               <span class="count">{{ entry.objects.length }}</span>
             </div>
@@ -1017,7 +1025,7 @@ async function refresh() {
                       @dblclick.stop @click.stop="!isFiltering && toggleChildren('f-' + f.oid)"
                     ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
-                    <span class="obj-name" v-html="highlightText(displayName(f.schema, f.name))" />
+                    <span class="obj-name" v-html="highlightIn(displayName(f.schema, f.name), 'function')" />
                     <span class="node-badges"><span v-if="f.returns === 'void'" class="void-badge">void</span><span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span><span v-if="isTbd(f.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
                   <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args)">
@@ -1029,7 +1037,7 @@ async function refresh() {
                       @contextmenu="openNodeMenu($event, browserNode('function-parameter', `f-${f.oid}-param-${i}`), false)"
                     >
                       <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
-                      <span class="obj-name" v-html="highlightText(p.name)" />
+                      <span class="obj-name" v-html="highlightIn(p.name, 'parameter')" />
                       <span class="node-badges"></span>
                       <span v-if="p.rest" class="dim" v-html="highlightText(p.rest)" />
                     </div>
