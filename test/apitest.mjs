@@ -193,6 +193,9 @@ ok('built-ins carry a comment field',
   (schema.body.builtins ?? []).every((f) => f.comment === null || typeof f.comment === 'string'))
 ok('built-in comments are harvested',
   (schema.body.builtins ?? []).some((f) => typeof f.comment === 'string' && f.comment.length > 0))
+ok('grammar constructs absent from pg_proc are offered as built-ins',
+  ['coalesce', 'nullif', 'greatest', 'least'].every((name) =>
+    (schema.body.builtins ?? []).some((f) => f.name === name && f.schema === 'pg_catalog')))
 
 console.log('\n== GET /ddl for every object type ==')
 const ddlOf = async (type, name, extra = {}) => {

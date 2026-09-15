@@ -146,6 +146,53 @@ WHERE n.nspname = 'pg_catalog'
   )
 ORDER BY p.proname, p.oid`
 
+// COALESCE, NULLIF, GREATEST and LEAST are grammar constructs rather than
+// pg_proc entries, so BUILTINS_SQL never returns them; they are still written
+// and called like functions and belong in completion and hover. The argument
+// text mirrors the SQL syntax instead of a real identity signature.
+const SPECIAL_FUNCTIONS: FunctionInfo[] = [
+  {
+    schema: 'pg_catalog',
+    name: 'coalesce',
+    args: 'value, ...',
+    returns: 'any',
+    typeSig: '',
+    kind: 'function',
+    oid: '',
+    comment: 'returns the first of its arguments that is not null',
+  },
+  {
+    schema: 'pg_catalog',
+    name: 'nullif',
+    args: 'value1, value2',
+    returns: 'any',
+    typeSig: '',
+    kind: 'function',
+    oid: '',
+    comment: 'returns null when value1 equals value2, otherwise value1',
+  },
+  {
+    schema: 'pg_catalog',
+    name: 'greatest',
+    args: 'value, ...',
+    returns: 'any',
+    typeSig: '',
+    kind: 'function',
+    oid: '',
+    comment: 'returns the largest of its arguments',
+  },
+  {
+    schema: 'pg_catalog',
+    name: 'least',
+    args: 'value, ...',
+    returns: 'any',
+    typeSig: '',
+    kind: 'function',
+    oid: '',
+    comment: 'returns the smallest of its arguments',
+  },
+]
+
 const TYPES_SQL = `SELECT n.nspname AS schema, t.typname AS name, t.oid::text AS oid,
   CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'c' THEN 'composite' WHEN 'd' THEN 'domain' ELSE 'range' END AS kind,
   COALESCE(en.labels, ca.attrs, dm.base, format_type(r.rngsubtype, NULL), '') AS detail
@@ -272,16 +319,21 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     detail: r.detail ?? '',
   }))
 
-  const builtins: FunctionInfo[] = builtinsRes.rows.map((r) => ({
-    schema: 'pg_catalog',
-    name: r.name,
-    args: r.args,
-    returns: r.returns,
-    typeSig: '',
-    kind: r.kind,
-    oid: r.oid,
-    comment: r.comment ?? null,
-  }))
+  const builtins: FunctionInfo[] = [
+    ...builtinsRes.rows.map((r) => ({
+      schema: 'pg_catalog',
+      name: r.name,
+      args: r.args,
+      returns: r.returns,
+      typeSig: '',
+      kind: r.kind,
+      oid: r.oid,
+      comment: r.comment ?? null,
+    })),
+    // Grammar-level callables, appended after the catalog rows. The provider
+    // prefix-filters this list, so the extra entries never flood the popup.
+    ...SPECIAL_FUNCTIONS,
+  ]
 
   return { tables, views, functions, types, builtins }
 }
