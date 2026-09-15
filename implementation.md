@@ -50,7 +50,7 @@ The primary design goals are:
 
 - `web/src/App.vue` provides the application shell, global run action, file opening, resizing, and connection state integration.
 - `web/src/components/ConnectDialog.vue` handles parameter-based and connection-string connections.
-- `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs.
+- `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs; its search matches names only (objects, columns, parameter names), never column or argument types.
 - `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.
 - `web/src/components/RowEditDialog.vue` edits one result row: a type-matched field per column with NULL checkboxes, PK/generated fields locked, one UPDATE on SAVE.
 - `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.

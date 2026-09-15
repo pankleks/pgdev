@@ -455,6 +455,38 @@ try {
     `)
   }
 
+  console.log('\n== browser search ignores argument types ==')
+  {
+    const search = async (text) => {
+      await page.evaluate(`
+        const input = document.querySelector('.browser-search input')
+        const proto = Object.getPrototypeOf(input)
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ${JSON.stringify(text)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      `)
+      await new Promise((r) => setTimeout(r, 350))
+      return page.evaluate(`
+        return {
+          names: [...document.querySelectorAll('.obj-name')].filter((e) => e.offsetParent !== null).map((e) => e.textContent.trim()),
+          noMatch: !!document.querySelector('.no-match'),
+        }
+      `)
+    }
+
+    // `integer` appears only in argument types in the fixture, so nothing matches.
+    const byType = await search('integer')
+    ok('a type-only search matches nothing', byType.noMatch, JSON.stringify(byType.names.slice(0, 10)))
+
+    // The parameter's own name is still searched and opens the function.
+    const byParam = await search('p_label')
+    ok('a parameter name still matches its function',
+      byParam.names.some((n) => n.endsWith('item_count')), JSON.stringify(byParam.names.slice(0, 10)))
+    ok('the matching parameter is listed',
+      byParam.names.includes('p_label'), JSON.stringify(byParam.names.slice(0, 10)))
+
+    await search('')
+  }
+
   console.log('\n== opened sections survive a reload ==')
   {
     // The Tables section was opened earlier in this run; after a reload the

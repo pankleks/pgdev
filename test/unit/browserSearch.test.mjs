@@ -119,9 +119,12 @@ test('paramRows classifies modes and always appends the return row', () => {
   assert.deepEqual(paramRows('flag', '')[0], { kind: 'in', name: 'flag', rest: '' })
 })
 
-test('paramsMatch ignores the returns row', () => {
+test('paramsMatch ignores the returns row and the argument types', () => {
   assert.equal(paramsMatch('user_id integer', [['user']]), true)
   assert.equal(paramsMatch('', [['integer']]), false)
+  // Only parameter names are searched, never their types.
+  assert.equal(paramsMatch('i_on timestamp without time zone', [['out']]), false)
+  assert.equal(paramsMatch('i_on timestamp without time zone', [['i_on']]), true)
 })
 
 test('auto-expansion fires only when the name misses but the contents match', () => {
@@ -129,6 +132,11 @@ test('auto-expansion fires only when the name misses but the contents match', ()
   assert.equal(autoExpandRelation('items', 'public', cols, true, [['user']]), true)
   assert.equal(autoExpandRelation('user_items', 'public', cols, true, [['user']]), false)
   assert.equal(autoExpandRelation('items', 'public', cols, false, [['user']]), false)
-  assert.equal(autoExpandFunction('sum', 'public', 'integer', 'user_id integer', true, [['user']]), true)
-  assert.equal(autoExpandFunction('sum', 'public', 'integer', 'n integer', true, [['user']]), false)
+  assert.equal(autoExpandFunction('sum', 'public', 'user_id integer', true, [['user']]), true)
+  assert.equal(autoExpandFunction('sum', 'public', 'n integer', true, [['user']]), false)
+  // A term found only in a parameter type must not open the function.
+  assert.equal(
+    autoExpandFunction('get_active_id', 'public', 'i_on timestamp without time zone', true, [['out']]),
+    false,
+  )
 })

@@ -301,8 +301,8 @@ function autoExpandRel(name: string, schema: string, cols: { name: string }[]): 
   return autoExpandRelation(name, schema, cols, isFiltering.value, queryTerms.value)
 }
 
-function autoExpandFunc(name: string, schema: string, typeSig: string, args: string): boolean {
-  return autoExpandFunction(name, schema, typeSig, args, isFiltering.value, queryTerms.value)
+function autoExpandFunc(name: string, schema: string, args: string): boolean {
+  return autoExpandFunction(name, schema, args, isFiltering.value, queryTerms.value)
 }
 
 const showTables = computed(
@@ -359,7 +359,6 @@ const filteredFunctions = computed(() =>
           (searchType.value === 'parameter'
             ? paramsMatched(f.args)
             : nameMatched(f.name, f.schema) ||
-              matchesAll(f.typeSig) ||
               (searchType.value === null && paramsMatched(f.args))),
       )
     : [],
@@ -1018,17 +1017,17 @@ async function refresh() {
                     @dblclick="openObject('function', f.schema, f.name, f.oid, f.typeSig ? `(${f.typeSig})` : '')"
                     @contextmenu="openNodeMenu($event, browserNode('function', 'f-' + f.oid))"
                   >
-                    <span
-                      class="caret"
-                      :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args) }"
-                      title="Toggle signature"
-                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('f-' + f.oid)"
-                    ><ChevronRight :size="12" /></span>
+                      <span
+                        class="caret"
+                        :class="{ open: expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.args) }"
+                        title="Toggle signature"
+                        @dblclick.stop @click.stop="!isFiltering && toggleChildren('f-' + f.oid)"
+                      ><ChevronRight :size="12" /></span>
                     <span class="obj-icon"><component :is="functionIcon(f.kind)" :size="14" /></span>
                     <span class="obj-name" v-html="highlightIn(displayName(f.schema, f.name), 'function')" />
                     <span class="node-badges"><span v-if="f.returns === 'void'" class="void-badge">void</span><span v-if="(overloadCounts.get(`${f.schema}.${f.name}`) ?? 0) > 1" class="void-badge overload-badge">overload</span><span v-if="isTbd(f.name)" class="void-badge tbd-badge">tbd</span></span>
                   </div>
-                  <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.typeSig, f.args)">
+                  <template v-if="expanded.has('f-' + f.oid) || autoExpandFunc(f.name, f.schema, f.args)">
                     <div
                       v-for="(p, i) in paramRows(f.args, f.returns)"
                       :key="'p-' + i"
@@ -1039,7 +1038,7 @@ async function refresh() {
                       <span class="param-icon" :class="p.kind"><component :is="PARAM_ICONS[p.kind]" :size="14" /></span>
                       <span class="obj-name" v-html="highlightIn(p.name, 'parameter')" />
                       <span class="node-badges"></span>
-                      <span v-if="p.rest" class="dim" v-html="highlightText(p.rest)" />
+                      <span v-if="p.rest" class="dim">{{ p.rest }}</span>
                     </div>
                   </template>
                 </div>

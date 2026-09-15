@@ -217,17 +217,17 @@ export function autoExpandRelation(
   return filtering && !nameMatches(name, schema, groups) && columnsMatch(cols, groups)
 }
 
+/**
+ * While filtering, a function whose parameter *names* match but whose own name
+ * does not opens itself. Argument types are never searched: a term like `out`
+ * must not match `timestamp without time zone`.
+ */
 export function autoExpandFunction(
   name: string,
   schema: string,
-  typeSig: string,
   args: string,
   filtering: boolean,
   groups: SearchTerms,
 ): boolean {
-  return (
-    filtering &&
-    !nameMatches(name, schema, groups) &&
-    (matchesTerms(typeSig, groups) || paramsMatch(args, groups))
-  )
+  return filtering && !nameMatches(name, schema, groups) && paramsMatch(args, groups)
 }
