@@ -2,6 +2,7 @@
 import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
+import { registerSqlHover, hoverContents } from '../monaco/hover'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
@@ -43,6 +44,7 @@ onMounted(() => {
     (size) => editor?.updateOptions({ fontSize: size }),
   )
   registerSqlCompletion(monaco)
+  registerSqlHover(monaco)
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
     run?.()
   })
@@ -65,21 +67,39 @@ onMounted(() => {
       getReadOnly: () => !!editor?.getOption(monaco.editor.EditorOption.readOnly),
       getValue: () => editor?.getModel()?.getValue() ?? '',
       setValue: (text: string) => editor?.getModel()?.setValue(text),
-      suggestions: () => {
+      // With `needle`, the position is the end of the needle's last
+      // occurrence (so call-site ranking and hover can be probed); without,
+      // the end of the document, as before.
+      suggestions: (needle?: string) => {
         const model = editor?.getModel()
-        const position = model?.getFullModelRange()
-        if (!model || !position) return []
-        return completionSuggestions(model, {
-          lineNumber: position.endLineNumber,
-          column: position.endColumn,
-        } as never).map((s) => ({
-          label: String(s.label),
+        if (!model) return []
+        let position: { lineNumber: number; column: number } | null = null
+        if (needle) {
+          const offset = model.getValue().lastIndexOf(needle)
+          if (offset < 0) return []
+          const at = model.getPositionAt(offset + needle.length)
+          position = { lineNumber: at.lineNumber, column: at.column }
+        } else {
+          const end = model.getFullModelRange()
+          position = { lineNumber: end.endLineNumber, column: end.endColumn }
+        }
+        return completionSuggestions(model, position as never).map((s) => ({
+          label: typeof s.label === 'string' ? s.label : s.label.label,
+          description: typeof s.label === 'string' ? undefined : s.label.description,
           kind: s.kind,
           detail: s.detail,
           // Snippet insert text (functions) is a plain string here; the
           // browser suite asserts it carries the call parentheses.
           insertText: typeof s.insertText === 'string' ? s.insertText : undefined,
+          sortText: s.sortText,
         }))
+      },
+      hover: (needle: string) => {
+        const model = editor?.getModel()
+        if (!model || !needle) return null
+        const offset = model.getValue().lastIndexOf(needle)
+        if (offset < 0) return null
+        return hoverContents(model, model.getPositionAt(offset + Math.floor(needle.length / 2)) as never)
       },
     }
   }

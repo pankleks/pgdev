@@ -62,6 +62,8 @@ await pool.query(`
   INSERT INTO items (label, qty, active, due_at, payload, tags, flags, matrix) VALUES
     ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}', '{red,green}', '{TRUE,FALSE}', '{{1,2},{3,4}}'),
     ('b', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+  COMMENT ON FUNCTION item_count() IS 'Counts all items.';
+  COMMENT ON FUNCTION label(integer) IS 'Echoes the given id.';
 `)
 
 const children = []
@@ -250,6 +252,18 @@ try {
     `)
     ok('a function sharing a column name is still suggested',
       labelItems.includes('label($0)') && labelItems.includes('label'), JSON.stringify(labelItems))
+
+    // At a call site the function ranks above the column and both rows are
+    // described inline.
+    await page.evaluate(`window.__pgdev.setValue('select label(')`)
+    const atCall = await page.evaluate(`return window.__pgdev.suggestions('label')`)
+    const callFn = atCall.find((i) => i.insertText === 'label($0)')
+    const callCol = atCall.find((i) => i.insertText === 'label')
+    ok('functions rank above columns at a call site',
+      String(callFn?.sortText ?? '').startsWith('0') && !callCol?.sortText,
+      JSON.stringify([callFn, callCol]))
+    ok('function description carries the parameter list', /\(p integer\)/.test(String(callFn?.description)))
+    ok('column description carries type and relation', /text · /.test(String(callCol?.description)))
   }
 
   console.log('\n== IntelliSense offers built-in functions while typing ==')
@@ -264,6 +278,47 @@ try {
     await page.evaluate(`window.__pgdev.setValue('SELECT pg_')`)
     const pgLabels = await page.evaluate(`return window.__pgdev.suggestions().map((i) => i.label)`)
     ok('pg_-prefixed internals are never suggested', !pgLabels.some((l) => l.startsWith('pg_')))
+  }
+
+  console.log('\n== IntelliSense hover ==')
+  {
+    const hover = async (sql, needle) => {
+      await page.evaluate(`window.__pgdev.setValue(${JSON.stringify(sql)})`)
+      return page.evaluate(`return window.__pgdev.hover(${JSON.stringify(needle)})`)
+    }
+
+    const func = await hover('select item_count() from items', 'item_count')
+    ok('user function hover shows signature, kind and comment',
+      /\*\*item_count\*\*\(\) → integer/.test(func?.markdown ?? '') &&
+      func.markdown.includes('_function · public_') &&
+      func.markdown.includes('Counts all items.'),
+      JSON.stringify(func))
+
+    const builtin = await hover('select jsonb_build_object(1, 2)', 'jsonb_build_object')
+    ok('built-in hover shows the signature and pg_catalog',
+      /\(VARIADIC "any"\)/.test(builtin?.markdown ?? '') &&
+      builtin.markdown.includes('_function · pg_catalog_'),
+      JSON.stringify(builtin))
+
+    const collision = await hover('select label(1) from items', 'label')
+    ok('at a call site the function wins over a same-named column',
+      /\(p integer\)/.test(collision?.markdown ?? '') &&
+      collision.markdown.includes('Echoes the given id.') &&
+      !collision.markdown.includes('text · items'),
+      JSON.stringify(collision))
+
+    const column = await hover('select i.label from items i', 'label')
+    ok('a plain column hover shows type, relation and nullability',
+      /^\*\*label\*\*/.test(column?.markdown ?? '') &&
+      column.markdown.includes('_text · items · not null_') &&
+      !column.markdown.includes('Echoes'),
+      JSON.stringify(column))
+
+    const qualified = await hover('select app.item_count(1)', 'item_count')
+    ok('schema-qualified hover names the schema',
+      /\(p integer\)/.test(qualified?.markdown ?? '') &&
+      qualified.markdown.includes('_function · app_'),
+      JSON.stringify(qualified))
   }
 
   console.log('\n== IntelliSense offers schema contents after a schema qualifier ==')
@@ -327,9 +382,40 @@ try {
         return fn && column && table ? { fn, column, table } : null
       })()
     `, { timeout: 15000 })
-    eq('function calls get their own color', fnColors.fn, 'rgb(220, 220, 170)')
+    eq('function calls get their own color', fnColors.fn, 'rgb(255, 198, 109)')
     eq('column and table names stay default', [fnColors.column, fnColors.table],
       ['rgb(212, 212, 212)', 'rgb(212, 212, 212)'])
+
+    // A function whose name the grammar lists as a keyword (TRANSLATION is a
+    // SQL Server spelling) must still read as a call, while clause keywords
+    // that precede a parenthesis keep the keyword color.
+    await page.evaluate(`window.__pgdev.setValue("ORDER BY\\n\\ttemp.event_type,\\n\\ttranslation(d.translation, $4, d.code)")`)
+    const keywordCall = await page.waitFor(`
+      (() => {
+        const spans = [...document.querySelectorAll('.view-line span')]
+        const colors = spans.filter((s) => s.textContent.trim() === 'translation')
+          .map((s) => getComputedStyle(s).color)
+        return colors.length === 2 ? colors : null
+      })()
+    `, { timeout: 15000 })
+    eq('a keyword-named function call gets the function color', keywordCall[0], 'rgb(255, 198, 109)')
+    eq('the plain mention keeps its keyword color', keywordCall[1], 'rgb(86, 156, 214)')
+
+    await page.evaluate(`window.__pgdev.setValue('select * from t where id in (1);\\ninsert into t values (2)')`)
+    const clauseColors = await page.waitFor(`
+      (() => {
+        const spans = [...document.querySelectorAll('.view-line span')]
+        const pick = (text) => {
+          const el = spans.find((s) => s.textContent.trim() === text)
+          return el ? getComputedStyle(el).color : null
+        }
+        const inColor = pick('in')
+        const valuesColor = pick('values')
+        return inColor && valuesColor ? { inColor, valuesColor } : null
+      })()
+    `, { timeout: 15000 })
+    eq('clause keywords keep their color before a parenthesis',
+      [clauseColors.inColor, clauseColors.valuesColor], ['rgb(86, 156, 214)', 'rgb(86, 156, 214)'])
   }
 
   console.log('\n== filtering makes collapse inert ==')

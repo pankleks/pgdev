@@ -99,6 +99,10 @@ SELECT n.nspname AS schema, p.proname AS name,
   -- Procedures have no result type; COALESCE keeps the JSON contract string.
   COALESCE(pg_get_function_result(p.oid), '') AS returns,
   COALESCE((SELECT string_agg(format_type(t.oid, NULL), ', ') FROM unnest(p.proargtypes) AS t(oid)), '') AS type_sig,
+  -- Named arguments and defaults are for hover/completion only; DDL keeps the
+  -- identity form above.
+  COALESCE(pg_get_function_arguments(p.oid), '') AS arguments,
+  obj_description(p.oid, 'pg_proc') AS comment,
   CASE
     -- prorettype rather than a second pg_get_function_result call: a
     -- trigger function is exactly one whose return type is trigger.
@@ -123,6 +127,7 @@ const BUILTINS_SQL = `
 SELECT p.proname AS name,
   COALESCE(pg_get_function_identity_arguments(p.oid), '') AS args,
   COALESCE(pg_get_function_result(p.oid), '') AS returns,
+  obj_description(p.oid, 'pg_proc') AS comment,
   CASE WHEN p.prokind = 'w' THEN 'window' WHEN p.prokind = 'a' THEN 'aggregate' ELSE 'function' END AS kind,
   p.oid::text AS oid
 FROM pg_proc p
@@ -255,6 +260,8 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     typeSig: r.type_sig,
     kind: r.kind,
     oid: r.oid,
+    arguments: r.arguments ?? '',
+    comment: r.comment ?? null,
   }))
 
   const types: TypeInfo[] = typesRes.rows.map((r) => ({
@@ -273,6 +280,7 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     typeSig: '',
     kind: r.kind,
     oid: r.oid,
+    comment: r.comment ?? null,
   }))
 
   return { tables, views, functions, types, builtins }

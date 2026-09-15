@@ -1,6 +1,8 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
 import type { FunctionInfo, SchemaData, TableInfo, TypeInfo, ViewInfo } from '../types'
+import { functionSignatureDetail } from '../lib/hovertext'
+import { callSite } from './sqlcontext'
 import {
   matchDotChain,
   findRelation,
@@ -119,6 +121,14 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         endColumn: position.column,
       })
       const aliases = parseAliases(sqlBefore)
+      // A word directly followed by `(` is being called: rank functions above
+      // same-named columns there, and describe both inline so the identical
+      // labels stay distinguishable.
+      const atCall = callSite(
+        model.getValue(),
+        model.getOffsetAt({ lineNumber: position.lineNumber, column: word.endColumn }),
+      )
+      const callSort = atCall ? '0' : undefined
 
       // One emitter per catalog object kind, shared between the generic list
       // and the schema-qualifier list. `inSchema` suppresses re-qualification
@@ -155,12 +165,13 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         const detail = functionDetail(f)
         emit(
           {
-            label: f.name,
+            label: { label: f.name, description: functionSignatureDetail(f) },
             kind: f.kind === 'procedure' ? K.Method : K.Function,
             detail,
             insertText: `${name}($0)`,
             insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
             range,
+            sortText: callSort,
           },
           `${f.name}\u0000${name}\u0000${detail}`,
         )
@@ -172,12 +183,13 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         const insertText = `${quoteIdent(f.name)}($0)`
         emit(
           {
-            label: f.name,
+            label: { label: f.name, description: functionSignatureDetail(f) },
             kind: K.Function,
             detail,
             insertText,
             insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
             range,
+            sortText: callSort,
           },
           `${f.name}\u0000${insertText}\u0000${detail}`,
         )
@@ -189,11 +201,13 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         const match = resolveQualifier(relations, parts, aliases)
 
         if (match) {
+          const relationName = match.schema === 'public' ? match.name : `${match.schema}.${match.name}`
           for (const c of match.columns) {
+            const description = `${c.type} · ${relationName}`
             suggestions.push({
-              label: c.name,
+              label: { label: c.name, description },
               kind: K.Field,
-              detail: `${c.type} · ${match.schema === 'public' ? match.name : `${match.schema}.${match.name}`}`,
+              detail: description,
               insertText: quoteIdent(c.name),
               range,
             })
@@ -242,19 +256,23 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const relation of visibleRelations) {
         const relationName = relation.schema === 'public' ? relation.name : `${relation.schema}.${relation.name}`
         for (const c of relation.columns) {
+          const description = `${c.type} · ${relationName}`
           const winner = emit({
-            label: c.name,
+            label: { label: c.name, description },
             kind: K.Field,
-            detail: `${c.type} · ${relationName}`,
+            detail: description,
             insertText: quoteIdent(c.name),
             range,
           })
           // A duplicate column also found elsewhere: record the other relation
           // in the detail line so the single entry stays informative.
           if (winner.kind !== K.Field || suggestions.indexOf(winner) === -1) continue
-          const from = String(winner.detail ?? '').replace(/^.*? · /, '')
+          const label = typeof winner.label === 'string' ? { label: winner.label } : winner.label
+          const from = String(label.description ?? '').replace(/^.*? · /, '')
           if (!from.split(', ').includes(relationName)) {
-            winner.detail = `${c.type} · ${from}, ${relationName}`
+            const merged = `${c.type} · ${from}, ${relationName}`
+            winner.detail = merged
+            winner.label = { label: label.label, description: merged }
           }
         }
       }

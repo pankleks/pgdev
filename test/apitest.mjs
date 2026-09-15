@@ -52,6 +52,7 @@ CREATE AGGREGATE sum_sq(integer) (SFUNC = int4pl, STYPE = integer, INITCOND = '0
 CREATE FUNCTION dept_count(p_name text) RETURNS integer LANGUAGE sql STABLE AS $$
   SELECT count(*)::int FROM employees e JOIN departments d ON d.id = e.department_id WHERE d.name = p_name
 $$;
+COMMENT ON FUNCTION dept_count(text) IS 'Counts employees in a department.';
 CREATE FUNCTION trg_fn() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN NEW.first_name := initcap(NEW.first_name); RETURN NEW; END $$;
 CREATE TRIGGER trg_emp BEFORE INSERT ON employees FOR EACH ROW EXECUTE FUNCTION trg_fn();
@@ -185,6 +186,13 @@ ok('internal pg_ helpers are excluded from built-ins',
   !(schema.body.builtins ?? []).some((f) => f.name.startsWith('pg_')))
 ok('built-ins never appear in the browsable function list',
   schema.body.functions.every((f) => f.schema !== 'pg_catalog'))
+const deptCount = schema.body.functions.find((f) => f.name === 'dept_count')
+eq('function arguments are harvested with names', deptCount.arguments, 'p_name text')
+eq('function comment is harvested', deptCount.comment, 'Counts employees in a department.')
+ok('built-ins carry a comment field',
+  (schema.body.builtins ?? []).every((f) => f.comment === null || typeof f.comment === 'string'))
+ok('built-in comments are harvested',
+  (schema.body.builtins ?? []).some((f) => typeof f.comment === 'string' && f.comment.length > 0))
 
 console.log('\n== GET /ddl for every object type ==')
 const ddlOf = async (type, name, extra = {}) => {

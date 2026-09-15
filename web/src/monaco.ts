@@ -15,12 +15,22 @@ import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
   getWorker: () => new EditorWorker(),
 }
 
-// A word directly followed by `(` that is neither a keyword nor an operator is
-// a function call: tokenize it separately so calls stand out from column and
-// table names. The rule must sit before the generic word rule, and its `cases`
-// keep language constructs (`IN (`, `VALUES (`, `OVER (`, …) coloured as
-// before. The exported grammar object is mutated, so the lazy language loader
-// registers this same, extended definition.
+// A word directly followed by `(` that is neither a clause keyword nor an
+// operator is a function call: tokenize it separately so calls stand out from
+// column and table names. The clause list below keeps the constructs that
+// legitimately precede a parenthesis (`IN (`, `VALUES (`, `OVER (`, …) as
+// keywords; every other keyword followed by `(` is treated as a call, because
+// the bundled SQL Server grammar lists many PostgreSQL function names among
+// its keywords (`TRANSLATION`, `LEFT`, `REPLACE`, …). The rule must sit before
+// the generic word rule, and the exported grammar object is mutated, so the
+// lazy language loader registers this same, extended definition.
+const CALL_CLAUSE_KEYWORDS = [
+  'IN', 'NOT', 'AND', 'OR', 'VALUES', 'OVER', 'FILTER', 'EXISTS', 'ANY', 'ALL',
+  'SOME', 'SET', 'ARRAY', 'BETWEEN', 'LIKE', 'ILIKE', 'USING', 'ON', 'AS',
+  'PARTITION', 'ROWS',
+]
+;(sqlGrammar as unknown as Record<string, unknown>).callClauseKeywords = CALL_CLAUSE_KEYWORDS
+
 {
   const root = sqlGrammar.tokenizer.root
   const wordRule = root.findIndex(
@@ -31,7 +41,7 @@ import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
       /[\w@#$]+(?=\s*\()/,
       {
         cases: {
-          '@keywords': 'keyword',
+          '@callClauseKeywords': 'keyword',
           '@operators': 'operator',
           '@builtinVariables': 'predefined',
           '@default': 'function',
@@ -48,14 +58,15 @@ import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 // token pure magenta; it also paints every string literal pure red. This
 // derived theme keeps the familiar vs-dark palette but reads those two tokens
 // as a keyword and a muted string, so `UPDATE` matches `SELECT` and `'p'` no
-// longer shouts. Function calls get the usual function yellow.
+// longer shouts. Function calls get a bright amber — clearly apart from the
+// white identifiers, blue keywords and salmon strings.
 monaco.editor.defineTheme('pgdev-dark', {
   base: 'vs-dark',
   inherit: true,
   rules: [
     { token: 'predefined.sql', foreground: '569CD6' },
     { token: 'string.sql', foreground: 'CE9178' },
-    { token: 'function.sql', foreground: 'DCDCAA' },
+    { token: 'function.sql', foreground: 'FFC66D' },
   ],
   colors: {},
 })

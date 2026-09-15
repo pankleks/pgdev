@@ -134,11 +134,17 @@ export interface ViewInfo {
 export interface FunctionInfo {
   schema: string
   name: string
+  /** Identity arguments (`pg_get_function_identity_arguments`), used for DDL. */
   args: string
   returns: string
   typeSig: string
   kind: 'function' | 'procedure' | 'window' | 'trigger' | 'aggregate'
   oid: string
+  /** Full arguments with names, modes and defaults
+   * (`pg_get_function_arguments`); user functions only. */
+  arguments?: string
+  /** `COMMENT ON FUNCTION/PROCEDURE` text, or null when none. */
+  comment?: string | null
 }
 
 export interface TypeInfo {
