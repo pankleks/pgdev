@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, Wand2 } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
@@ -12,7 +12,7 @@ import { useResults } from './composables/results'
 import { useSettings } from './composables/settings'
 import { useToast } from './composables/toast'
 import { api } from './api'
-import { getActiveSelection, triggerFormat } from './lib/formatbridge'
+import { getActiveSelection, triggerFormat, triggerParamMap } from './lib/formatbridge'
 import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
 
 const conn = useConnection()
@@ -21,6 +21,9 @@ const results = useResults()
 const settings = useSettings()
 const toast = useToast()
 const settingsOpen = ref(false)
+const paramBar = ref(false)
+const paramValuesText = ref('')
+const paramInput = ref<HTMLInputElement | null>(null)
 const saving = ref(false)
 const version = ref('')
 
@@ -106,6 +109,10 @@ function persistSizes() {
   sizesTimer = window.setTimeout(() => settings.setPanelSizes(sideW.value, resultsH.value), 300)
 }
 watch([sideW, resultsH], persistSizes)
+// Focus the values input as soon as the bar opens, so pasting works at once.
+watch(paramBar, (open) => {
+  if (open) void nextTick(() => paramInput.value?.focus())
+})
 function flushSizes() {
   window.clearTimeout(sizesTimer)
   settings.setPanelSizes(sideW.value, resultsH.value)
@@ -179,8 +186,24 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown, true)
 })
 
-function runActive() {
-  if (!conn.state.id) {
+/**
+ * The prepare button opens the optional-values bar; applying it (Enter or the
+ * Apply button) generates the script. An empty input keeps the inferred
+ * placeholder values, so the previous direct-generation flow still works.
+ */
+function toggleParamBar() {
+  paramBar.value = !paramBar.value
+  if (paramBar.value) paramValuesText.value = ''
+}
+
+function applyParamValues() {
+  const text = paramValuesText.value.trim()
+  paramBar.value = false
+  paramValuesText.value = ''
+  triggerParamMap(text || undefined)
+}
+
+function runActive() {  if (!conn.state.id) {
     toast.show('Connect to a database first')
     conn.state.dialog = true
     return
@@ -241,6 +264,12 @@ provide('pgdev:run', runActive)
         :disabled="!activeTab || activeTab.readOnly"
         @click="triggerFormat()"
       ><Wand2 :size="15" /></button>
+      <button
+        class="icon"
+        title="Build a PREPARE / EXECUTE template from $N parameters"
+        :disabled="!activeTab || activeTab.readOnly"
+        @click="toggleParamBar()"
+      ><SlidersHorizontal :size="15" /></button>
       <button class="icon" title="New query tab (Ctrl+N)" @click="tabs.newQuery()"><FilePlus2 :size="15" /></button>
       <button class="icon" title="Open .sql file (Ctrl+O)" @click="openFiles()"><FolderOpen :size="15" /></button>
       <button
@@ -275,6 +304,21 @@ provide('pgdev:run', runActive)
       style="display: none"
       @change="onFilesChosen"
     />
+
+    <div v-if="paramBar" class="param-bar">
+      <SlidersHorizontal :size="13" class="param-bar-icon" />
+      <input
+        ref="paramInput"
+        v-model="paramValuesText"
+        type="text"
+        spellcheck="false"
+        placeholder='Optional values as a JSON array — e.g. [1, "text", [10, 12], false, null] · Enter to apply'
+        @keydown.enter.prevent="applyParamValues()"
+        @keydown.esc.prevent="paramBar = false"
+      />
+      <button class="btn-sm primary" title="Apply values to the generated script" @click="applyParamValues()">Apply</button>
+      <button class="icon" title="Close" @click="paramBar = false"><X :size="14" /></button>
+    </div>
 
     <div class="body">
       <aside class="sidebar" :style="{ width: sideW + 'px' }">

@@ -208,6 +208,27 @@ input {
   }
 }
 
+.param-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.param-bar .param-bar-icon {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.param-bar input {
+  flex: 1;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
