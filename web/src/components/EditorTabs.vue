@@ -155,7 +155,12 @@ const staleDdl = computed(() => {
 
 <template>
   <div class="editor-tabs">
-    <div class="tabstrip" @dragover.self="onDragOverStrip($event)" @drop="onDrop($event)">
+    <div
+      class="tabstrip"
+      @dblclick.self="tabs.newQuery()"
+      @dragover.self="onDragOverStrip($event)"
+      @drop="onDrop($event)"
+    >
       <div
         v-for="(t, index) in tabs.state.tabs"
         :key="t.key"

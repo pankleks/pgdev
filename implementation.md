@@ -53,7 +53,7 @@ The primary design goals are:
 - `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs; its search matches names only (objects, columns, parameter names), never column or argument types.
 - `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.
 - `web/src/components/RowEditDialog.vue` edits one result row: a type-matched field per column with NULL checkboxes, PK/generated fields locked, one UPDATE on SAVE.
-- `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop.
+- `web/src/components/EditorTabs.vue` manages tab display, closes associated backend sessions, and reorders tabs by drag and drop; double-clicking the empty tab strip opens a new query tab.
 - `web/src/components/QueryEditor.vue` hosts Monaco models and editor commands.
 - `web/src/components/ResultsPanel.vue` displays virtualized results, messages, pagination, copy, export, cancellation controls, the transaction indicator with Commit/Rollback buttons, and the per-row edit button for editable results.
 - `web/src/components/SettingsDialog.vue` exposes the object-browser grouping preference.

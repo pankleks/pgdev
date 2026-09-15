@@ -209,6 +209,18 @@ try {
   await page.waitFor(`window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })
   eq('function tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
 
+  console.log('\n== double-clicking the tab strip opens a query tab ==')
+  {
+    const before = await page.evaluate(`return document.querySelectorAll('.tabstrip .tab').length`)
+    await page.evaluate(`
+      const strip = document.querySelector('.tabstrip')
+      strip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    `)
+    await new Promise((r) => setTimeout(r, 250))
+    const after = await page.evaluate(`return document.querySelectorAll('.tabstrip .tab').length`)
+    eq('double-clicking the empty strip adds a query tab', after, before + 1)
+  }
+
   console.log('\n== IntelliSense lists objects without exact duplicates ==')
   {
     await page.evaluate(`window.__pgdev.setValue('SELECT ')`)
