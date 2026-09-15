@@ -146,6 +146,29 @@ function collectCallNames(sql: string): string[] {
   return [...names]
 }
 
+/**
+ * No space before an opening parenthesis, in every construct: `IN(1, 2)`,
+ * `VALUES(1)`, `EXISTS(SELECT …)`, `ANY($6)`, `t(a, b)`, `KEY(a)`. The
+ * formatter spaces keyword parentheses (`IN (`) whatever the dialect; this
+ * removes those spaces again. Only spaces and tabs are dropped — a
+ * parenthesis that starts a line keeps its indentation — and the mask keeps
+ * matches out of strings, comments and masked text (the NUL exclusion stops a
+ * `(` right after a string literal from merging with it).
+ */
+function tightenParentheses(formatted: string): string {
+  const mask = codeMask(formatted)
+  const re = /([^\s\u0000])([ \t]+)\(/g
+  let out = ''
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(mask)) !== null) {
+    const keep = m.index + (m[1] as string).length
+    out += formatted.slice(last, keep)
+    last = keep + (m[2] as string).length
+  }
+  return out + formatted.slice(last)
+}
+
 /** The postgres dialect plus the names this query calls, or null when none. */
 function dialectWith(callNames: string[]): DialectOptions | null {
   if (!callNames.length) return null
@@ -156,29 +179,6 @@ function dialectWith(callNames: string[]): DialectOptions | null {
       reservedFunctionNames: [...BUILTIN_FUNCTIONS, ...callNames],
     },
   }
-}
-
-/**
- * A schema-qualified call is always spaced (`sch.fn (x)`) because the dialect
- * turns function names after a dot into identifiers. Remove that one space
- * where the name is one of the collected calls; the mask keeps matches out of
- * strings and comments.
- */
-function tightenQualifiedCalls(formatted: string, callNames: Set<string>): string {
-  if (!callNames.size) return formatted
-  const mask = codeMask(formatted)
-  const re = /\.(\s*)([A-Za-z_][A-Za-z0-9_$]*)([ \t]+)\(/g
-  let out = ''
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(mask)) !== null) {
-    const name = m[2] as string
-    if (!callNames.has(name)) continue
-    const spaceStart = m.index + 1 + (m[1] as string).length + name.length
-    out += formatted.slice(last, spaceStart)
-    last = spaceStart + (m[3] as string).length
-  }
-  return out + formatted.slice(last)
 }
 
 /**
@@ -321,9 +321,8 @@ function isRoutineBody(codeBefore: string): boolean {
 
 export function formatSql(sql: string): string {
   const callNames = collectCallNames(sql)
-  const names = new Set(callNames)
   const formatChunk = (chunk: string): string =>
-    tightenJsonArrows(tightenQualifiedCalls(formatPlain(chunk, callNames), names))
+    tightenParentheses(tightenJsonArrows(formatPlain(chunk, callNames)))
 
   const segments = findDollarSegments(sql)
   if (!segments.length) return formatChunk(sql)

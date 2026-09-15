@@ -37,15 +37,24 @@ test('built-in functions are unchanged', () => {
   assert.equal(formatSql('select to_char(now())'), 'SELECT\n\tto_char(now())')
 })
 
-test('clause keywords keep their space before the parenthesis', () => {
-  const where = formatSql('select * from t where id in (1,2)')
-  assert.match(where, /IN \(1, 2\)/)
-  const window = formatSql('select row_number() over (partition by a) from t')
-  assert.match(window, /OVER \(/)
-  const filtered = formatSql('select array_agg(x) filter (where x > 1) from t')
-  assert.match(filtered, /FILTER \(/)
-  const values = formatSql('insert into t values (1), (2)')
-  assert.match(values, /VALUES\n\t\(1\)/)
+test('no space before an opening parenthesis, in every construct', () => {
+  assert.equal(
+    formatSql('select * from t where id in (1,2)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid IN(1, 2)',
+  )
+  assert.equal(
+    formatSql('select count(*) filter (where x > 1) from t'),
+    'SELECT\n\tcount(*) FILTER(\n\t\tWHERE\n\t\t\tx > 1\n\t)\nFROM\n\tt',
+  )
+  assert.equal(
+    formatSql('select * from t where exists (select 1)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tEXISTS(\n\t\tSELECT\n\t\t\t1\n\t)',
+  )
+  assert.equal(
+    formatSql('insert into t (a, b) values (1, 2)'),
+    'INSERT INTO\n\tt(a, b)\nVALUES\n\t(1, 2)',
+  )
+  assert.equal(formatSql('create index on t (a)'), 'CREATE INDEX ON t(a)')
 })
 
 test('strings and comments are never rewritten', () => {
@@ -81,6 +90,33 @@ test('arrows inside strings and comments are never rewritten', () => {
   const out = formatSql("select 'a -> b' as s from t -- x ->> y")
   assert.match(out, /'a -> b'/)
   assert.match(out, /-- x ->> y/)
+})
+
+test('a call written tight stays tight, keyword-named calls included', () => {
+  assert.equal(
+    formatSql('select * from t where id = any($6)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ANY($6)',
+  )
+  assert.equal(
+    formatSql('select * from t where id = all($6)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ALL($6)',
+  )
+  assert.equal(formatSql('select any(array[1, 2])'), 'SELECT\n\tANY(ARRAY[1, 2])')
+  assert.equal(
+    formatSql('select * from t where id in($6)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid IN($6)',
+  )
+})
+
+test('a call written with a space is tightened too', () => {
+  assert.equal(
+    formatSql('select * from t where id = any ($6)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ANY($6)',
+  )
+  assert.equal(
+    formatSql('select * from t where id in ($6)'),
+    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid IN($6)',
+  )
 })
 
 test('routine bodies are tightened while plain dollar literals survive', () => {
