@@ -215,6 +215,8 @@ The SQL splitter recognizes:
 
 The formatter scans SQL rather than using a global dollar-body regular expression. Dollar-quoted text inside strings and comments is ignored. Routine bodies after `CREATE FUNCTION`, `CREATE PROCEDURE`, or `DO` may be formatted internally; other dollar-quoted values are preserved byte-for-byte.
 
+Function calls stay tight to their parenthesis. `sql-formatter` only treats names in its fixed PostgreSQL function list as calls, so the wrapper collects the names the query actually calls — scanning past strings, comments and quoted identifiers — and adds them to the dialect's function list; a masked pass then removes the space the formatter inserts for schema-qualified calls (`sch.fn (`). Clause keywords such as `IN (`, `VALUES (`, `OVER (` and `FILTER (` keep their space, calls already written with a space are normalised, and text inside strings, comments and non-routine dollar-quoted literals is never rewritten. PostgreSQL JSON arrows (`->`, `->>`, `#>`, `#>>`) are tightened the same way, so `dr.field_bag ->> 'level'` becomes `dr.field_bag->>'level'` — including negative index operands such as `data -> -1`.
+
 Indentation is configured consistently:
 
 - SQL formatter: tab characters with a four-column tab width.
