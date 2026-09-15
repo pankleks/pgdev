@@ -3,6 +3,7 @@
 // `from '../types'` imports working; types only — nothing here survives the
 // vite build.
 export type {
+  AiConfig,
   ColumnInfo,
   CommandResult,
   ConnectionConfig,

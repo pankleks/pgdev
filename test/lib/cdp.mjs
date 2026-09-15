@@ -98,7 +98,12 @@ export async function openPage(port) {
       return
     }
     if (msg.method === 'Runtime.exceptionThrown') {
-      consoleErrors.push(msg.params.exceptionDetails?.exception?.description ?? 'exception')
+      const d = msg.params.exceptionDetails
+      const frame = d?.stackTrace?.callFrames?.[0]
+      consoleErrors.push(
+        `[${frame?.url ?? '?'}:${(frame?.lineNumber ?? -1) + 1}:${(frame?.columnNumber ?? -1) + 1}] ` +
+          (d?.exception?.description ?? d?.text ?? 'exception'),
+      )
     }
     if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
       consoleErrors.push(msg.params.args.map((a) => a.value ?? a.description ?? '').join(' '))

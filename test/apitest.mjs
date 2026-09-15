@@ -88,7 +88,7 @@ const ok = (name, cond, detail = '') => eq(name + (detail ? ` — ${detail}` : '
 // The real application, so the origin guard and route wiring under test are
 // the ones that ship rather than a copy of them.
 const { createApp } = await import('../server/dist/app.js')
-const app = await createApp({ serveStatic: false })
+const app = await createApp({ serveStatic: false, ai: true })
 
 const ORIGIN = 'http://localhost'
 const call = async (method, url, payload) => {
@@ -767,11 +767,107 @@ console.log('\n== disconnect cancels in-flight queries ==')
     `${res.statusCode} ${res.json().error}`)
 }
 
+console.log('\n== AI tool surface ==')
+{
+  const cfg = await call('GET', '/api/ai/config')
+  eq('AI config is served', cfg.status, 200)
+  ok('config carries url, token and an MCP snippet',
+    typeof cfg.body.token === 'string' && cfg.body.token.length >= 32 &&
+    /pgdev-mcp/.test(cfg.body.config) && typeof cfg.body.url === 'string',
+    JSON.stringify(cfg.body).slice(0, 200))
+
+  const token = cfg.body.token
+  const tool = async (name, args) => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/ai/tool/${name}`,
+      payload: args ?? {},
+      headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
+    })
+    let body = null
+    try {
+      body = res.json()
+    } catch {
+      body = res.body
+    }
+    return { status: res.statusCode, body }
+  }
+
+  const noToken = await app.inject({ method: 'POST', url: '/api/ai/tool/query', payload: { sql: 'SELECT 1' } })
+  eq('a tool call without a token is rejected', noToken.statusCode, 401)
+  const wrongToken = await app.inject({
+    method: 'POST', url: '/api/ai/tool/query', payload: { sql: 'SELECT 1' },
+    headers: { origin: ORIGIN, authorization: 'Bearer nope' },
+  })
+  eq('a wrong token is rejected', wrongToken.statusCode, 401)
+
+  const unknown = await tool('nope')
+  eq('an unknown tool is a 404', unknown.status, 404)
+
+  const noRun = await tool('run_active_query')
+  eq('there is no tool that runs the editor', noRun.status, 404)
+
+  const noList = await tool('list_connections')
+  eq('there is no tool that lists connections', noList.status, 404)
+
+  const read = await tool('query', { sql: 'SELECT g AS n FROM generate_series(1, 3) g ORDER BY g' })
+  eq('a read-only query returns rows on the open connection without a browser window', read.status, 200)
+  eq('rows come back compactly', read.body.result.results[0].rows, [[1], [2], [3]])
+  eq('nothing was mirrored without a window', read.body.result.shown, false)
+
+  const write = await tool('query', { sql: 'CREATE TABLE ai_probe (a integer)' })
+  ok('a write is refused before execution',
+    write.body.ok === false && /read-only/.test(write.body.error), JSON.stringify(write.body))
+
+  const cte = await tool('query', {
+    sql: "WITH x AS (INSERT INTO departments (name) VALUES ('ai') RETURNING id) SELECT * FROM x",
+  })
+  ok('the database refuses a data-modifying CTE in the read-only transaction',
+    cte.body.ok === false && /read-only transaction/i.test(cte.body.error), JSON.stringify(cte.body))
+  eq('the refused CTE inserted nothing',
+    (await q("SELECT count(*)::int AS n FROM departments WHERE name = 'ai'", 'ai-check')).body.results[0].rows[0][0], 0)
+
+  const filtered = await tool('get_schema', { table: 'departments' })
+  eq('get_schema filters to the named relation',
+    filtered.body.result.tables.map((t) => t.name), ['departments'])
+
+  const deptOid = schema.body.tables.find((t) => t.name === 'departments').oid
+  const ddl = await tool('get_ddl', { type: 'table', schema: 'public', name: 'departments', oid: deptOid })
+  ok('get_ddl returns generated DDL', /CREATE TABLE/.test(ddl.body.result?.ddl ?? ''), JSON.stringify(ddl.body).slice(0, 120))
+
+  const badDdl = await tool('get_ddl', { type: 'sequence', schema: 'public', name: 'x' })
+  ok('get_ddl validates the object type', badDdl.body.ok === false, JSON.stringify(badDdl.body))
+
+  const editor = await tool('get_active_query')
+  ok('editor tools report the missing window',
+    editor.body.ok === false && /No pgDEV window/.test(editor.body.error), JSON.stringify(editor.body))
+
+  const stray = await call('POST', '/api/ai/bridge/result', { id: 'missing', result: 1 })
+  eq('an unknown bridge result is ignored', stray.body.ok, false)
+}
+
 console.log('\n== disconnect ==')
 const del = await call('DELETE', `/api/connections/${id}`)
 eq('connection closes', del.status, 200)
 const gone = await call('GET', `/api/connections/${id}/schema`)
 eq('closed connection is unknown', gone.status, 404)
+
+console.log('\n== AI without a connection ==')
+{
+  // Nothing is open any more, so the database tools must say so instead of
+  // guessing a connection to work on.
+  const token = (await call('GET', '/api/ai/config')).body.token
+  const offline = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/ai/tool/query',
+      payload: { sql: 'SELECT 1' },
+      headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
+    })
+  ).json()
+  ok('a database tool without a connection says so',
+    offline.ok === false && /not connected to a database/i.test(offline.error), JSON.stringify(offline))
+}
 
 // ------------------------------------------------------------------- teardown
 const cleanup = async () => {

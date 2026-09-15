@@ -1,4 +1,5 @@
 import type {
+  AiConfig,
   ConnectionConfig,
   FetchMoreResponse,
   QueryResponse,
@@ -101,5 +102,19 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     }).then((r) => unwrap<RowUpdateResponse>(r))
+  },
+
+  /** The AI/MCP configuration; `enabled` is false when the server has AI off. */
+  aiConfig(): Promise<AiConfig> {
+    return fetch('/api/ai/config').then((r) => unwrap<AiConfig>(r))
+  },
+
+  /** Hand a bridge action's outcome back to the waiting tool call. */
+  aiBridgeResult(id: string, result: unknown, error: string | null): Promise<{ ok: boolean }> {
+    return fetch('/api/ai/bridge/result', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, result, error }),
+    }).then((r) => unwrap<{ ok: boolean }>(r))
   },
 }

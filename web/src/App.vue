@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
+import { Bot, Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import AiDialog from './components/AiDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ResultsPanel from './components/ResultsPanel.vue'
@@ -11,6 +12,7 @@ import { useTabs, type EditorTab } from './composables/tabs'
 import { useResults } from './composables/results'
 import { useSettings } from './composables/settings'
 import { useToast } from './composables/toast'
+import { useAi } from './composables/ai'
 import { api } from './api'
 import { getActiveSelection, triggerFormat, triggerParamMap } from './lib/formatbridge'
 import { isPickerCancelled, openTextFiles, saveTextFile } from './lib/files'
@@ -20,7 +22,9 @@ const tabs = useTabs()
 const results = useResults()
 const settings = useSettings()
 const toast = useToast()
+const ai = useAi()
 const settingsOpen = ref(false)
+const aiOpen = ref(false)
 const paramBar = ref(false)
 const paramValuesText = ref('')
 const paramInput = ref<HTMLInputElement | null>(null)
@@ -168,6 +172,9 @@ onMounted(() => {
   window.addEventListener('pagehide', flushSizes)
   // Capture editor shortcuts before Monaco or the browser handles them.
   window.addEventListener('keydown', onKeyDown, true)
+  // Subscribe to the AI bridge as soon as the app loads: the agent can then
+  // reach the editor whether or not a database connection is open yet.
+  void ai.start()
   // Restore the saved tab session before the default tab is created, then
   // connect. The session is global: connection state plays no part in it.
   void tabs.sessionsReady
@@ -286,6 +293,7 @@ provide('pgdev:run', runActive)
         aria-label="Save active tab as a new SQL file"
         @click="saveActive(true)"
       ><FileOutput :size="15" /></button>
+      <button class="icon" title="AI agent access (MCP)" @click="aiOpen = true"><Bot :size="15" /></button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
       <a
         v-if="version"
@@ -338,6 +346,7 @@ provide('pgdev:run', runActive)
 
     <ConnectDialog v-if="conn.state.dialog" />
     <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
+    <AiDialog v-if="aiOpen" @close="aiOpen = false" />
     <div v-if="toast.state.visible" class="toast">{{ toast.state.text }}</div>
   </div>
 </template>

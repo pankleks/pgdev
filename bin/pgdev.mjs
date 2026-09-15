@@ -29,6 +29,7 @@ Usage: pgdev [options]
 
   --port <n>     listen on this port (default 3010, or $PORT)
   --no-open      do not open a browser
+  --ai           enable the AI/MCP tool surface (off by default)
   --version, -v  print the version
   --help, -h     this message
 
@@ -38,6 +39,7 @@ connection is yours: nothing is sent anywhere else.`)
 }
 
 const NO_OPEN = has('--no-open') || process.env.PGDEV_NO_OPEN === '1'
+const AI = has('--ai') || process.env.PGDEV_AI === '1'
 const DEFAULT_PORT = Number(valueOf('--port') ?? process.env.PORT ?? 3010)
 
 /** True when nothing is listening on the port. */
@@ -90,7 +92,7 @@ let shuttingDown = false
 
 function startChild() {
   const child = spawn(process.execPath, [entry], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), PGDEV_AI: AI ? '1' : '' },
     stdio: ['ignore', 'inherit', 'inherit'],
   })
   childStartedAt = Date.now()
@@ -152,5 +154,8 @@ await ready()
 
 if (fellBack) console.log(`Port ${DEFAULT_PORT} was busy; using ${port} instead.`)
 console.log(`pgDEV is running at http://localhost:${port}/`)
+if (AI) {
+  console.log('AI tools are enabled — open the AI dialog in pgDEV for the MCP client config.')
+}
 console.log('Press Ctrl+C to stop.')
 if (!NO_OPEN) openBrowser(`http://localhost:${port}/`)

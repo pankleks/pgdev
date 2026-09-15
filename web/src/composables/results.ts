@@ -298,7 +298,50 @@ export function createResults(api: ResultsApi) {
     return exportAll(tabKey, connectionId, grid, () => undefined, true)
   }
 
-  return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll }
+  /**
+   * Show a result that was produced outside this tab (the AI agent ran it
+   * server-side): the grid renders the given rows and any in-flight work for
+   * the tab is invalidated, without going through the query endpoint.
+   */
+  function showGrid(
+    tabKey: string,
+    data: {
+      columns: string[]
+      columnTypes: string[]
+      rows: unknown[][]
+      rowCount: number
+      truncated: boolean
+    },
+  ): void {
+    const r = ensure(tabKey)
+    r.operation++
+    r.running = false
+    r.cancelling = false
+    r.loadingMore = false
+    const key = `grid-${tabKey}-agent`
+    r.grids = [
+      {
+        kind: 'data',
+        key,
+        statementNumber: 1,
+        columns: data.columns,
+        columnTypes: data.columnTypes,
+        rows: data.rows,
+        rowCount: data.rowCount,
+        truncated: data.truncated,
+      },
+    ]
+    r.selectedKey = key
+    r.showMessages = false
+    r.messages = [
+      {
+        text: `Agent query: ${data.rowCount} row(s)${data.truncated ? ' (agent row limit reached)' : ''}`,
+        level: 'info',
+      },
+    ]
+  }
+
+  return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll, showGrid }
 }
 
 export type Results = ReturnType<typeof createResults>

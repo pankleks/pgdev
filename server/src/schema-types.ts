@@ -238,3 +238,14 @@ export interface FetchMoreResponse {
   rowCount: number
   truncated: boolean
 }
+
+/** Everything an MCP client needs to reach this pgDEV instance (AI enabled). */
+export interface AiConfig {
+  enabled: boolean
+  url: string
+  token: string
+  /** Absolute path to bin/pgdev-mcp.mjs. */
+  command: string
+  /** Ready-to-paste client configuration JSON. */
+  config: string
+}

@@ -8,7 +8,7 @@ import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
 import { mapParams, parseParamValues } from '../lib/preparemap'
-import { setFormatHandler, setParamsHandler, setSelectionGetter } from '../lib/formatbridge'
+import { setFormatHandler, setInsertHandler, setParamsHandler, setSelectionGetter } from '../lib/formatbridge'
 
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
@@ -54,6 +54,15 @@ onMounted(() => {
   })
   setFormatHandler(() => formatActive())
   setParamsHandler((values) => mapParamsActive(values))
+  // The AI bridge writes into the editor at the cursor (replacing a selection).
+  setInsertHandler((text) => {
+    if (!editor || props.tab.readOnly) return false
+    const model = editor.getModel()
+    if (!model) return false
+    const selection = editor.getSelection() ?? model.getFullModelRange()
+    editor.executeEdits('pgdev-ai', [{ range: selection, text, forceMoveMarkers: true }])
+    return true
+  })
   setSelectionGetter(() => {
     const model = editor?.getModel()
     const selection = editor?.getSelection()
@@ -219,6 +228,7 @@ onBeforeUnmount(() => {
   setFormatHandler(null)
   setParamsHandler(null)
   setSelectionGetter(null)
+  setInsertHandler(null)
   editor?.dispose()
   models.forEach((m) => m.dispose())
   models.clear()

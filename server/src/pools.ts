@@ -58,6 +58,11 @@ export function runningKeysForConnection(connId: string): string[] {
   return [...runningQueries.keys()].filter((key) => key.startsWith(prefix))
 }
 
+/** Ids of the connections the server currently holds (for the AI tool surface). */
+export function connectionIds(): string[] {
+  return [...pools.keys()]
+}
+
 export async function removePool(id: string): Promise<boolean> {
   const pool = pools.get(id)
   if (!pool) return false

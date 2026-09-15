@@ -81,7 +81,7 @@ process.on('uncaughtException', async (e) => {
 
 console.log('\n== starting the dev stack ==')
 const server = spawn('node', [join(REPO, 'server', 'dist', 'index.js')], {
-  env: { ...process.env, PORT: String(API_PORT) },
+  env: { ...process.env, PORT: String(API_PORT), PGDEV_AI: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 children.push(server)
@@ -173,6 +173,28 @@ try {
     { timeout: 20000 },
   ).then(() => true).catch(() => false)
   ok('object browser lists the fixture tables', listed)
+
+  // Acts as the MCP client for the AI bridge checks: the browser suite is the
+  // window the agent talks to, so it calls the token-guarded tool endpoints.
+  let aiToken = ''
+  const aiTool = async (name, args = {}) => {
+    if (!aiToken) {
+      const cfg = await page.evaluate(`return (await fetch('/api/ai/config')).json()`)
+      aiToken = cfg?.token ?? ''
+      ok('AI tools are enabled for this run', Boolean(aiToken))
+    }
+    return page.evaluate(`
+      const res = await fetch(${JSON.stringify(`/api/ai/tool/${name}`)}, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer ' + ${JSON.stringify(aiToken)},
+        },
+        body: ${JSON.stringify(JSON.stringify(args))},
+      })
+      return { status: res.status, body: await res.json().catch(() => null) }
+    `)
+  }
 
   console.log('\n== DDL tabs and their read-only rules ==')
   /** Expand the section holding `name`, then double-click the object. */
@@ -523,6 +545,66 @@ try {
       /EXECUTE temp\(\r?\n\t7, -- \$1\r?\n\t'a' -- \$2\r?\n\);/.test(script), JSON.stringify(script))
   }
 
+  console.log('\n== AI bridge ==')
+  {
+    // The window is the page under test: the tools above reached it over the
+    // SSE bridge, which is only up when the page subscribed on load.
+    await page.evaluate(`window.__pgdev.setValue('SELECT 1 AS ai_probe')`)
+    const active = await aiTool('get_active_query')
+    // Report the real cause when another pgDEV window grabbed the bridge: the
+    // server refuses rather than broadcasting to every subscribed window.
+    ok(
+      'no other pgDEV window is subscribed to the bridge',
+      active.body.ok !== false || !/windows are listening/.test(active.body.error),
+      active.body.error,
+    )
+    eq('get_active_query reads the editor', active.body.result?.sql, 'SELECT 1 AS ai_probe')
+
+    const replaced = await aiTool('set_active_query', { sql: 'SELECT 2 AS ai_replaced' })
+    eq('set_active_query succeeds', replaced.body.ok, true)
+    const shownInEditor = await page.waitFor(
+      `window.__pgdev.getValue() === 'SELECT 2 AS ai_replaced'`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('the editor shows the agent SQL', shownInEditor)
+
+    const tabsBefore = await page.evaluate(`return document.querySelectorAll('.tabstrip .tab').length`)
+    const opened = await aiTool('open_query_tab', { sql: 'CREATE VIEW ai_view AS SELECT 1', title: 'ai_view' })
+    eq('open_query_tab returns a tab key', typeof opened.body.result?.key, 'string')
+    const tabsAfter = await page.evaluate(`return document.querySelectorAll('.tabstrip .tab').length`)
+    eq('a tab was opened', tabsAfter, tabsBefore + 1)
+    const openedShown = await page.waitFor(
+      `window.__pgdev.getValue() === 'CREATE VIEW ai_view AS SELECT 1'`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('the new tab holds the agent SQL', openedShown)
+
+    const read = await aiTool('query', { sql: 'SELECT 42 AS answer' })
+    eq('the agent query returns rows', read.body.result?.results?.[0]?.rows, [[42]])
+    eq('the running window was told to mirror the rows', read.body.result?.shown, true)
+    const gridShown = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === '42')`,
+      { timeout: 15000 },
+    ).then(() => true).catch(() => false)
+    ok('the agent rows are visible in a grid', gridShown)
+    const titles = await page.evaluate(
+      `return [...document.querySelectorAll('.tabstrip .tab-title')].map((t) => t.textContent.trim())`,
+    )
+    ok('the mirrored result lives in the AI tab', titles.includes('AI'), JSON.stringify(titles))
+
+    // The agent can stage SQL but never run the editor: the tool is gone.
+    await aiTool('set_active_query', { sql: "UPDATE items SET label = 'ai'" })
+    const removed = await aiTool('run_active_query')
+    eq('the agent cannot run the editor', removed.status, 404)
+    const noList = await aiTool('list_connections')
+    eq('the agent cannot list connections', noList.status, 404)
+
+    // Database tools use the connection the window has open, with no argument.
+    const schema = await aiTool('get_schema', { table: 'items' })
+    eq('get_schema reads the connection open in the window',
+      schema.body.result?.tables?.map((t) => t.name), ['items'])
+  }
+
   console.log('\n== opened sections survive a reload ==')
   {
     // The Tables section was opened earlier in this run; after a reload the
@@ -533,6 +615,15 @@ try {
       { timeout: 25000 },
     ).then(() => true).catch(() => false)
     ok('Tables section is expanded after a reload', restored)
+
+    // The bridge must come back up with the restored page.
+    let bridgeBack = false
+    for (let i = 0; i < 40 && !bridgeBack; i++) {
+      const probe = await aiTool('get_active_query')
+      bridgeBack = probe.body?.ok === true
+      if (!bridgeBack) await new Promise((r) => setTimeout(r, 250))
+    }
+    ok('the AI bridge reconnects after a reload', bridgeBack)
   }
 
   console.log('\n== a query error is surfaced in the UI ==')
@@ -750,7 +841,14 @@ try {
   }
 
   console.log('\n== console cleanliness ==')
-  const noisy = page.consoleErrors.filter((e) => !/favicon|Download the Vue Devtools/i.test(e))
+  const noisy = page.consoleErrors.filter((e) => {
+    if (/favicon|Download the Vue Devtools/i.test(e)) return false
+    // Upstream Monaco noise: the built-in word highlighter keeps a delayed
+    // document-highlight promise, and disposing it on a model switch rejects
+    // that promise with a CancellationError nobody handles, so a tab switch
+    // while a highlight is in flight logs "Canceled: Canceled" from Delayer.
+    return !/Canceled: Canceled[\s\S]*Delayer\.cancel/.test(e)
+  })
   ok('no console errors during the run', noisy.length === 0, noisy.slice(0, 3).join(' | '))
 } finally {
   await page.close().catch(() => {})

@@ -1,9 +1,11 @@
 type Handler = (values?: string) => void
 type SelectionGetter = () => string | undefined
+type InsertHandler = (text: string) => boolean
 
 let formatHandler: (() => void) | null = null
 let paramsHandler: Handler | null = null
 let selectionGetter: SelectionGetter | null = null
+let insertHandler: InsertHandler | null = null
 
 export function setFormatHandler(f: (() => void) | null): void {
   formatHandler = f
@@ -27,4 +29,13 @@ export function setSelectionGetter(g: SelectionGetter | null): void {
 
 export function getActiveSelection(): string | undefined {
   return selectionGetter?.()
+}
+
+/** The AI bridge inserts inside the mounted editor; false when none is mounted. */
+export function setInsertHandler(h: InsertHandler | null): void {
+  insertHandler = h
+}
+
+export function insertAtCursor(text: string): boolean {
+  return insertHandler?.(text) ?? false
 }
