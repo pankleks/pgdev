@@ -487,6 +487,30 @@ try {
     await search('')
   }
 
+  console.log('\n== PREPARE template from $N parameters ==')
+  {
+    await page.evaluate(`window.__pgdev.setValue("SELECT * FROM items WHERE id = $1 AND label = $2")`)
+    // The toolbar button opens the values bar; Enter applies it.
+    await page.evaluate(`
+      const btn = [...document.querySelectorAll('button')]
+        .find((b) => /PREPARE \\/ EXECUTE/.test(b.title))
+      btn?.click()
+    `)
+    await page.waitFor(`!!document.querySelector('.param-bar input')`, { timeout: 10000 })
+    await page.evaluate(`
+      const input = document.querySelector('.param-bar input')
+      const proto = Object.getPrototypeOf(input)
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, '-- [7, "a"]')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    `)
+    await page.waitFor(`window.__pgdev.getValue().startsWith('PREPARE temp AS')`, { timeout: 15000 })
+    const script = await page.evaluate(`return window.__pgdev.getValue()`)
+    ok('the template declares no parameter type list', /^PREPARE temp AS\r?\n/.test(script), JSON.stringify(script.slice(0, 60)))
+    ok('pasted values become literals with parameter comments',
+      /EXECUTE temp\(\r?\n\t7, -- \$1\r?\n\t'a' -- \$2\r?\n\);/.test(script), JSON.stringify(script))
+  }
+
   console.log('\n== opened sections survive a reload ==')
   {
     // The Tables section was opened earlier in this run; after a reload the

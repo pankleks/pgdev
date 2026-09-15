@@ -74,6 +74,7 @@ The primary design goals are:
 - `web/src/lib/objectgroups.ts` groups objects by common underscore-separated name prefixes.
 - `web/src/lib/tablegroups.ts` adapts that grouping for tables.
 - `web/src/lib/formatbridge.ts` connects the toolbar format action to the mounted editor.
+- `web/src/lib/preparemap.ts` scans `$N` parameters and builds the PREPARE/EXECUTE template (no type detection — PostgreSQL infers parameter types from the query).
 
 ## Connection Management
 
@@ -228,6 +229,26 @@ Indentation is configured consistently:
 - Monaco: four-column visual tabs, tabs inserted instead of spaces, and automatic indentation detection disabled.
 
 The editor uses a derived Monaco theme (`pgdev-dark`, defined in `web/src/monaco.ts`) instead of raw `vs-dark`: the bundled SQL grammar files `UPDATE` — and other SQL Server spellings such as `COUNT` or `GETDATE` — under its built-in functions, which `vs-dark` paints magenta, and it paints every string literal pure red. The theme maps those two tokens to the keyword blue and the familiar muted string colour, leaving the rest of the palette untouched. The bundled SQL grammar is also extended with one rule: a word directly followed by `(` is a function call (bright amber `#FFC66D`, clearly apart from the white identifiers, blue keywords and salmon strings) unless it is an operator or one of the clause keywords that legitimately precede a parenthesis (`IN (`, `VALUES (`, `OVER (`, `FILTER (`, `NOT (`, …). Because the grammar's keyword list contains many PostgreSQL function names (`TRANSLATION`, `LEFT`, `REPLACE`, …), those calls would otherwise be painted as keywords; the curated clause list keeps the real clauses keyword-coloured while every other keyword-named call gets the function colour. The grammar object is mutated before the lazy language loader registers it, so the extension survives registration.
+
+## Parameter Templates
+
+The toolbar's sliders button opens a values bar and turns the query (or the selection) into an editable `PREPARE`/`EXECUTE` template. `web/src/lib/preparemap.ts` scans the statement for top-level `$N` parameters — skipping string literals, comments, dollar-quoted bodies and identifiers that merely contain a `$` (`a$1` is a name) — and builds:
+
+```sql
+PREPARE temp AS
+	SELECT * FROM product WHERE id = $1 AND _active = $2;
+
+
+EXECUTE temp(
+	NULL, -- $1
+	NULL -- $2
+);
+
+
+DEALLOCATE temp;
+```
+
+Values pasted into the bar as a JSON array (optionally behind a `--` prefix, as such lines often arrive from logs) replace the placeholders positionally and are converted to SQL literals (`ARRAY[…]` for arrays, JSON text for objects); every parameter without a value stays `NULL`, and gaps (`$1`, `$3`) are filled in too. **No parameter types are detected or declared**: PostgreSQL infers them from the query context, so the template emits `PREPARE temp AS` with no type list, which works on the supported PostgreSQL versions. A `;` is appended when the statement lacks one, and never inside a trailing line comment.
 
 ## Frontend State and Race Protection
 

@@ -3,27 +3,17 @@ import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
 import { registerSqlHover, hoverContents } from '../monaco/hover'
-import { useSchema } from '../composables/schema'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
-import { findRelation, parseAliases, resolveQualifier } from '../monaco/sqlrefs'
-import {
-  mapParams,
-  paramTypeOf,
-  parseParamValues,
-  type ParamRef,
-  type ParamType,
-} from '../lib/preparemap'
+import { mapParams, parseParamValues } from '../lib/preparemap'
 import { setFormatHandler, setParamsHandler, setSelectionGetter } from '../lib/formatbridge'
-import type { TableInfo, ViewInfo } from '../types'
 
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
 const tabs = useTabs()
 const settings = useSettings()
-const schema = useSchema()
 const toast = useToast()
 const run = inject<(sql?: string) => void>('pgdev:run')
 
@@ -151,51 +141,6 @@ function formatActive() {
   editor.executeEdits('pgdev-format', [{ range: model.getFullModelRange(), text }])
 }
 
-/** SQL text the context resolution needs (selection or full content). */
-let currentSql = ''
-
-/**
- * Resolve one parameter's comparison context to a catalog type: qualified
- * columns go through their alias/table; unqualified columns prefer the
- * relations in FROM/JOIN, then a unique match anywhere in the schema.
- * Unresolvable parameters stay null so the script degrades gracefully.
- */
-function resolveParamType(ref: ParamRef): ParamType | null {
-  const data = schema.state.data
-  if (!data || !ref.column) return null
-  const relations: (TableInfo | ViewInfo)[] = [...data.tables, ...data.views]
-  let searchIn = relations
-  if (ref.qualifier) {
-    const rel = resolveQualifier(relations, [ref.qualifier, ref.column], parseAliases(currentSql))
-    if (rel) searchIn = [rel]
-  } else {
-    const aliases = parseAliases(currentSql)
-    const fromRels: (TableInfo | ViewInfo)[] = []
-    for (const alias of aliases.values()) {
-      const rel = findRelation(relations, alias)
-      if (rel && !fromRels.includes(rel)) fromRels.push(rel)
-    }
-    if (fromRels.length) searchIn = fromRels
-  }
-  const matches = searchIn
-    .map((rel) => rel.columns.find((c) => c.name.toLowerCase() === ref.column))
-    .filter((col): col is NonNullable<typeof col> => !!col)
-  if (matches.length !== 1) {
-    // Unqualified columns may exist in several relations — only a unique
-    // match across the whole schema is trustworthy.
-    if (ref.qualifier) return null
-    const unique: string[] = []
-    for (const rel of relations) {
-      const col = rel.columns.find((c) => c.name.toLowerCase() === ref.column)
-      if (col) unique.push(col.type)
-      if (unique.length > 1) return null
-    }
-    if (unique.length === 1) return paramTypeOf(unique[0])
-    return null
-  }
-  return paramTypeOf(matches[0].type)
-}
-
 function mapParamsActive(valuesText?: string) {
   if (!editor || props.tab.readOnly) return
   const model = editor.getModel()
@@ -204,21 +149,17 @@ function mapParamsActive(valuesText?: string) {
   const range = selection && !selection.isEmpty() ? selection : model.getFullModelRange()
   const sql = model.getValueInRange(range)
   if (!sql.trim()) return
-  currentSql = sql
   const override = valuesText ? parseParamValues(valuesText) : null
   if (valuesText?.trim() && !override) {
     toast.show('Could not parse parameter values — expected a JSON array like [1, "text", false, null]')
     return
   }
-  const mapped = mapParams(sql, resolveParamType, override ?? undefined)
-  if (!mapped) {
+  const script = mapParams(sql, override ?? undefined)
+  if (!script) {
     toast.show('No query parameters found')
     return
   }
-  if (!mapped.typed) {
-    toast.show('Some parameters could not be typed — PREPARE omits the type list (needs PostgreSQL 16+)')
-  }
-  editor.executeEdits('pgdev-prepare', [{ range, text: mapped.script }])
+  editor.executeEdits('pgdev-prepare', [{ range, text: script }])
 }
 
 function modelFor(tab: EditorTab): monaco.editor.ITextModel {  let model = models.get(tab.key)
