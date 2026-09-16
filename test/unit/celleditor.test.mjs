@@ -128,10 +128,35 @@ test('unparsable temporal text falls back to the raw value', () => {
 
 test('the control text is sent back unchanged, and booleans normalise', () => {
   assert.equal(fromEditorValue('2024-01-15T10:30:00'), '2024-01-15T10:30:00')
+  assert.equal(fromEditorValue('2024-01-15T10:30:00', 'timestamp without time zone'), '2024-01-15T10:30:00')
   assert.equal(toBool(true), true)
   assert.equal(toBool('true'), true)
   assert.equal(toBool(false), false)
   assert.equal(toBool(null), false)
+})
+
+test('edited timestamptz keeps its instant via the browser offset', () => {
+  // toEditorValue shows the instant as a wall time without an offset; sending
+  // that wall time back bare would reinterpret it in the database timezone.
+  for (const raw of [
+    '2024-01-15 10:30:00+00',
+    '2024-01-15 16:00:00+05:30',
+    '2024-01-15 05:30:00-05',
+    '2024-06-01 12:00:00+00',
+    '2024-01-15 10:30:00.123+00',
+  ]) {
+    const control = toEditorValue(raw, 'timestamp with time zone')
+    const sent = fromEditorValue(control, 'timestamp with time zone')
+    assert.match(sent, /[+-]\d{2}:\d{2}$/, `${raw} -> ${control} -> ${sent}`)
+    const iso = raw.replace(' ', 'T').replace(/[+-]\d{2}$/, '$&:00')
+    assert.equal(new Date(sent).getTime(), new Date(iso).getTime(), raw)
+  }
+  // Already-offset values, other types and garbage pass through untouched.
+  assert.equal(
+    fromEditorValue('2024-01-15T10:30:00+02:00', 'timestamp with time zone'),
+    '2024-01-15T10:30:00+02:00',
+  )
+  assert.equal(fromEditorValue('not a date', 'timestamp with time zone'), 'not a date')
 })
 
 test('edited JSON is syntax-checked without rewriting it', () => {

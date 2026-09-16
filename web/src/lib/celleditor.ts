@@ -153,14 +153,32 @@ export function toEditorValue(raw: string, type: string): string {
   return raw
 }
 
+/** Offset of a local wall time (`+HH:MM`), DST-aware via the given instant. */
+function formatOffset(d: Date): string {
+  const total = -d.getTimezoneOffset()
+  const sign = total >= 0 ? '+' : '-'
+  const abs = Math.abs(total)
+  return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+}
+
 /**
- * Control value → the parameter sent to PostgreSQL. Native controls emit
- * values PostgreSQL accepts directly (`2024-01-15T10:30:00` for timestamps,
- * `10:30:00` for times, `2024-01-15` for dates), so this is the identity;
- * it exists to keep the round-trip explicit and testable.
+ * Control value → the parameter sent to PostgreSQL. Plain timestamps, times
+ * and dates pass through: PostgreSQL accepts the native control text as-is.
+ * Timestamptz is the exception: the `datetime-local` control cannot carry an
+ * offset, while `toEditorValue` shows the instant in the browser's wall clock.
+ * Sending that wall time back bare would reinterpret it in the database
+ * session's timezone and shift the stored instant, so reattach the browser's
+ * offset for the edited wall time. Values already carrying an offset (or `Z`)
+ * and unparsable text pass through for PostgreSQL to validate.
  */
-export function fromEditorValue(control: string): string {
-  return control
+export function fromEditorValue(control: string, type?: string): string {
+  if (!type || !isTimestamptz(type)) return control
+  const text = control.trim()
+  if (!text || /([Zz]|[+-]\d{2}:?\d{2})$/.test(text)) return control
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) return control
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) return control
+  return `${text}${formatOffset(parsed)}`
 }
 
 /**
