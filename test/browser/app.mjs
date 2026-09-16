@@ -49,6 +49,12 @@ await pool.query(`
   );
   CREATE TABLE grp_alpha (id serial PRIMARY KEY);
   CREATE TABLE grp_beta (id serial PRIMARY KEY);
+  -- Two parents whose names sanitize alike ("a.b" and a_b both fold to
+  -- a_b), each holding a constraint named c (legal: constraint names are
+  -- table-scoped): their DDL tab keys collided before the model URIs
+  -- became lossless.
+  CREATE TABLE "a.b" (a integer NOT NULL, CONSTRAINT c CHECK (a > 0));
+  CREATE TABLE a_b (a integer NOT NULL, CONSTRAINT c CHECK (a > 0));
   CREATE VIEW v_items AS SELECT id, label FROM items;
   CREATE MATERIALIZED VIEW mv_items AS SELECT count(*) AS n FROM items;
   CREATE FUNCTION item_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM items $$;
@@ -310,8 +316,49 @@ try {
   eq('table tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
 
   ok('function found in the tree', await openDdl('item_count', 'Functions'))
-  await page.waitFor(`window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })
+  await page.waitFor(`window.__pgdev && window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })
   eq('function tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
+
+  // Two same-named constraints under parents whose keys sanitize alike
+  // ("a.b" and a_b both folded to a_b): both tabs must open, each with its
+  // own model — the second createModel used to throw on a shared URI.
+  /** Expand a table's caret, its Constraints category, then dblclick `c`. */
+  const openConstraintDdl = async (table) => page.evaluate(`
+    const wantTable = ${JSON.stringify(table)}
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const row = (name) => [...document.querySelectorAll('.node')]
+      .find((n) => n.querySelector('.obj-name')?.textContent?.trim() === name)
+    const tableRow = row(wantTable)
+    if (!tableRow) return 'no table row'
+    tableRow.querySelector('.caret')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const wrapper = tableRow.closest('.tree')
+    for (let i = 0; i < 20 && ![...wrapper.querySelectorAll('.node')]
+      .some((n) => n.querySelector('.obj-name')?.textContent?.trim() === 'Constraints'); i++) await sleep(50)
+    const category = [...wrapper.querySelectorAll('.node')]
+      .find((n) => n.querySelector('.obj-name')?.textContent?.trim() === 'Constraints')
+    category?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    for (let i = 0; i < 20 && ![...wrapper.querySelectorAll('.cat-child')]
+      .some((n) => n.querySelector('.obj-name')?.textContent?.trim() === 'c'); i++) await sleep(50)
+    const constraintRow = [...wrapper.querySelectorAll('.cat-child')]
+      .find((n) => n.querySelector('.obj-name')?.textContent?.trim() === 'c')
+    if (!constraintRow) return 'no constraint row'
+    constraintRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    return true
+  `)
+  const tabCount = () => page.evaluate(`return document.querySelectorAll('.tabstrip .tab').length`)
+  const modelCount = () => page.evaluate(`return window.__pgdev.monaco.editor.getModels().length`)
+  const tabsBefore = await tabCount()
+  const modelsBefore = await modelCount()
+  ok('a.b constraint found in the tree', await openConstraintDdl('a.b'))
+  await page.waitFor(`document.querySelectorAll('.tabstrip .tab').length > ${tabsBefore}`, { timeout: 15000 })
+  eq('a_b constraint found in the tree', await openConstraintDdl('a_b'), true)
+  await page.waitFor(`document.querySelectorAll('.tabstrip .tab').length > ${tabsBefore + 1}`, { timeout: 15000 })
+  eq('each same-named constraint got its own model', (await modelCount()) - modelsBefore, 2)
+  const constraintTabs = await page.evaluate(
+    `return [...document.querySelectorAll('.tabstrip .tab-title')].map((e) => e.textContent.trim())`,
+  )
+  eq('both colliding constraint tabs exist', constraintTabs.filter((t) => t === 'c').length, 2,
+    JSON.stringify(constraintTabs))
 
   console.log('\n== double-clicking the tab strip opens a query tab ==')
   {

@@ -8,6 +8,7 @@ import { useResults } from '../composables/results'
 import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
+import { modelUri } from '../lib/modeluri'
 import { mapParams, parseParamValues } from '../lib/preparemap'
 import { setFormatHandler, setInsertHandler, setParamsHandler, setSelectionGetter } from '../lib/formatbridge'
 
@@ -174,12 +175,10 @@ function mapParamsActive(valuesText?: string) {
   editor.executeEdits('pgdev-prepare', [{ range, text: script }])
 }
 
-function modelFor(tab: EditorTab): monaco.editor.ITextModel {  let model = models.get(tab.key)
+function modelFor(tab: EditorTab): monaco.editor.ITextModel {
+  let model = models.get(tab.key)
   if (!model) {
-    const uri = monaco.Uri.parse(
-      `inmemory://pgdev/${tab.key.replace(/[^a-z0-9-]/gi, '_')}.sql`,
-    )
-    model = monaco.editor.createModel(tab.content, 'sql', uri)
+    model = monaco.editor.createModel(tab.content, 'sql', monaco.Uri.parse(modelUri(tab.key)))
     model.onDidChangeContent(() => {
       // A stale error squiggle must not linger once the user edits.
       monaco.editor.setModelMarkers(model!, 'pgdev-sql', [])
