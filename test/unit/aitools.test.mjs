@@ -224,6 +224,16 @@ test('set_active_query forwards the mode and returns the browser answer', async 
   unsubscribe()
 })
 
+test('open_query_tab without a title never joins the mirror pool', async () => {
+  const { tools, bridge, events, unsubscribe } = setup()
+  const pending = tools.open_query_tab({ sql: 'SELECT 1' })
+  const event = await answer(bridge, events, { key: 'sql-2', title: 'Agent SQL' })
+  assert.equal(event.action, 'open-query-tab')
+  assert.equal(event.args.title, 'Agent SQL')
+  assert.deepEqual(await pending, { ok: true, result: { key: 'sql-2', title: 'Agent SQL' } })
+  unsubscribe()
+})
+
 test('two listening windows refuse editor tools and skip the result mirror', async () => {
   const { tools, bridge, events, unsubscribe } = setup()
   const secondEvents = []

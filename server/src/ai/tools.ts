@@ -190,7 +190,6 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
       void bridge
         .request('show-result', {
           connectionId: connection.id,
-          title: AI_TAB_TITLE,
           sql,
           columns: first?.columns ?? [],
           columnTypes: first?.columnTypes ?? [],
@@ -314,7 +313,9 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
   async function openQueryTab(args: Record<string, unknown>): Promise<AiToolResult> {
     const sql = asString(args.sql)
     if (!sql || !sql.trim()) return fail('"sql" is required.')
-    const title = asString(args.title) ?? AI_TAB_TITLE
+    // "AI" is reserved for result-mirror tabs; staged agent SQL gets a
+    // neutral title so it never joins the mirror pool.
+    const title = asString(args.title)?.trim() || 'Agent SQL'
     const problem = windowError(bridge)
     if (problem) return fail(problem)
     try {

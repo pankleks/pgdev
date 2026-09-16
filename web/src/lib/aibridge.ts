@@ -32,11 +32,16 @@ export interface AgentGrid {
 
 export interface AiTabView {
   key: string
+  /** 'query' | 'ddl' — mirrors must be query tabs, so an editable DDL preview
+   * literally named "AI" never matches. */
+  kind: string
   title: string
   readOnly: boolean
   content: string
   /** Database this tab is bound to, when the tab has connection affinity. */
   connectionId?: string
+  /** Explicit mirror-tab ownership. Title matching alone is not ownership. */
+  aiMirror?: boolean
 }
 
 /** The result state of one tab, as the reducer needs it to answer the agent. */
@@ -56,9 +61,11 @@ export interface AiBridgeDeps {
   activeKey(): string
   activateTab(key: string): void
   openSqlTab(title: string, content: string, connectionId: string): void
+  openAiMirrorTab(content: string, connectionId: string): void
   updateContent(key: string, content: string): void
-  /** Render agent rows in a tab without running a query. */
-  showGrid(tabKey: string, grid: AgentGrid): void
+  /** Render agent rows in a tab without running a query. Returns false when
+   * the tab is busy and must not be overwritten (caller opens another tab). */
+  showGrid(tabKey: string, grid: AgentGrid): boolean
   /** Write at the cursor (replacing a selection); false when no editor is mounted. */
   insertAtCursor(sql: string): boolean
   /** The tab's last result state, or null when nothing has been run in it. */
@@ -148,7 +155,9 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
     case 'open-query-tab': {
       const sql = text(args.sql)
       if (!sql.trim()) throw new Error('"sql" is required.')
-      const title = text(args.title).trim() || AI_TAB_TITLE
+      // "AI" is reserved for result-mirror tabs; staged agent SQL gets a
+      // neutral title so it never joins the mirror pool.
+      const title = text(args.title).trim() || 'Agent SQL'
       deps.openSqlTab(title, sql, deps.connectionId() ?? '')
       return { key: deps.activeKey(), title }
     }
@@ -156,24 +165,35 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
     case 'show-result': {
       const grid = args as unknown as AgentGrid
       if (!grid.connectionId) throw new Error('The agent result has no source connection.')
-      // Reuse only an idle, editable AI tab bound to the result's source
-      // connection. A different connection or active operation must not be
-      // overwritten or have its result state invalidated.
-      const existing = deps.tabs().find((t) => {
-        if (t.title !== AI_TAB_TITLE || t.connectionId !== grid.connectionId || t.readOnly) return false
+      // Reuse only an idle, editable, explicitly owned mirror tab bound to
+      // the result's source connection. Title alone is not ownership: user
+      // query tabs and DDL previews may also be titled "AI".
+      const owned = deps.tabs().filter((t) => {
+        if (t.aiMirror !== true || t.kind !== 'query' || t.connectionId !== grid.connectionId || t.readOnly)
+          return false
         const result = deps.activeResult(t.key)
         return !result?.running && !result?.transactionOpen
       })
+      // Deterministic: prefer the active tab when it qualifies, else the
+      // most-recently opened owned idle tab.
+      const activeKey = deps.activeKey()
+      const existing = owned.find((t) => t.key === activeKey) ?? owned.at(-1)
       let key: string
       if (existing) {
         key = existing.key
         deps.activateTab(key)
         deps.updateContent(key, grid.sql)
       } else {
-        deps.openSqlTab(AI_TAB_TITLE, grid.sql, grid.connectionId)
+        deps.openAiMirrorTab(grid.sql, grid.connectionId)
         key = deps.activeKey()
       }
-      deps.showGrid(key, grid)
+      // showGrid itself refuses busy tabs (TOCTOU race): fall back to a fresh
+      // mirror tab rather than invalidating in-flight work.
+      if (!deps.showGrid(key, grid)) {
+        deps.openAiMirrorTab(grid.sql, grid.connectionId)
+        key = deps.activeKey()
+        if (!deps.showGrid(key, grid)) throw new Error('The AI mirror tab is busy.')
+      }
       return { key }
     }
 

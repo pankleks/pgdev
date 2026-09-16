@@ -300,8 +300,10 @@ export function createResults(api: ResultsApi) {
 
   /**
    * Show a result that was produced outside this tab (the AI agent ran it
-   * server-side): the grid renders the given rows and any in-flight work for
-   * the tab is invalidated, without going through the query endpoint.
+   * server-side): the grid renders the given rows without going through the
+   * query endpoint. Refuses busy tabs — returns false and touches nothing —
+   * so in-flight work is never detached from its cancellation UI. The caller
+   * opens another tab instead.
    */
   function showGrid(
     tabKey: string,
@@ -312,8 +314,9 @@ export function createResults(api: ResultsApi) {
       rowCount: number
       truncated: boolean
     },
-  ): void {
+  ): boolean {
     const r = ensure(tabKey)
+    if (r.running || r.loadingMore || r.cancelling || r.transactionOpen) return false
     r.operation++
     r.running = false
     r.cancelling = false
@@ -339,6 +342,7 @@ export function createResults(api: ResultsApi) {
         level: 'info',
       },
     ]
+    return true
   }
 
   return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll, showGrid }

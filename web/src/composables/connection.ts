@@ -236,7 +236,10 @@ export function useConnection() {
     state.connecting = false
     const id = state.id
     if (id) {
-      // Best-effort cancel of in-flight queries, then close the pool.
+      // Best-effort cancel of in-flight queries; the destructive clear below
+      // runs only after the server confirms the pool is closed. A failed
+      // DELETE keeps the UI connected so a stale pool cannot linger behind a
+      // phantom "not connected" badge.
       try {
         const { useResults } = await import('./results')
         const res = useResults()
@@ -245,12 +248,26 @@ export function useConnection() {
           return (r.running || r.loadingMore) && !r.cancelling
         })
         await Promise.all(runningKeys.map((key) => res.cancel(key, id).catch(() => undefined)))
+      } catch {
+        // ignore cleanup errors
+      }
+      if (attempt !== connectionAttempt) return
+      try {
+        await api.disconnect(id)
+      } catch (err) {
         if (attempt !== connectionAttempt) return
+        const message = err instanceof Error ? err.message : String(err)
+        useToast().show(`Disconnect failed: ${message}`)
+        return
+      }
+      if (attempt !== connectionAttempt) return
+      try {
+        const { useResults } = await import('./results')
+        const res = useResults()
         for (const key of Object.keys(res.state.byTab)) res.drop(key)
       } catch {
         // ignore cleanup errors
       }
-      await api.disconnect(id).catch(() => {})
     }
     if (attempt !== connectionAttempt) return
     state.id = null

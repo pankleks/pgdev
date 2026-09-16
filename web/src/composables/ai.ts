@@ -23,14 +23,17 @@ export function useAi() {
       tabs: () =>
         tabs.state.tabs.map((t) => ({
           key: t.key,
+          kind: t.kind,
           title: t.title,
           readOnly: t.readOnly,
           content: t.content,
           connectionId: t.connectionId,
+          aiMirror: t.aiMirror,
         })),
       activeKey: () => tabs.state.activeKey,
       activateTab: (key) => tabs.activate(key),
       openSqlTab: (title, content, connectionId) => tabs.openSqlTab(title, content, connectionId),
+      openAiMirrorTab: (content, connectionId) => tabs.openAiMirrorTab(content, connectionId),
       updateContent: (key, content) => tabs.updateContent(key, content),
       showGrid: (tabKey, grid) => results.showGrid(tabKey, grid),
       insertAtCursor: (sql) => insertAtCursor(sql),

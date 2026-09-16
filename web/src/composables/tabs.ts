@@ -16,6 +16,9 @@ export interface EditorTab {
   pinnedId?: string
   /** Connection a DDL tab was generated from (absent for query/file tabs). */
   connectionId?: string
+  /** True only for agent result-mirror tabs. Title matching is not ownership:
+   * user query tabs, file tabs and DDL previews may also be titled "AI". */
+  aiMirror?: boolean
   /** True only for user-created query tabs — the ones the tab session saves
    * and restores. DDL tabs, generated SQL, file tabs and pins never set it. */
   persist?: boolean
@@ -258,6 +261,29 @@ export function useTabs() {
     state.activeKey = key
   }
 
+  /**
+   * Agent result-mirror tab: the only tab `show-result` may reuse. Owned by
+   * explicit flag (plus `kind` and `connectionId`), never by title — a user
+   * query tab or editable DDL preview may also be titled "AI".
+   */
+  function openAiMirrorTab(content: string, connectionId = '') {
+    const key = `sql-${state.counter}`
+    state.tabs.push({
+      key,
+      kind: 'query',
+      source: 'untitled',
+      title: 'AI',
+      fileName: null,
+      content,
+      savedContent: content,
+      readOnly: false,
+      connectionId: connectionId || undefined,
+      aiMirror: true,
+    })
+    state.counter++
+    state.activeKey = key
+  }
+
   function close(key: string) {
     const index = state.tabs.findIndex((t) => t.key === key)
     if (index === -1) return
@@ -417,6 +443,7 @@ export function useTabs() {
     openDdl,
     openFile,
     openSqlTab,
+    openAiMirrorTab,
     close,
     closeAll,
     closeOthers,

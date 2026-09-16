@@ -198,3 +198,28 @@ test('transactionOpen follows the server flag and survives a failed statement', 
   await results.run('tab', 'db', 'ROLLBACK')
   assert.equal(results.state.byTab.tab.transactionOpen, false)
 })
+
+test('showGrid refuses busy tabs without touching state', async () => {
+  const { results } = setup()
+  const payload = { columns: ['id'], columnTypes: ['integer'], rows: [[1]], rowCount: 1, truncated: false }
+  for (const patch of [{ running: true }, { loadingMore: true }, { cancelling: true }, { transactionOpen: true }]) {
+    const key = `busy-${Object.keys(patch)[0]}`
+    assert.equal(results.showGrid(key, payload), true)
+    const r = results.state.byTab[key]
+    const operation = r.operation
+    Object.assign(r, patch)
+    assert.equal(results.showGrid(key, payload), false)
+    assert.equal(r.operation, operation)
+    assert.deepEqual(r.grids.length, 1)
+  }
+})
+
+test('showGrid on an idle tab renders and bumps the operation', async () => {
+  const { results } = setup()
+  const payload = { columns: ['id'], columnTypes: ['integer'], rows: [[1]], rowCount: 1, truncated: false }
+  assert.equal(results.showGrid('tab', payload), true)
+  const r = results.state.byTab.tab
+  assert.equal(r.grids.length, 1)
+  assert.deepEqual(r.grid.columns, ['id'])
+  assert.ok(r.messages.some((m) => m.text.includes('Agent query')))
+})

@@ -39,7 +39,9 @@ export const api = {
   },
 
   disconnect(id: string): Promise<void> {
-    return fetch(`/api/connections/${id}`, { method: 'DELETE' }).then(() => undefined)
+    return fetch(`/api/connections/${id}`, { method: 'DELETE' })
+      .then((r) => unwrap<unknown>(r))
+      .then(() => undefined)
   },
 
   schema(id: string): Promise<SchemaData> {
