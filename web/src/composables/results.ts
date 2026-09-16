@@ -426,3 +426,11 @@ const shared = createResults(api)
 export function useResults(): Results {
   return shared
 }
+
+/** Shared tab-close cleanup: drop the tab's local result state and close its
+ * backend session (rolling back an open transaction). The UI's tab closing
+ * and the agent's close_tab must not drift apart, so both call this. */
+export function releaseTab(tabKey: string, connectionId: string | null): void {
+  shared.drop(tabKey)
+  if (connectionId) void api.closeSession(connectionId, tabKey).catch(() => undefined)
+}

@@ -3,18 +3,10 @@ import { timingSafeEqual } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { connectionIds, getCatalogPool } from '../pools.js'
 import { fetchSchemaData } from '../catalog/metadata.js'
-import {
-  tableDdl,
-  viewDdl,
-  functionDdl,
-  indexDdl,
-  constraintDdl,
-  triggerDdl,
-  typeDdl,
-} from '../catalog/ddl.js'
+import { objectDdl, type DdlTarget } from '../catalog/ddl.js'
 import { runBatch } from '../queryexec.js'
 import { createBridge } from '../ai/bridge.js'
-import { createAiTools, type DdlTarget } from '../ai/tools.js'
+import { createAiTools } from '../ai/tools.js'
 import { wrapReadOnly } from '../ai/readonly.js'
 import { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS, type AiLimits } from '../schema-types.js'
 
@@ -42,28 +34,6 @@ function bearerMatches(header: unknown, token: string): boolean {
   return given.length === expected.length && timingSafeEqual(given, expected)
 }
 
-async function dispatchDdl(connectionId: string, target: DdlTarget): Promise<string> {
-  const pool = getCatalogPool(connectionId)
-  switch (target.type) {
-    case 'table':
-      return tableDdl(pool, target.oid ?? '', target.schema, target.name)
-    case 'view':
-      return viewDdl(pool, target.oid ?? '', target.schema, target.name)
-    case 'function':
-      return functionDdl(pool, target.oid ?? '', target.schema, target.name)
-    case 'index':
-      return indexDdl(pool, target.schema, target.name)
-    case 'constraint':
-      return constraintDdl(pool, target.schema, target.parent ?? '', target.name)
-    case 'trigger':
-      return triggerDdl(pool, target.schema, target.parent ?? '', target.name)
-    case 'type':
-      return typeDdl(pool, target.oid ?? '', target.schema, target.name)
-    default:
-      throw new Error(`Unknown object type: ${target.type}`)
-  }
-}
-
 export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
   const bridge = createBridge()
   // Live limits: the browser pushes the user's Settings choice and every tool
@@ -72,7 +42,7 @@ export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
   const tools = createAiTools({
     connectionIds,
     getSchema: (id: string) => fetchSchemaData(getCatalogPool(id)),
-    getDdl: dispatchDdl,
+    getDdl: (id: string, target: DdlTarget) => objectDdl(getCatalogPool(id), target),
     // The read-only transaction is what actually stops a write; the tool layer
     // checks the statement first so the common case gets a clear message.
     // One-shot: mirrored rows cannot page (the mirror tab's key differs), so

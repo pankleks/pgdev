@@ -3,7 +3,7 @@ import { api } from '../api'
 import { insertAtCursor } from '../lib/formatbridge'
 import { AI_TAB_TITLE, applyBridgeAction, type AiBridgeDeps, type BridgeAction } from '../lib/aibridge'
 import { useConnection } from './connection'
-import { useResults } from './results'
+import { releaseTab, useResults } from './results'
 import { useSettings } from './settings'
 import { useTabs } from './tabs'
 
@@ -38,12 +38,10 @@ export function useAi() {
       openAiMirrorTab: (content, connectionId) => tabs.openAiMirrorTab(content, connectionId),
       updateContent: (key, content) => tabs.updateContent(key, content),
       closeTab: (key) => {
-        // Same cleanup as closing the tab in the UI: drop its local result
-        // state and close its backend session (rolling back an open
-        // transaction), then remove the tab itself.
-        results.drop(key)
-        const id = conn.state.id
-        if (id) void api.closeSession(id, key).catch(() => undefined)
+        // The same cleanup as closing the tab in the UI (drop the result state
+        // and close the backend session, rolling back an open transaction),
+        // then remove the tab itself.
+        releaseTab(key, conn.state.id)
         tabs.close(key)
       },
       showGrid: (tabKey, grid) => results.showGrid(tabKey, grid),

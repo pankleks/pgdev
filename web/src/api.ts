@@ -34,110 +34,83 @@ async function unwrap<T>(res: Response): Promise<T> {
   return body as T
 }
 
+/** One JSON round-trip: the method, the optional body, and the error mapping
+ * are the same for every endpoint, so the callers name only the route. */
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = body === undefined
+    ? await fetch(url, { method })
+    : await fetch(url, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+  return unwrap<T>(res)
+}
+
 export const api = {
   version(): Promise<string> {
-    return fetch('/api/version')
-      .then((r) => unwrap<{ version: string }>(r))
-      .then((b) => b.version)
+    return send<{ version: string }>('GET', '/api/version').then((b) => b.version)
   },
 
   connect(config: ConnectionConfig): Promise<{ id: string; pgVersion?: string }> {
-    return fetch('/api/connections', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(config),
-    }).then((r) => unwrap<{ id: string; pgVersion?: string }>(r))
+    return send('POST', '/api/connections', config)
   },
 
   disconnect(id: string): Promise<void> {
-    return fetch(`/api/connections/${id}`, { method: 'DELETE' })
-      .then((r) => unwrap<unknown>(r))
-      .then(() => undefined)
+    return send<unknown>('DELETE', `/api/connections/${id}`).then(() => undefined)
   },
 
   schema(id: string): Promise<SchemaData> {
-    return fetch(`/api/connections/${id}/schema`).then((r) => unwrap<SchemaData>(r))
+    return send('GET', `/api/connections/${id}/schema`)
   },
 
   ddl(id: string, type: string, schema: string, name: string, oid?: string, parent?: string): Promise<{ ddl: string }> {
     const params = new URLSearchParams({ type, schema, name })
     if (oid) params.set('oid', oid)
     if (parent) params.set('parent', parent)
-    return fetch(`/api/connections/${id}/ddl?${params}`).then((r) => unwrap<{ ddl: string }>(r))
+    return send('GET', `/api/connections/${id}/ddl?${params}`)
   },
 
   query(id: string, sql: string, tabKey: string, transactionId: string | null): Promise<QueryResponse> {
-    return fetch(`/api/connections/${id}/query`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql, maxRows: 500, tabKey, transactionId }),
-    }).then((r) => unwrap<QueryResponse>(r))
+    return send('POST', `/api/connections/${id}/query`, { sql, maxRows: 500, tabKey, transactionId })
   },
 
   cancel(id: string, tabKey: string): Promise<{ ok: boolean }> {
-    return fetch(`/api/connections/${id}/cancel`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tabKey }),
-    }).then((r) => unwrap<{ ok: boolean }>(r))
+    return send('POST', `/api/connections/${id}/cancel`, { tabKey })
   },
 
   fetchMore(id: string, tabKey: string): Promise<FetchMoreResponse> {
-    return fetch(`/api/connections/${id}/query/more`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tabKey, maxRows: 500 }),
-    }).then((r) => unwrap<FetchMoreResponse>(r))
+    return send('POST', `/api/connections/${id}/query/more`, { tabKey, maxRows: 500 })
   },
 
   closeSession(id: string, tabKey: string): Promise<{ ok: boolean }> {
-    return fetch(`/api/connections/${id}/query/close`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tabKey }),
-    }).then((r) => unwrap<{ ok: boolean }>(r))
+    return send('POST', `/api/connections/${id}/query/close`, { tabKey })
   },
 
   tableEditState(id: string, oid: string): Promise<TableEditState> {
-    return fetch(`/api/connections/${id}/tableedit/${oid}`).then((r) => unwrap<TableEditState>(r))
+    return send('GET', `/api/connections/${id}/tableedit/${oid}`)
   },
 
   tableEditSubmit(id: string, oid: string, request: TableEditRequest): Promise<TableEditResponse> {
-    return fetch(`/api/connections/${id}/tableedit/${oid}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    }).then((r) => unwrap<TableEditResponse>(r))
+    return send('POST', `/api/connections/${id}/tableedit/${oid}`, request)
   },
 
   updateRow(id: string, request: RowUpdateRequest): Promise<RowUpdateResponse> {
-    return fetch(`/api/connections/${id}/row-update`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    }).then((r) => unwrap<RowUpdateResponse>(r))
+    return send('POST', `/api/connections/${id}/row-update`, request)
   },
 
   /** The AI/MCP configuration; `enabled` is false when the server has AI off. */
   aiConfig(): Promise<AiConfig> {
-    return fetch('/api/ai/config').then((r) => unwrap<AiConfig>(r))
+    return send('GET', '/api/ai/config')
   },
 
   /** Tell the server how much of a result set the agent may read. */
   aiLimits(limits: AiLimits): Promise<AiLimits> {
-    return fetch('/api/ai/limits', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(limits),
-    }).then((r) => unwrap<AiLimits>(r))
+    return send('PUT', '/api/ai/limits', limits)
   },
 
   /** Hand a bridge action's outcome back to the waiting tool call. */
   aiBridgeResult(id: string, result: unknown, error: string | null): Promise<{ ok: boolean }> {
-    return fetch('/api/ai/bridge/result', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, result, error }),
-    }).then((r) => unwrap<{ ok: boolean }>(r))
+    return send('POST', '/api/ai/bridge/result', { id, result, error })
   },
 }

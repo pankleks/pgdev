@@ -1,8 +1,5 @@
 import type { Pool } from 'pg'
-
-function ident(s: string): string {
-  return `"${s.replace(/"/g, '""')}"`
-}
+import { ident } from '../sqlident.js'
 
 function serialType(type: string): string | null {
   if (type === 'smallint') return 'smallserial'
@@ -754,4 +751,50 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
   }
   const drop = row.typtype === 'd' ? `-- DROP DOMAIN IF EXISTS ${q};` : `-- DROP TYPE IF EXISTS ${q};`
   return `${drop}\n\n${ddl}`
+}
+
+/** The object types the DDL generators cover; the route and the AI tool both
+ * validate against this list. */
+export const DDL_TYPES = ['table', 'view', 'function', 'index', 'constraint', 'trigger', 'type']
+
+/** A DDL request as the browser and the agent send it: the type selects the
+ * generator, `oid` wins over `schema`/`name` where a generator resolves by
+ * oid, and `parent` names the owning table for constraints and triggers. */
+export interface DdlTarget {
+  type: string
+  schema: string
+  name: string
+  oid?: string
+  parent?: string
+}
+
+/** Generate the DDL for one object — the one dispatcher shared by the HTTP
+ * route and the AI tool. Unknown types are a 400; missing objects come from
+ * the generators as 404. */
+export async function objectDdl(pool: Pool, request: DdlTarget): Promise<string> {
+  const oid = request.oid ?? ''
+  const parent = request.parent ?? ''
+  switch (request.type) {
+    case 'table':
+      return tableDdl(pool, oid, request.schema, request.name)
+    case 'view':
+      return viewDdl(pool, oid, request.schema, request.name)
+    case 'function':
+      return functionDdl(pool, oid, request.schema, request.name)
+    case 'index':
+      return indexDdl(pool, request.schema, request.name)
+    case 'constraint':
+      return constraintDdl(pool, request.schema, parent, request.name)
+    case 'trigger':
+      return triggerDdl(pool, request.schema, parent, request.name)
+    case 'type':
+      return typeDdl(pool, oid, request.schema, request.name)
+    default: {
+      const err: Error & { statusCode: number } = Object.assign(
+        new Error(`Unknown object type: ${request.type}`),
+        { statusCode: 400 },
+      )
+      throw err
+    }
+  }
 }

@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { getCatalogPool } from '../pools.js'
-import { tableDdl, viewDdl, functionDdl, indexDdl, constraintDdl, triggerDdl, typeDdl } from '../catalog/ddl.js'
+import { objectDdl } from '../catalog/ddl.js'
 
 export async function ddlRoutes(app: FastifyInstance) {
-  app.get('/api/connections/:id/ddl', async (req, reply) => {
+  app.get('/api/connections/:id/ddl', async (req) => {
     const { id } = req.params as { id: string }
     const { type, schema, name, oid, parent } = req.query as {
       type: string
@@ -12,16 +12,7 @@ export async function ddlRoutes(app: FastifyInstance) {
       oid?: string
       parent?: string
     }
-    const pool = getCatalogPool(id)
-    let ddl: string
-    if (type === 'table') ddl = await tableDdl(pool, oid ?? '', schema, name)
-    else if (type === 'view') ddl = await viewDdl(pool, oid ?? '', schema, name)
-    else if (type === 'function') ddl = await functionDdl(pool, oid ?? '', schema, name)
-    else if (type === 'index') ddl = await indexDdl(pool, schema, name)
-    else if (type === 'constraint') ddl = await constraintDdl(pool, schema, parent ?? '', name)
-    else if (type === 'trigger') ddl = await triggerDdl(pool, schema, parent ?? '', name)
-    else if (type === 'type') ddl = await typeDdl(pool, oid ?? '', schema, name)
-    else return reply.code(400).send({ error: `Unknown object type: ${type}` })
+    const ddl = await objectDdl(getCatalogPool(id), { type, schema, name, oid, parent })
     return { ddl }
   })
 }

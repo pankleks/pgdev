@@ -12,21 +12,16 @@
 import type { MappedData, BatchOutcome } from '../queryexec.js'
 import type { AiActiveResult, AiLimits, AiResultGrid, AiTabList, SchemaData } from '../schema-types.js'
 import { DEFAULT_AI_LIMITS } from '../schema-types.js'
+import type { DdlTarget } from '../catalog/ddl.js'
+import { DDL_TYPES } from '../catalog/ddl.js'
 import { BridgeError, windowProblem, type Bridge } from './bridge.js'
 import { isReadOnlySql } from './readonly.js'
 
 export type { AiLimits } from '../schema-types.js'
 export { DEFAULT_AI_LIMITS } from '../schema-types.js'
+export type { DdlTarget } from '../catalog/ddl.js'
 
 export const AI_TAB_TITLE = 'AI'
-
-export interface DdlTarget {
-  type: string
-  schema: string
-  name: string
-  oid?: string
-  parent?: string
-}
 
 export interface AiDeps {
   /** Ids of the pools the server currently holds. */
@@ -57,7 +52,6 @@ interface ActiveQuery {
 const MAX_RELATIONS = 200
 /** Only the tail of a tab's message list travels to the agent. */
 const MAX_MESSAGES = 100
-const DDL_TYPES = ['table', 'view', 'function', 'index', 'constraint', 'trigger', 'type']
 const NOT_CONNECTED =
   'pgDEV is not connected to a database. Open a connection in pgDEV, then ask again.'
 

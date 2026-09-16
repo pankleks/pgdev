@@ -3,13 +3,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ListX, PanelRightClose, PanelTopClose, Pin, PinOff, X } from 'lucide-vue-next'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useConnection } from '../composables/connection'
-import { useResults } from '../composables/results'
-import { api } from '../api'
+import { releaseTab } from '../composables/results'
 import QueryEditor from './QueryEditor.vue'
 
 const tabs = useTabs()
 const conn = useConnection()
-const results = useResults()
 const active = computed(
   () => tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
 )
@@ -95,8 +93,7 @@ function onDragEnd() {
 }
 
 function closeSession(key: string) {
-  results.drop(key)
-  if (conn.state.id) void api.closeSession(conn.state.id, key).catch(() => undefined)
+  releaseTab(key, conn.state.id)
 }
 
 function canClose(tab: EditorTab): boolean {
