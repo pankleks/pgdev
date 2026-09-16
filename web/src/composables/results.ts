@@ -21,6 +21,8 @@ export interface GridResult extends DataResult {
 export interface Message {
   text: string
   level: 'info' | 'error'
+  /** PostgreSQL 1-based error offset within the sent SQL, when known. */
+  position?: string | null
 }
 
 export type QueryErrorInfo = Message
@@ -32,6 +34,7 @@ export function describeQueryError(
   raw: string,
   code: unknown,
   wasCancelling: boolean,
+  position?: string | null,
 ): QueryErrorInfo {
   if (/statement timeout/i.test(raw)) {
     return { text: 'Query timed out (30s statement limit).', level: 'error' }
@@ -44,7 +47,7 @@ export function describeQueryError(
   const cancelled = wasCancelling || code === '57014'
   return cancelled
     ? { text: 'Query canceled.', level: 'info' }
-    : { text: raw, level: 'error' }
+    : { text: raw, level: 'error', position: position ?? null }
 }
 
 export interface TabResult {
@@ -179,9 +182,9 @@ export function createResults(api: ResultsApi) {
       if (!r.grid) r.showMessages = true
     } catch (e) {
       if (!isCurrent(tabKey, r, operation)) return
-      const err = e as Error & { code?: string | null }
-      const info = describeQueryError(err.message, err.code, r.cancelling)
-      r.messages = [{ text: info.text, level: info.level }]
+      const err = e as Error & { code?: string | null; position?: string | null }
+      const info = describeQueryError(err.message, err.code, r.cancelling, err.position)
+      r.messages = [{ text: info.text, level: info.level, position: info.position }]
       r.selectedKey = null
       r.grids = []
       r.showMessages = true

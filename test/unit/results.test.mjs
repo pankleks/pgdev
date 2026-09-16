@@ -223,3 +223,26 @@ test('showGrid on an idle tab renders and bumps the operation', async () => {
   assert.deepEqual(r.grid.columns, ['id'])
   assert.ok(r.messages.some((m) => m.text.includes('Agent query')))
 })
+
+test('a failed run keeps the server error position for editor markers', async () => {
+  const { api, results } = setup()
+  api.query = async () => {
+    throw Object.assign(new Error('syntax error at or near "SELEC"'), { code: '42601', position: '1' })
+  }
+  await results.run('tab', 'db', 'SELEC 1')
+  const message = results.state.byTab.tab.messages.at(-1)
+  assert.equal(message.level, 'error')
+  assert.equal(message.position, '1')
+  assert.match(message.text, /SELEC/)
+})
+
+test('a failed run without a position leaves markers with nothing to point at', async () => {
+  const { api, results } = setup()
+  api.query = async () => {
+    throw Object.assign(new Error('boom'), { code: '25P02' })
+  }
+  await results.run('tab', 'db', 'SELECT 1')
+  const message = results.state.byTab.tab.messages.at(-1)
+  assert.equal(message.level, 'error')
+  assert.ok(message.position === null || message.position === undefined)
+})

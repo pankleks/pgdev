@@ -4,6 +4,7 @@ import monaco from '../monaco'
 import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
 import { registerSqlHover, hoverContents } from '../monaco/hover'
 import { useTabs, type EditorTab } from '../composables/tabs'
+import { useResults } from '../composables/results'
 import { useSettings } from '../composables/settings'
 import { useToast } from '../composables/toast'
 import { formatSql } from '../lib/sqlformat'
@@ -13,6 +14,7 @@ import { setFormatHandler, setInsertHandler, setParamsHandler, setSelectionGette
 const props = defineProps<{ tab: EditorTab }>()
 const el = ref<HTMLDivElement | null>(null)
 const tabs = useTabs()
+const results = useResults()
 const settings = useSettings()
 const toast = useToast()
 const run = inject<(sql?: string) => void>('pgdev:run')
@@ -112,6 +114,7 @@ onMounted(() => {
         if (offset < 0) return null
         return hoverContents(model, model.getPositionAt(offset + Math.floor(needle.length / 2)) as never)
       },
+      markers: () => monaco.editor.getModelMarkers({}),
     }
   }
 })
@@ -177,7 +180,11 @@ function modelFor(tab: EditorTab): monaco.editor.ITextModel {  let model = model
       `inmemory://pgdev/${tab.key.replace(/[^a-z0-9-]/gi, '_')}.sql`,
     )
     model = monaco.editor.createModel(tab.content, 'sql', uri)
-    model.onDidChangeContent(() => tabs.updateContent(tab.key, model!.getValue()))
+    model.onDidChangeContent(() => {
+      // A stale error squiggle must not linger once the user edits.
+      monaco.editor.setModelMarkers(model!, 'pgdev-sql', [])
+      tabs.updateContent(tab.key, model!.getValue())
+    })
     models.set(tab.key, model)
   }
   return model
@@ -197,9 +204,63 @@ function syncExternalContent(tab: EditorTab) {
   if (model && model.getValue() !== tab.content) model.setValue(tab.content)
 }
 
+/**
+ * SQL syntax-error squiggle (Phase 1): the server returns PostgreSQL's
+ * 1-based error offset within the sent statement, which `results` keeps on
+ * the tab's error message. Treat it as relative to the sent SQL — exact for
+ * single-statement runs; multi-statement batches need the statement-index
+ * mapping (Phase 2) to point precisely.
+ */
+function showErrorMarker(tabKey: string) {
+  const model = models.get(tabKey)
+  if (!model) return
+  const messages = results.state.byTab[tabKey]?.messages ?? []
+  const failure = [...messages].reverse().find((m) => m.level === 'error' && m.position)
+  if (!failure?.position) {
+    monaco.editor.setModelMarkers(model, 'pgdev-sql', [])
+    return
+  }
+  const offset = Number(failure.position) - 1
+  if (!Number.isFinite(offset)) {
+    monaco.editor.setModelMarkers(model, 'pgdev-sql', [])
+    return
+  }
+  const clamped = Math.max(0, Math.min(model.getValueLength(), Math.floor(offset)))
+  const pos = model.getPositionAt(clamped)
+  // Cover the erroneous token when one starts here, else a single character.
+  const word = model.getWordAtPosition(pos)
+  const end =
+    word && word.startColumn <= pos.column ? { lineNumber: pos.lineNumber, column: word.endColumn } : model.getPositionAt(Math.min(model.getValueLength(), clamped + 1))
+  monaco.editor.setModelMarkers(model, 'pgdev-sql', [
+    {
+      severity: monaco.MarkerSeverity.Error,
+      message: failure.text,
+      startLineNumber: pos.lineNumber,
+      startColumn: pos.column,
+      endLineNumber: end.lineNumber,
+      endColumn: end.column,
+    },
+  ])
+  if (editor?.getModel() === model) editor.revealPositionInCenter(pos)
+}
+
 watch(
   () => props.tab,
-  (tab) => applyTab(tab),
+  (tab) => {
+    applyTab(tab)
+    showErrorMarker(tab.key)
+  },
+)
+
+// Re-render the squiggle when the active tab's messages change (run starts,
+// fails with a position, or succeeds and clears it).
+watch(
+  () => {
+    const r = results.state.byTab[props.tab.key]
+    const last = r?.messages.at(-1)
+    return r ? `${r.operation}:${r.messages.length}:${last?.position ?? ''}:${last?.text ?? ''}` : 'none'
+  },
+  () => showErrorMarker(props.tab.key),
 )
 
 watch(
