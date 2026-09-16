@@ -2,6 +2,11 @@ import type { FileHandle } from './files'
 import type { TabSession } from './tabsession'
 import { sanitizeSession } from './tabsession'
 
+// Browser persistence is IndexedDB-only. When IndexedDB is unavailable (or a
+// write fails) the app keeps running on defaults and in-memory state: saved
+// connections silently stop persisting, and the pinned-file save rejects so
+// the caller can warn instead of reporting a save that never happened.
+
 export interface StoredPinnedFile {
   id: string
   order: number
@@ -43,17 +48,10 @@ const CONNECTIONS_STORE = 'connections'
 const PINNED_FILES_STORE = 'pinnedFiles'
 const TABS_STORE = 'tabs'
 
-const LEGACY_SETTINGS_KEY = 'pgdev.settings'
-const LEGACY_SAVED_CONNECTIONS_KEY = 'pgdev.savedConnections'
-const LEGACY_LAST_CONNECTION_KEY = 'pgdev.lastConnection'
-const LEGACY_PINNED_FILES_KEY = 'pgdev.pinnedFiles'
-const LEGACY_TABS_KEY = 'pgdev.tabs'
-
 type StoreName = typeof SETTINGS_STORE | typeof CONNECTIONS_STORE | typeof PINNED_FILES_STORE | typeof TABS_STORE
 
 let databasePromise: Promise<IDBDatabase> | null = null
 let writeQueue = Promise.resolve()
-let indexedDbAvailable = false
 
 function openDatabase(): Promise<IDBDatabase> {
   if (typeof indexedDB === 'undefined') {
@@ -135,43 +133,6 @@ function queueWrite<T>(operation: () => Promise<T>): Promise<T> {
   return result
 }
 
-interface LegacyValue {
-  present: boolean
-  value?: unknown
-}
-
-function readLegacyJson(key: string): LegacyValue {
-  try {
-    const raw = localStorage.getItem(key)
-    if (raw === null) return { present: false }
-    return { present: true, value: JSON.parse(raw) as unknown }
-  } catch {
-    return { present: true }
-  }
-}
-
-function removeLegacy(key: string) {
-  try {
-    localStorage.removeItem(key)
-  } catch {
-    // Ignore unavailable browser storage.
-  }
-}
-
-function writeLegacyJson(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Ignore unavailable browser storage.
-  }
-}
-
-/** The pinned-file fallback must know whether the write landed: unlike
- * writeLegacyJson it lets a quota or unavailable-storage error propagate. */
-function writeLegacyJsonOrThrow(key: string, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value))
-}
-
 function isStoredPinnedFile(value: unknown): value is StoredPinnedFile {
   if (!value || typeof value !== 'object') return false
   const pin = value as Partial<StoredPinnedFile>
@@ -183,91 +144,26 @@ function isStoredPinnedFile(value: unknown): value is StoredPinnedFile {
   )
 }
 
-function parsePinnedFiles(value: unknown): StoredPinnedFile[] {
-  if (!Array.isArray(value)) return []
-  return value.filter(isStoredPinnedFile)
-}
-
 async function loadStorage(): Promise<StoredAppState> {
-  const legacySettings = readLegacyJson(LEGACY_SETTINGS_KEY)
-  const legacySavedConnections = readLegacyJson(LEGACY_SAVED_CONNECTIONS_KEY)
-  const legacyLastConnection = readLegacyJson(LEGACY_LAST_CONNECTION_KEY)
-  const legacyPinnedFiles = readLegacyJson(LEGACY_PINNED_FILES_KEY)
-
   try {
     const db = await database()
-    indexedDbAvailable = true
-    const storedSettings = await getRecord<SettingsRecord>(db, SETTINGS_STORE, 'current')
-    const storedConnections = await getRecord<ConnectionsRecord>(db, CONNECTIONS_STORE, 'current')
-    const storedPins = await getAllRecords<StoredPinnedFile>(db, PINNED_FILES_STORE)
-
-    let settings = storedSettings?.value
-    let connections = storedConnections
-    let pinnedFiles = storedPins.filter(isStoredPinnedFile)
-    const migratedKeys: string[] = []
-
-    if (!storedSettings && legacySettings.value !== undefined) {
-      settings = legacySettings.value
-      await putRecord(db, SETTINGS_STORE, { id: 'current', value: settings } satisfies SettingsRecord)
-      if (legacySettings.present) migratedKeys.push(LEGACY_SETTINGS_KEY)
-    } else if (storedSettings && legacySettings.present && legacySettings.value !== undefined) {
-      migratedKeys.push(LEGACY_SETTINGS_KEY)
-    }
-
-    if (!storedConnections && (legacySavedConnections.value !== undefined || legacyLastConnection.value !== undefined)) {
-      connections = {
-        id: 'current',
-        saved: legacySavedConnections.value ?? [],
-        last: legacyLastConnection.value ?? null,
-      }
-      await putRecord(db, CONNECTIONS_STORE, connections)
-      if (legacySavedConnections.present && legacySavedConnections.value !== undefined) {
-        migratedKeys.push(LEGACY_SAVED_CONNECTIONS_KEY)
-      }
-      if (legacyLastConnection.present && legacyLastConnection.value !== undefined) {
-        migratedKeys.push(LEGACY_LAST_CONNECTION_KEY)
-      }
-    } else if (storedConnections) {
-      if (legacySavedConnections.present && legacySavedConnections.value !== undefined) {
-        migratedKeys.push(LEGACY_SAVED_CONNECTIONS_KEY)
-      }
-      if (legacyLastConnection.present && legacyLastConnection.value !== undefined) {
-        migratedKeys.push(LEGACY_LAST_CONNECTION_KEY)
-      }
-    }
-
-    if (!pinnedFiles.length) {
-      const legacyPins = parsePinnedFiles(legacyPinnedFiles.value)
-      if (legacyPins.length) {
-        pinnedFiles = legacyPins
-        await replacePinnedFiles(db, pinnedFiles)
-        if (legacyPinnedFiles.present) migratedKeys.push(LEGACY_PINNED_FILES_KEY)
-      }
-    } else if (legacyPinnedFiles.present && parsePinnedFiles(legacyPinnedFiles.value).length) {
-      migratedKeys.push(LEGACY_PINNED_FILES_KEY)
-    }
-
-    for (const key of migratedKeys) removeLegacy(key)
-
+    const [storedSettings, storedConnections, storedPins] = await Promise.all([
+      getRecord<SettingsRecord>(db, SETTINGS_STORE, 'current'),
+      getRecord<ConnectionsRecord>(db, CONNECTIONS_STORE, 'current'),
+      getAllRecords<StoredPinnedFile>(db, PINNED_FILES_STORE),
+    ])
+    const connections = storedConnections
     return {
-      settings,
+      settings: storedSettings?.value,
       connections: connections
         ? { saved: connections.saved, last: connections.last, nextSeq: connections.nextSeq }
         : undefined,
-      pinnedFiles,
+      pinnedFiles: storedPins.filter(isStoredPinnedFile),
     }
   } catch {
-    indexedDbAvailable = false
-    // Keep the app usable in browsers where IndexedDB is unavailable. Legacy
-    // values are intentionally left in place so a later retry can migrate them.
-    return {
-      settings: legacySettings.value,
-      connections:
-        legacySavedConnections.value !== undefined || legacyLastConnection.value !== undefined
-          ? { saved: legacySavedConnections.value ?? [], last: legacyLastConnection.value ?? null }
-          : undefined,
-      pinnedFiles: parsePinnedFiles(legacyPinnedFiles.value),
-    }
+    // Keep the app usable when IndexedDB is unavailable: everything runs on
+    // defaults and in-memory state, and saves below reject.
+    return { settings: undefined, connections: undefined, pinnedFiles: [] }
   }
 }
 
@@ -275,10 +171,6 @@ export const storageReady = loadStorage()
 
 export function saveSettings(value: unknown): Promise<void> {
   return queueWrite(async () => {
-    if (!indexedDbAvailable) {
-      writeLegacyJson(LEGACY_SETTINGS_KEY, value)
-      return
-    }
     const db = await database()
     await putRecord(db, SETTINGS_STORE, { id: 'current', value } satisfies SettingsRecord)
   })
@@ -286,19 +178,6 @@ export function saveSettings(value: unknown): Promise<void> {
 
 export function saveConnections(saved: unknown, last: unknown, nextSeq: number): Promise<void> {
   return queueWrite(async () => {
-    if (!indexedDbAvailable) {
-      writeLegacyJson(LEGACY_SAVED_CONNECTIONS_KEY, saved)
-      if (last === null) {
-        try {
-          localStorage.removeItem(LEGACY_LAST_CONNECTION_KEY)
-        } catch {
-          // Ignore unavailable browser storage.
-        }
-      } else {
-        writeLegacyJson(LEGACY_LAST_CONNECTION_KEY, last)
-      }
-      return
-    }
     const db = await database()
     await putRecord(db, CONNECTIONS_STORE, { id: 'current', saved, last, nextSeq } satisfies ConnectionsRecord)
   })
@@ -307,12 +186,6 @@ export function saveConnections(saved: unknown, last: unknown, nextSeq: number):
 export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
   return queueWrite(async () => {
     const withoutHandles = pins.map(({ handle: _handle, ...pin }) => pin)
-    if (!indexedDbAvailable) {
-      // No IndexedDB: the legacy key is the only home left. A failed write
-      // rejects so the caller can warn instead of losing the pins silently.
-      writeLegacyJsonOrThrow(LEGACY_PINNED_FILES_KEY, withoutHandles)
-      return false
-    }
     const db = await database()
     try {
       await replacePinnedFiles(db, pins)
@@ -320,21 +193,8 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
     } catch {
       // File handles are structured-cloneable in supported browsers, but keep
       // the file snapshots if a browser rejects cloning a handle.
-      try {
-        await replacePinnedFiles(db, withoutHandles)
-        return false
-      } catch (idbError) {
-        // Last resort before the pins are lost (e.g. quota): legacy
-        // localStorage. If even that fails, the pins live only in memory —
-        // surface the failure so the caller can warn instead of reporting a
-        // save that never happened.
-        try {
-          writeLegacyJsonOrThrow(LEGACY_PINNED_FILES_KEY, withoutHandles)
-        } catch (legacyError) {
-          throw legacyError instanceof Error ? legacyError : idbError
-        }
-        return false
-      }
+      await replacePinnedFiles(db, withoutHandles)
+      return false
     }
   })
 }
@@ -343,10 +203,6 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
  * rejects so the caller can retry on its next interval tick. */
 export function saveTabSession(session: TabSession): Promise<void> {
   return queueWrite(async () => {
-    if (!indexedDbAvailable) {
-      writeLegacyJsonOrThrow(LEGACY_TABS_KEY, session)
-      return
-    }
     const db = await database()
     await putRecord(db, TABS_STORE, { id: 'current', ...session } satisfies { id: string } & TabSession)
   })
@@ -358,10 +214,6 @@ export function saveTabSession(session: TabSession): Promise<void> {
  */
 export async function loadTabSession(): Promise<TabSession | null> {
   try {
-    // storageReady sets indexedDbAvailable and runs the legacy migration;
-    // awaiting it also keeps this first read from racing the module probe.
-    await storageReady
-    if (!indexedDbAvailable) return sanitizeSession(readLegacyJson(LEGACY_TABS_KEY).value)
     const db = await database()
     const record = await getRecord<{ id: string; tabs: unknown; activeIndex: unknown }>(db, TABS_STORE, 'current')
     return record ? sanitizeSession(record) : null
