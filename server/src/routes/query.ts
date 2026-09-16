@@ -51,7 +51,7 @@ export async function queryRoutes(app: FastifyInstance) {
     if (typeof sql !== 'string' || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
     const cap = parseMaxRows(maxRows)
     if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
-    const outcome = await runBatch(id, tabKey ?? '', sql, cap, parseTransactionId(transactionId))
+    const outcome = await runBatch(id, tabKey ?? '', sql, cap, { transactionId: parseTransactionId(transactionId) })
     const transaction = transactionState(sessionKey(id, tabKey ?? ''))
     if (outcome.kind === 'error') return errorReply(reply, outcome.error, transaction)
     return { results: outcome.results, durationMs: outcome.durationMs, ...transaction }

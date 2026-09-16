@@ -28,7 +28,12 @@ export interface AgentGrid {
   columnTypes: string[]
   rows: unknown[][]
   rowCount: number
+  /** Always false for mirrored rows: the backend holds nothing to page. */
   truncated: boolean
+  /** True when rows were cut (agent or server limit). */
+  limited?: boolean
+  /** Rows the statement would have returned, when the server limit was hit. */
+  totalRowCount?: number
 }
 
 export interface AiTabView {

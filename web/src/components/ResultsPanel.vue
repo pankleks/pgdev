@@ -479,7 +479,7 @@ async function exportCsv() {
              rendered: grid.rows is only the visible window -->
         {{ result?.grid?.rowCount ?? 0 }} row(s)
         <span v-if="grid.g.truncated">· more available</span>
-        <span v-else-if="grid.g.limited">· first {{ grid.g.rows.length }} of {{ grid.g.totalRowCount }} · row limit reached; remaining rows were not retained</span>
+        <span v-else-if="grid.g.limited">· first {{ grid.g.rows.length }}<template v-if="grid.g.totalRowCount"> of {{ grid.g.totalRowCount }}</template> · row limit reached; remaining rows were not retained</span>
         <span v-else-if="grid.g.exported?.incomplete">· export interrupted — re-run the query</span>
         <span v-else-if="grid.g.exported">· first {{ grid.g.rows.length }} shown · {{ grid.g.exported.rows }} row(s) exported to CSV</span>
         <button

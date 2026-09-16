@@ -360,14 +360,26 @@ async function runOnTransactionSession(
   }
 }
 
+/** Options for one SQL batch (see routes/query.ts and routes/ai.ts). */
+export interface BatchOptions {
+  /** Expected transaction session id; null explicitly requires none. */
+  transactionId?: string | null
+  /** False for one-shot batches (agent reads): every result is bounded and no
+   * cursor session is retained — a mirrored result cannot page, so the
+   * backend must not hold a pool slot for it. */
+  pageable?: boolean
+}
+
 /** Execute a SQL batch for one tab. See routes/query.ts for the HTTP mapping. */
 export async function runBatch(
   connId: string,
   tabKey: string,
   sql: string,
   cap: number,
-  transactionId?: string | null,
+  options: BatchOptions = {},
 ): Promise<BatchOutcome> {
+  const transactionId = options.transactionId
+  const pageable = options.pageable !== false
   const statements = splitStatements(sql)
   if (!statements.length) return { kind: 'error', error: { kind: 'empty' } }
   const pool = getPool(connId)
@@ -430,8 +442,9 @@ export async function runBatch(
     // Only the final statement may retain a cursor. Earlier result sets are
     // bounded and drained, so the UI never advertises a closed cursor as
     // pageable. Manual transactions never page: the session must keep the
-    // transaction, not a cursor.
-    const useCursors = !autocommit && !manual && statements.every(canUseCursor)
+    // transaction, not a cursor. One-shot batches (agent reads) never page:
+    // their rows are mirrored to a tab whose key cannot reach this session.
+    const useCursors = pageable && !autocommit && !manual && statements.every(canUseCursor)
     const { mapped, openCursor, pendingRow } = await executeStatements(client, statements, cap, useCursors, txn)
 
     if (openCursor) {

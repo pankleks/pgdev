@@ -27,7 +27,8 @@ import { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS, type AiLimits } from '../schema-typ
 //
 // Always registered: the token (stable per user, see ai/token.ts) is the guard.
 
-/** A dedicated tab key for agent reads: no cursor session, no manual transaction. */
+/** A dedicated tab key for agent reads: the batch runs one-shot (no cursor
+ * session is ever retained) and never joins a manual transaction. */
 const AI_TAB_KEY = 'ai'
 
 export interface AiRouteOptions {
@@ -74,8 +75,10 @@ export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
     getDdl: dispatchDdl,
     // The read-only transaction is what actually stops a write; the tool layer
     // checks the statement first so the common case gets a clear message.
+    // One-shot: mirrored rows cannot page (the mirror tab's key differs), so
+    // the batch is bounded and never leaves a cursor behind.
     runReadOnly: (id: string, sql: string, maxRows: number) =>
-      runBatch(id, AI_TAB_KEY, wrapReadOnly(sql), maxRows),
+      runBatch(id, AI_TAB_KEY, wrapReadOnly(sql), maxRows, { pageable: false }),
     bridge,
     limits,
   })

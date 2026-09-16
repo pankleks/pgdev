@@ -324,6 +324,25 @@ test('showGrid on an idle tab renders and bumps the operation', async () => {
   assert.ok(r.messages.some((m) => m.text.includes('Agent query')))
 })
 
+test('a mirrored result with cut rows is limited, never pageable', async () => {
+  const { api, results } = setup()
+  let fetches = 0
+  api.fetchMore = async () => { fetches++; return { rows: [], rowCount: 0, truncated: false } }
+  assert.equal(results.showGrid('tab', {
+    columns: ['id'], columnTypes: ['integer'], rows: [[1], [2]], rowCount: 2,
+    truncated: false, limited: true, totalRowCount: 5,
+  }), true)
+  const r = results.state.byTab.tab
+  const g = r.grid
+  assert.equal(g.truncated, false, 'the backend holds nothing to page')
+  assert.equal(g.limited, true)
+  assert.equal(g.totalRowCount, 5)
+  assert.ok(r.messages.some((m) => m.text.includes('row limit reached')))
+  // Load more must be a no-op: the mirror cannot reach any cursor.
+  await results.loadMore('tab', 'db')
+  assert.equal(fetches, 0)
+})
+
 test('a failed run keeps the server error position for editor markers', async () => {
   const { api, results } = setup()
   api.query = async () => {

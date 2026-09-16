@@ -195,7 +195,12 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
           columnTypes: first?.columnTypes ?? [],
           rows: first?.rows ?? [],
           rowCount: first?.rowCount ?? 0,
-          truncated: first?.truncated ?? false,
+          // A mirrored result can never page (the mirror tab's key cannot
+          // reach the agent's backend session): cut rows are surfaced as a
+          // limit, never as a Load-more offer.
+          truncated: false,
+          limited: first?.truncated ?? false,
+          totalRowCount: first?.totalRowCount,
         })
         .catch(() => undefined)
     }

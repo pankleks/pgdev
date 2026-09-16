@@ -988,10 +988,23 @@ console.log('\n== AI tool surface ==')
   const set = await call('PUT', '/api/ai/limits', { maxRows: 2, maxBytes: 65536 })
   eq('valid limits are accepted', set.body, { maxRows: 2, maxBytes: 65536 })
   eq('config reports them back', (await call('GET', '/api/ai/config')).body.limits, { maxRows: 2, maxBytes: 65536 })
+  // Earlier sections intentionally retain a paged session (tab "cte"), so the
+  // baseline counts the idle-in-transaction backends before the read; the
+  // assertion is that the agent read adds none. (The counting batch itself is
+  // active while it snapshots, so it never counts itself.)
+  const idleCount = async (tabKey) =>
+    (await q("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'pgDEV' AND state LIKE 'idle in transaction%'", tabKey))
+      .body.results[0].rows[0][0]
+  const idleBefore = await idleCount('ai-idle-before')
   const capped = await tool('query', { sql: 'SELECT g FROM generate_series(1, 5) g' })
   eq('the row limit applies to the next query', capped.body.result.results[0].rows, [[1], [2]])
   eq('and is reported as truncated', capped.body.result.results[0].truncated, true)
   eq('only the capped rows come back', capped.body.result.results[0].rowCount, 2)
+  // One-shot agent reads: the cut result is a bounded limited batch, so no
+  // cursor session (idle in transaction) is left pinning a pool client the
+  // mirror tab could never page anyway.
+  ok('an agent read leaves no cursor session behind', (await idleCount('ai-idle-after')) <= idleBefore,
+    `idle in transaction ${idleBefore} -> ${await idleCount('ai-idle-after')}`)
   const restored = await call('PUT', '/api/ai/limits', defaults)
   eq('the browser can put the defaults back', restored.body, defaults)
 

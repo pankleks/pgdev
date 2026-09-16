@@ -146,6 +146,20 @@ test('a read runs with the configured row limit and returns the rows', async () 
   unsubscribe()
 })
 
+test('a capped read mirrors as limited, never as pageable', async () => {
+  const { tools, events, bridge, unsubscribe } = setup({
+    runReadOnly: async () => dataResult([[1]], { truncated: false, limited: true, totalRowCount: 9, rowCount: 1 }),
+  })
+  const result = await tools.query({ sql: 'SELECT id FROM items' })
+  assert.equal(result.ok, true)
+  const event = await answer(bridge, events, {})
+  assert.equal(event.action, 'show-result')
+  assert.equal(event.args.truncated, false, 'the mirror can never page')
+  assert.equal(event.args.limited, true)
+  assert.equal(event.args.totalRowCount, 9)
+  unsubscribe()
+})
+
 test('rows are capped by count and by bytes', async () => {
   const many = Array.from({ length: 500 }, (_, i) => [i])
   const byCount = setup({ runReadOnly: async () => dataResult(many) })

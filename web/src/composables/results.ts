@@ -376,7 +376,11 @@ export function createResults(api: ResultsApi) {
       columnTypes: string[]
       rows: unknown[][]
       rowCount: number
+      /** Mirrored rows never page: the flag stays false and cut rows are
+       * reported through `limited` instead. */
       truncated: boolean
+      limited?: boolean
+      totalRowCount?: number
     },
   ): boolean {
     const r = ensure(tabKey)
@@ -395,14 +399,16 @@ export function createResults(api: ResultsApi) {
         columnTypes: data.columnTypes,
         rows: data.rows,
         rowCount: data.rowCount,
-        truncated: data.truncated,
+        truncated: false,
+        limited: data.limited ?? false,
+        totalRowCount: data.totalRowCount,
       },
     ]
     r.selectedKey = key
     r.showMessages = false
     r.messages = [
       {
-        text: `Agent query: ${data.rowCount} row(s)${data.truncated ? ' (agent row limit reached)' : ''}`,
+        text: `Agent query: ${data.rowCount} row(s)${data.limited ? ' (row limit reached — re-run the query in pgDEV for the rest)' : ''}`,
         level: 'info',
       },
     ]
