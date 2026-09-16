@@ -52,6 +52,29 @@ test('tracks standard_conforming_strings across statements', () => {
     splitStatements("SET standard_conforming_strings = off; SELECT 'a\\';b';"),
     ['SET standard_conforming_strings = off', "SELECT 'a\\';b'"],
   )
+  // Every accepted spelling of the SET.
+  assert.deepEqual(
+    splitStatements("SET LOCAL standard_conforming_strings TO off; SELECT 'a\\';b';"),
+    ['SET LOCAL standard_conforming_strings TO off', "SELECT 'a\\';b'"],
+  )
+  assert.deepEqual(
+    splitStatements("SET SESSION standard_conforming_strings = 'off'; SELECT 'a\\';b';"),
+    ["SET SESSION standard_conforming_strings = 'off'", "SELECT 'a\\';b'"],
+  )
+})
+
+test('a setting name inside a literal is data, not a SET', () => {
+  // A string containing the GUC spelling used to flip the splitting mode even
+  // though no SET ran, merging the statements behind it.
+  assert.deepEqual(
+    splitStatements("SELECT 'standard_conforming_strings=off'; SELECT 'a\\'; SELECT 2;"),
+    ["SELECT 'standard_conforming_strings=off'", "SELECT 'a\\'", 'SELECT 2'],
+  )
+  // Same for a column that happens to carry the GUC's name.
+  assert.deepEqual(
+    splitStatements("UPDATE t SET standard_conforming_strings = 'off'; SELECT 'a\\'; SELECT 2;"),
+    ["UPDATE t SET standard_conforming_strings = 'off'", "SELECT 'a\\'", 'SELECT 2'],
+  )
 })
 
 test('an identifier ending in e does not turn its string into an E-string', () => {

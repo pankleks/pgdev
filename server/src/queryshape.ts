@@ -3,55 +3,52 @@
 // These live apart from the route so they can be unit-tested directly: they
 // decide whether a batch runs inside a transaction and whether a result is
 // paged through a cursor, so a mistake here changes query semantics rather
-// than just presentation.
+// than just presentation. The lexing itself lives in sqllex.ts, shared with
+// the statement splitter and the agent gate.
+
+import { scanSqlLexemes } from './sqllex.js'
+
+/** Keywords whose statements DECLARE can take (checked on the first word). */
+const CURSOR_KEYWORDS = new Set([
+  'select', 'values', 'with', 'show', 'explain', 'table',
+  'set', 'reset', 'discard', 'begin', 'start', 'commit', 'rollback', 'end',
+  'abort', 'savepoint', 'release', 'close', 'fetch',
+])
 
 /**
- * Strip leading whitespace and comments, so the routing regexes below match
- * the real first keyword. Handles nested block comments.
+ * Strip leading whitespace and comments, so keyword checks match the real
+ * first token. Handles nested block comments.
  */
 export function withoutLeadingComments(sql: string): string {
-  let i = 0
-  while (i < sql.length) {
-    while (/\s/.test(sql[i] ?? '')) i++
-    if (sql[i] === '-' && sql[i + 1] === '-') {
-      const end = sql.indexOf('\n', i + 2)
-      i = end === -1 ? sql.length : end + 1
-      continue
+  let start = sql.length
+  scanSqlLexemes(sql, (lex) => {
+    if (lex.kind === 'whitespace' || lex.kind === 'lineComment' || lex.kind === 'blockComment') return
+    start = lex.start
+    return false
+  })
+  return sql.slice(start)
+}
+
+/** The statement's leading keyword tokens, uppercased, skipping comments
+ * between them. Stops at the first token that is not a bare word. */
+function leadingKeywords(stmt: string, limit: number): string[] {
+  const words: string[] = []
+  scanSqlLexemes(stmt, (lex) => {
+    if (lex.kind === 'whitespace' || lex.kind === 'lineComment' || lex.kind === 'blockComment') return
+    if (lex.kind === 'ident' && !lex.quoted && words.length < limit) {
+      words.push(lex.name.toUpperCase())
+      return
     }
-    if (sql[i] === '/' && sql[i + 1] === '*') {
-      let depth = 1
-      i += 2
-      while (i < sql.length && depth > 0) {
-        if (sql[i] === '/' && sql[i + 1] === '*') {
-          depth++
-          i += 2
-        } else if (sql[i] === '*' && sql[i + 1] === '/') {
-          depth--
-          i += 2
-        } else {
-          i++
-        }
-      }
-      continue
-    }
-    break
-  }
-  return sql.slice(i)
+    return false
+  })
+  return words
 }
 
 /** Transaction effect of a successfully executed statement. */
 export function transactionControl(stmt: string): 'unchanged' | 'start' | 'end' | 'chain' {
-  // Read only leading keyword tokens, skipping comments between them. Never
-  // interpret keywords inside quoted savepoint names or string literals.
-  const words: string[] = []
-  let rest = stmt
-  for (let i = 0; i < 5; i++) {
-    rest = withoutLeadingComments(rest)
-    const word = /^[A-Za-z_][A-Za-z_0-9$]*/.exec(rest)
-    if (!word) break
-    words.push(word[0].toUpperCase())
-    rest = rest.slice(word[0].length)
-  }
+  // Read only leading keyword tokens; never interpret keywords inside quoted
+  // savepoint names or string literals (the scanner makes those opaque).
+  const words = leadingKeywords(stmt, 5)
   const first = words.shift()
   if (first === 'BEGIN' || (first === 'START' && words[0] === 'TRANSACTION')) return 'start'
   if (!first || !['COMMIT', 'ROLLBACK', 'END', 'ABORT'].includes(first)) return 'unchanged'
@@ -78,26 +75,32 @@ export function canUseCursor(stmt: string): boolean {
   // being materialized in full. DECLARE only accepts SELECT/VALUES, so a
   // data-modifying CTE (`WITH … INSERT/UPDATE/DELETE …`) still fails at
   // DECLARE and falls back to direct execution via the savepoint.
-  return /^(SELECT|VALUES|WITH|SHOW|EXPLAIN|TABLE|SET|RESET|DISCARD|BEGIN|START|COMMIT|ROLLBACK|END|ABORT|SAVEPOINT|RELEASE|CLOSE|FETCH)\b/i.test(
-    withoutLeadingComments(stmt),
-  )
+  const first = leadingKeywords(stmt, 1)[0]?.toLowerCase() ?? ''
+  return CURSOR_KEYWORDS.has(first)
 }
 
+/** Non-keyword tokens cannot form the commands below, so the leading word
+ * run (comments skipped, strings opaque) is all the check needs. */
 export function requiresAutocommit(stmt: string): boolean {
-  const text = withoutLeadingComments(stmt)
-  // The optional IF EXISTS / IF NOT EXISTS clause must not defeat the match:
-  // `DROP DATABASE IF EXISTS d` is just as unable to run in a transaction, and
-  // missing it would silently put the whole batch inside one.
-  if (
-    /^(VACUUM|CLUSTER|CHECKPOINT|CREATE\s+DATABASE|DROP\s+DATABASE|ALTER\s+SYSTEM|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b(?:\s+IF\s+(?:NOT\s+)?EXISTS)?/i.test(
-      text,
-    )
-  ) {
-    return true
+  const words = leadingKeywords(stmt, 8).map((w) => w.toLowerCase())
+  const first = words[0] ?? ''
+  if (first === 'vacuum' || first === 'cluster' || first === 'checkpoint') return true
+  if (first === 'reindex') return words.includes('concurrently')
+  if (first === 'refresh') {
+    return words[1] === 'materialized' && words[2] === 'view' && words.includes('concurrently')
   }
-  if (/^(CREATE|DROP)\b[\s\S]*\bINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
-  if (/^REINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(text)) return true
-  return /^REFRESH\s+MATERIALIZED\s+VIEW\s+CONCURRENTLY\b/i.test(text)
+  if (first === 'alter') return words[1] === 'system'
+  if (first === 'create' || first === 'drop') {
+    // The optional IF [NOT] EXISTS / UNIQUE lead-in must not defeat the match:
+    // `DROP DATABASE IF EXISTS d` is just as unable to run in a transaction,
+    // and a comment between the words must not hide it either.
+    for (let k = 1; k < words.length; k++) {
+      if (words[k] === 'database' || words[k] === 'tablespace' || words[k] === 'subscription') return true
+      if (words[k] === 'index') return words.slice(k + 1).includes('concurrently')
+      if (!['if', 'not', 'exists', 'unique', 'concurrently'].includes(words[k])) break
+    }
+  }
+  return false
 }
 
 /** Absent means the documented default of 500; anything else must be 1–10000. */

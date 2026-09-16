@@ -5,7 +5,7 @@
 // clauses that would otherwise fail with a database error).
 
 import { splitStatements } from '../sqlsplit.js'
-import { withoutLeadingComments } from '../queryshape.js'
+import { scanSqlLexemes } from '../sqllex.js'
 
 const READ_COMMANDS = new Set(['SELECT', 'WITH', 'VALUES', 'TABLE', 'SHOW', 'EXPLAIN'])
 
@@ -14,77 +14,25 @@ export type ReadOnlyCheck = { ok: true } | { ok: false; reason: string }
 /** Blank the contents of strings, comments, quoted identifiers and dollar
  * bodies so a keyword check cannot match inside them. Index-preserving. */
 function maskLiterals(sql: string): string {
-  const out = sql.split('')
-  const n = sql.length
-  const blank = (from: number, to: number): void => {
-    for (let k = from; k < to && k < n; k++) out[k] = ' '
-  }
-  let i = 0
-  while (i < n) {
-    const ch = sql[i]
-    if (ch === '-' && sql[i + 1] === '-') {
-      const end = sql.indexOf('\n', i + 2)
-      const stop = end === -1 ? n : end
-      blank(i, stop)
-      i = stop
-      continue
-    }
-    if (ch === '/' && sql[i + 1] === '*') {
-      let depth = 1
-      let j = i + 2
-      while (j < n && depth > 0) {
-        if (sql[j] === '/' && sql[j + 1] === '*') {
-          depth++
-          j += 2
-        } else if (sql[j] === '*' && sql[j + 1] === '/') {
-          depth--
-          j += 2
-        } else j++
-      }
-      blank(i, j)
-      i = j
-      continue
-    }
-    if (ch === "'" || ch === '"') {
-      const quote = ch
-      let j = i + 1
-      while (j < n) {
-        if (sql[j] === quote) {
-          if (sql[j + 1] === quote) {
-            j += 2
-            continue
-          }
-          j++
-          break
-        }
-        j++
-      }
-      blank(i, j)
-      i = j
-      continue
-    }
-    if (ch === '$') {
-      const previous = sql[i - 1]
-      const tag =
-        (!previous || !/[A-Za-z0-9_$]/.test(previous)) &&
-        /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 64))
-      if (tag) {
-        const close = sql.indexOf(tag[0], i + tag[0].length)
-        const stop = close === -1 ? n : close + tag[0].length
-        blank(i, stop)
-        i = stop
-        continue
-      }
-    }
-    i++
-  }
-  return out.join('')
+  let out = ''
+  scanSqlLexemes(sql, (lex) => {
+    const opaque =
+      lex.kind === 'string' || lex.kind === 'dollar' || lex.kind === 'lineComment' ||
+      lex.kind === 'blockComment' || (lex.kind === 'ident' && lex.quoted)
+    out += opaque ? ' '.repeat(lex.end - lex.start) : lex.raw
+  })
+  return out
 }
 
 /** The first keyword of a statement, uppercased, skipping leading comments. */
 function firstKeyword(stmt: string): string {
-  const match = /^[A-Za-z_][A-Za-z0-9_$]*/.exec(withoutLeadingComments(stmt))
-  return match ? match[0].toUpperCase() : ''
+  let keyword = ''
+  scanSqlLexemes(stmt, (lex) => {
+    if (lex.kind === 'whitespace' || lex.kind === 'lineComment' || lex.kind === 'blockComment') return
+    if (lex.kind === 'ident' && !lex.quoted) keyword = lex.name.toUpperCase()
+    return false
+  })
+  return keyword
 }
 
 /** True when the statement carries a row-locking clause, which a read-only

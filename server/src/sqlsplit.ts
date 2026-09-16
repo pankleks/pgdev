@@ -1,125 +1,84 @@
+import { scanSqlLexemes, type SqlLexState, type SqlLexeme } from './sqllex.js'
+
 // Split SQL text into individual statements on top-level semicolons.
 // Aware of single-quoted strings ('' escape), double-quoted identifiers,
 // line/block comments, and dollar-quoted bodies ($$…$$, $tag$…$tag$),
-// so function bodies and literals containing `;` stay intact.
+// so function bodies and literals containing `;` stay intact. The lexing
+// itself lives in sqllex.ts, shared with the query router and the agent gate.
+
+const GUC = 'standard_conforming_strings'
+/** Only the first few tokens of a statement can form the SET that flips the
+ * string mode; the buffer is capped accordingly. */
+const SCS_WINDOW = 10
 
 export function splitStatements(sql: string): string[] {
   const out: string[] = []
+  const state: SqlLexState = { standardConformingStrings: true }
   let cur = ''
-  let i = 0
-  const n = sql.length
-  let standardConformingStrings = true
+  /** Non-whitespace lexemes of the statement being assembled (capped). */
+  let tokens: SqlLexeme[] = []
 
   const finish = () => {
     const statement = cur.trim()
-    if (!statement) return
-    out.push(statement)
-    const setting = /\bstandard_conforming_strings\s*(?:=|TO)\s*['"]?(on|off)\b/i.exec(statement)
-    if (setting) standardConformingStrings = setting[1].toLowerCase() === 'on'
+    if (statement) {
+      out.push(statement)
+      trackStandardConformingStrings(tokens, state)
+    }
+    cur = ''
+    tokens = []
   }
 
-  while (i < n) {
-    const ch = sql[i]
-
-    // Line comment.
-    if (ch === '-' && sql[i + 1] === '-') {
-      const end = sql.indexOf('\n', i + 2)
-      const stop = end === -1 ? n : end
-      cur += sql.slice(i, stop)
-      i = stop
-      continue
-    }
-    // Block comment.
-    if (ch === '/' && sql[i + 1] === '*') {
-      let depth = 1
-      let j = i + 2
-      while (j < n && depth > 0) {
-        if (sql[j] === '/' && sql[j + 1] === '*') {
-          depth++
-          j += 2
-        } else if (sql[j] === '*' && sql[j + 1] === '/') {
-          depth--
-          j += 2
-        } else {
-          j++
-        }
+  scanSqlLexemes(sql,
+    (lex) => {
+      if (lex.kind === 'punct' && lex.raw === ';') {
+        finish()
+        return
       }
-      cur += sql.slice(i, j)
-      i = j
-      continue
-    }
-    // Single-quoted string.
-    if (ch === "'") {
-      // Backslash escapes are active inside E'…' and U&'…', and everywhere
-      // when standard_conforming_strings is off. The prefix letter must be a
-      // standalone token: in `type='a\'` the `e` merely ends the identifier,
-      // and treating the backslash as an escape would swallow the statement
-      // boundary after the closing quote.
-      const p1 = sql[i - 1] ?? ''
-      const p2 = sql[i - 2] ?? ''
-      const p3 = sql[i - 3] ?? ''
-      const eString = /e/i.test(p1) && !/^[A-Za-z0-9_$]/.test(p2)
-      const uString = p1 === '&' && /u/i.test(p2) && !/^[A-Za-z0-9_$]/.test(p3)
-      const escapeBackslashes = !standardConformingStrings || eString || uString
-      let j = i + 1
-      while (j < n) {
-        if (sql[j] === "'") {
-          if (sql[j + 1] === "'") j += 2
-          else {
-            j++
-            break
-          }
-        } else if (escapeBackslashes && sql[j] === '\\' && j + 1 < n) j += 2
-        else j++
-      }
-      cur += sql.slice(i, j)
-      i = j
-      continue
-    }
-    // Double-quoted identifier.
-    if (ch === '"') {
-      let j = i + 1
-      while (j < n) {
-        if (sql[j] === '"') {
-          if (sql[j + 1] === '"') j += 2
-          else {
-            j++
-            break
-          }
-        } else {
-          j++
-        }
-      }
-      cur += sql.slice(i, j)
-      i = j
-      continue
-    }
-    // Dollar-quoted string: $$…$$ or $tag$…$tag$.
-    if (ch === '$') {
-      const previous = sql[i - 1]
-      const tag =
-        (!previous || !/[A-Za-z0-9_$]/.test(previous)) &&
-        /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))
-      if (tag) {
-        const close = sql.indexOf(tag[0], i + tag[0].length)
-        const stop = close === -1 ? n : close + tag[0].length
-        cur += sql.slice(i, stop)
-        i = stop
-        continue
-      }
-      cur += ch
-      i++
-      continue
-    }
-    if (ch === ';') {
-      finish()
-      cur = ''
-      i++
-      continue
-    }
-    cur += ch
-    i++
-  }
+      cur += lex.raw
+      // The SET that flips the mode must start its own statement, so only a
+      // few leading tokens can ever matter (a spelling of the GUC name inside
+      // a string literal, comment or deep expression is data, not a setting).
+      if (lex.kind !== 'whitespace' && tokens.length < SCS_WINDOW) tokens.push(lex)
+    },
+    state,
+  )
   finish()
   return out
+}
+
+/** Apply `SET [LOCAL | SESSION] standard_conforming_strings {TO | =} on|off` —
+ * bare-word occurrences only, so the same spelling inside a literal or a
+ * comparison can never flip how later statements are split. */
+function trackStandardConformingStrings(tokens: SqlLexeme[], state: SqlLexState): void {
+  const words = tokens.filter((t) => t.kind !== 'lineComment' && t.kind !== 'blockComment')
+  const word = (idx: number): string | null => {
+    const t = words[idx]
+    return t && t.kind === 'ident' && !t.quoted ? t.name.toLowerCase() : null
+  }
+  let k = 0
+  if (word(k) !== 'set') return
+  k++
+  const scope = word(k)
+  if (scope === 'local' || scope === 'session') k++
+  if (word(k) !== GUC) return
+  k++
+  const sep = words[k]
+  if (sep?.kind === 'ident' && !sep.quoted && sep.name.toLowerCase() === 'to') {
+    k++
+  } else if (sep?.kind === 'punct' && sep.raw === '=') {
+    k++
+  } else {
+    return
+  }
+  const value = words[k]
+  if (!value) return
+  if (value.kind === 'ident' && !value.quoted) {
+    const v = value.name.toLowerCase()
+    if (v === 'on' || v === 'off') state.standardConformingStrings = v === 'on'
+    return
+  }
+  if (value.kind === 'string') {
+    const v = value.name.trim().toLowerCase()
+    if (v === 'on' || v === 'off') state.standardConformingStrings = v === 'on'
+  }
 }

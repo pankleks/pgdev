@@ -95,6 +95,20 @@ test('requiresAutocommit looks past leading comments', () => {
   assert.equal(requiresAutocommit('-- ordinary\nSELECT 1'), false)
 })
 
+test('requiresAutocommit survives comments between the keywords', () => {
+  // A comment between CREATE and DATABASE used to defeat the regex match and
+  // silently put the batch inside a transaction PostgreSQL would refuse.
+  assert.equal(requiresAutocommit('CREATE /* note */ DATABASE sample'), true)
+  assert.equal(requiresAutocommit('DROP /* note */ DATABASE IF EXISTS sample'), true)
+  assert.equal(requiresAutocommit('CREATE /* a /* b */ */ INDEX CONCURRENTLY i ON t (a)'), true)
+})
+
+test('requiresAutocommit never reads keywords out of literals', () => {
+  // A string containing CONCURRENTLY used to flip the batch to autocommit.
+  assert.equal(requiresAutocommit("CREATE INDEX i ON t WHERE note = 'CONCURRENTLY'"), false)
+  assert.equal(requiresAutocommit("INSERT INTO t VALUES ('CREATE DATABASE x')"), false)
+})
+
 test('parseMaxRows enforces the documented 1–10000 range and default', () => {
   assert.equal(parseMaxRows(undefined), 500)
   assert.equal(parseMaxRows(1), 1)
