@@ -11,6 +11,61 @@ function serialType(type: string): string | null {
   return null
 }
 
+/** Per-type bounds of a sequence's underlying integer type. */
+const SEQUENCE_BOUNDS: Record<string, { min: bigint; max: bigint }> = {
+  smallint: { min: -32768n, max: 32767n },
+  integer: { min: -2147483648n, max: 2147483647n },
+  bigint: { min: -9223372036854775808n, max: 9223372036854775807n },
+}
+
+export interface SequenceProps {
+  /** format_type output of the sequence's underlying type. */
+  type: string
+  /** pg_sequence values as stored (user terms, bigint as text). */
+  start: string
+  increment: string
+  min: string
+  max: string
+  cache: string
+  cycle: boolean
+}
+
+/**
+ * The nondefault options of an owned sequence, in pg_dump's clause order.
+ * Serial and identity columns always *create* ascending sequences, so an
+ * option counts as default when it equals what a bare creation produces:
+ * ascending start = MINVALUE (1 unless set), min 1, max = the type maximum;
+ * descending max = -1, min = the type minimum, start = MAXVALUE.
+ * `sequenceName` is the formatted `SEQUENCE NAME …` clause when the caller
+ * carries a renamed/moved sequence (the serial shorthand cannot rename, so it
+ * passes null). Unsupported types emit nothing.
+ */
+export function sequenceOptions(props: SequenceProps, sequenceName: string | null): string[] {
+  const bounds = SEQUENCE_BOUNDS[props.type]
+  if (!bounds) return []
+  const min = BigInt(props.min)
+  const max = BigInt(props.max)
+  const start = BigInt(props.start)
+  const increment = BigInt(props.increment)
+  const cache = BigInt(props.cache)
+  const ascending = increment > 0n
+  const parts: string[] = []
+  if (sequenceName) parts.push(sequenceName)
+  if (ascending) {
+    if (min !== 1n) parts.push(`MINVALUE ${min.toString()}`)
+    if (max !== bounds.max) parts.push(`MAXVALUE ${max.toString()}`)
+    if (start !== min) parts.push(`START WITH ${start.toString()}`)
+  } else {
+    if (min !== bounds.min) parts.push(`MINVALUE ${min.toString()}`)
+    if (max !== -1n) parts.push(`MAXVALUE ${max.toString()}`)
+    if (start !== max) parts.push(`START WITH ${start.toString()}`)
+  }
+  if (increment !== 1n) parts.push(`INCREMENT BY ${increment.toString()}`)
+  if (cache !== 1n) parts.push(`CACHE ${cache.toString()}`)
+  if (props.cycle) parts.push('CYCLE')
+  return parts
+}
+
 function notFound(): never {
   const err = new Error('Object not found')
   ;(err as Error & { statusCode: number }).statusCode = 404
@@ -40,7 +95,13 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
          a.attgenerated AS generated,
          a.attinhcount AS inhcount,
          pg_get_expr(d.adbin, d.adrelid) AS default_value,
-         pg_get_serial_sequence(format('%I.%I', n.nspname, c.relname), a.attname) AS sequence_name,
+         -- The sequence owned by this column (serial or identity), with its
+         -- properties, so nondefault options round-trip. pg_get_serial_
+         -- sequence resolves the same dependency, but the pg_depend join
+         -- keeps the lookup inside one query.
+         seq.sequence_type, seq.sequence_start, seq.sequence_increment,
+         seq.sequence_min, seq.sequence_max, seq.sequence_cache, seq.sequence_cycle,
+         seq.owned_schema, seq.owned_name,
          -- format_type does not carry a collation, so reattach it explicitly
          -- (the default collation is implicit and can be omitted).
          CASE WHEN co.collname IS NOT NULL AND co.collname <> 'default'
@@ -56,6 +117,24 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
        LEFT JOIN pg_collation co ON co.oid = a.attcollation AND a.attcollation <> 0
        LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace
+       LEFT JOIN LATERAL (
+         SELECT format_type(s.seqtypid, NULL) AS sequence_type,
+                s.seqstart::text AS sequence_start,
+                s.seqincrement::text AS sequence_increment,
+                s.seqmin::text AS sequence_min,
+                s.seqmax::text AS sequence_max,
+                s.seqcache::text AS sequence_cache,
+                s.seqcycle AS sequence_cycle,
+                c2.relname AS owned_name, n2.nspname AS owned_schema
+         FROM pg_depend dep
+         JOIN pg_class c2 ON c2.oid = dep.objid AND c2.relkind = 'S'
+         JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+         JOIN pg_sequence s ON s.seqrelid = c2.oid
+         WHERE dep.classid = 'pg_class'::regclass
+           AND dep.refclassid = 'pg_class'::regclass
+           AND dep.refobjid = a.attrelid AND dep.refobjsubid = a.attnum
+           AND dep.deptype IN ('a', 'i')
+       ) seq ON true
        WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped
        ORDER BY a.attnum`,
       [relOid],
@@ -191,6 +270,24 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
   const table = `${ident(rel.schema)}.${ident(rel.name)}`
   const chunks: string[] = []
 
+  /** Owned sequences by column name, for identity/serial option emission. */
+  const sequenceByColumn = new Map<string, SequenceProps & { schema: string; name: string }>()
+  for (const r of colsRes.rows) {
+    if (r.owned_name != null) {
+      sequenceByColumn.set(String(r.name), {
+        type: String(r.sequence_type),
+        start: String(r.sequence_start),
+        increment: String(r.sequence_increment),
+        min: String(r.sequence_min),
+        max: String(r.sequence_max),
+        cache: String(r.sequence_cache),
+        cycle: r.sequence_cycle === true,
+        schema: String(r.owned_schema),
+        name: String(r.owned_name),
+      })
+    }
+  }
+
   if (rel.relispartition && rel.part_name) {
     // Partition-local constraints and indexes still belong in the DDL: only
     // the parent-cloned ones (filtered out of the queries above) are
@@ -219,18 +316,48 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     // the same shape pg_dump emits.
     const inheritance = rel.relkind !== 'f' && !rel.partkey && rel.inherits ? (rel.inherits as string) : null
     const columns = inheritance ? colsRes.rows.filter((r) => !r.inhcount) : colsRes.rows
+    /** A serial column whose sequence carries nondefault options cannot use
+     * the shorthand (which always creates a default sequence): the explicit
+     * path recreates the sequence, its options and the ownership. */
+    const sequenceCreates: string[] = []
+    const ownedBy: string[] = []
     const lines = columns.map((r) => {
-      const serial = !r.identity && !r.generated && r.sequence_name ? serialType(r.type) : null
+      const owned = sequenceByColumn.get(String(r.name)) ?? null
+      const serial = owned && !r.identity && !r.generated ? serialType(r.type) : null
+      const defaultName = `${rel.name}_${r.name}_seq`
+      const renamed = owned !== null && (owned.name !== defaultName || owned.schema !== rel.schema)
+      const explicitSerial = serial !== null &&
+        (owned ? sequenceOptions(owned, null).length > 0 || renamed : false)
+      const sequenceNameClause =
+        owned && r.identity && renamed ? `SEQUENCE NAME ${ident(owned.schema)}.${ident(owned.name)}` : null
+      if (explicitSerial && owned) {
+        const createOptions = sequenceOptions(owned, null)
+        sequenceCreates.push(
+          `CREATE SEQUENCE ${ident(owned.schema)}.${ident(owned.name)} AS ${owned.type}` +
+            (createOptions.length ? ` ${createOptions.join(' ')}` : '') + ';',
+        )
+        ownedBy.push(`ALTER SEQUENCE ${ident(owned.schema)}.${ident(owned.name)} OWNED BY ${table}.${ident(r.name)};`)
+      }
+      // The explicit path stores `nextval('<seq>'::regclass)` as typed at
+      // creation; re-qualify it so the rebuilt default binds the sequence the
+      // script itself just created, whatever search_path says.
+      const defaultExpr =
+        explicitSerial && owned && r.default_value != null
+          ? String(r.default_value).replace(
+              /^nextval\('(.*)'(?:::regclass)?\)$/i,
+              // A callback: `$` in the quoted name must not read as a capture.
+              () => `nextval('${ident(owned.schema)}.${ident(owned.name)}'::regclass)`)
+          : r.default_value
       const fdwOptions = r.fdw_options ? ` OPTIONS (${r.fdw_options})` : ''
-      const parts = [`${ident(r.name)} ${serial ?? r.type}${fdwOptions}${r.collation ?? ''}`]
+      const parts = [`${ident(r.name)} ${explicitSerial ? r.type : serial ?? r.type}${fdwOptions}${r.collation ?? ''}`]
       if (r.generated === 's' && r.default_value != null) {
         parts.push(`GENERATED ALWAYS AS (${r.default_value}) STORED`)
-      } else if (r.identity === 'a') {
-        parts.push('GENERATED ALWAYS AS IDENTITY')
-      } else if (r.identity === 'd') {
-        parts.push('GENERATED BY DEFAULT AS IDENTITY')
-      } else if (!serial && r.default_value != null) {
-        parts.push(`DEFAULT ${r.default_value}`)
+      } else if (r.identity === 'a' || r.identity === 'd') {
+        const keyword = r.identity === 'a' ? 'GENERATED ALWAYS AS IDENTITY' : 'GENERATED BY DEFAULT AS IDENTITY'
+        const options = owned ? sequenceOptions(owned, sequenceNameClause) : []
+        parts.push(options.length ? `${keyword} (${options.join(' ')})` : keyword)
+      } else if (r.default_value != null && (!serial || explicitSerial)) {
+        parts.push(`DEFAULT ${defaultExpr}`)
       }
       if (r.notnull && !pkCols.has(r.name)) parts.push('NOT NULL')
       return `  ${parts.join(' ')}`
@@ -269,7 +396,9 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
     if (rel.partkey) create += `\n  PARTITION BY ${rel.partkey}`
     else if (inheritance) create += `\n  INHERITS (${inheritance})`
     if (rel.tablespace) create += `\n  TABLESPACE ${ident(rel.tablespace)}`
+    if (sequenceCreates.length) chunks.push(sequenceCreates.join('\n'))
     chunks.push(create + ';')
+    if (ownedBy.length) chunks.push(ownedBy.join('\n'))
     if (deferredConstraints.length) chunks.push(deferredConstraints.join('\n'))
 
     // Constraint-backed indexes are excluded by the query itself; whatever
