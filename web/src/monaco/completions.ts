@@ -113,6 +113,23 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         }
         return prev.item
       }
+      // Monaco fuzzy-filters every suggestion against the word being typed,
+      // so allocating items that could never pass is pure per-keystroke cost
+      // on a large schema. Gate candidates with the same rule Monaco applies:
+      // every prefix character must appear in the label in order (case
+      // ignored); an empty prefix passes everything.
+      const prefix = word.word.toLowerCase()
+      const matchesPrefix = (label: string): boolean => {
+        if (!prefix) return true
+        let at = 0
+        const hay = label.toLowerCase()
+        for (const ch of prefix) {
+          at = hay.indexOf(ch, at)
+          if (at === -1) return false
+          at++
+        }
+        return true
+      }
       const relations = data ? relationsFor(data) : []
       const sqlBefore = model.getValueInRange({
         startLineNumber: 1,
@@ -134,6 +151,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // and the schema-qualifier list. `inSchema` suppresses re-qualification
       // when the user already typed `schema.`.
       const itemForTable = (t: TableInfo, inSchema: boolean): void => {
+        if (!matchesPrefix(t.name)) return
         emit({
           label: t.name,
           kind: K.Class,
@@ -143,6 +161,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         })
       }
       const itemForView = (v: ViewInfo, inSchema: boolean): void => {
+        if (!matchesPrefix(v.name)) return
         emit({
           label: v.name,
           kind: K.Class,
@@ -152,6 +171,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         })
       }
       const itemForType = (t: TypeInfo, inSchema: boolean): void => {
+        if (!matchesPrefix(t.name)) return
         emit({
           label: t.name,
           kind: K.Class,
@@ -161,6 +181,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         })
       }
       const itemForFunction = (f: FunctionInfo, inSchema: boolean): void => {
+        if (!matchesPrefix(f.name)) return
         const name = inSchema ? quoteIdent(f.name) : qualified(f.schema, f.name)
         const detail = functionDetail(f)
         emit(
@@ -179,6 +200,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // Built-ins are always callable unqualified (pg_catalog is implicitly in
       // the search path), so their insert text is never schema-qualified.
       const itemForBuiltin = (f: FunctionInfo): void => {
+        if (!matchesPrefix(f.name)) return
         const detail = functionDetail(f)
         const insertText = `${quoteIdent(f.name)}($0)`
         emit(
@@ -203,6 +225,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         if (match) {
           const relationName = match.schema === 'public' ? match.name : `${match.schema}.${match.name}`
           for (const c of match.columns) {
+            if (!matchesPrefix(c.name)) continue
             const description = `${c.type} · ${relationName}`
             suggestions.push({
               label: { label: c.name, description },
@@ -238,6 +261,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       }
 
       for (const kw of KEYWORD_LIST) {
+        if (!matchesPrefix(kw.toLowerCase())) continue
         emit({ label: kw, kind: K.Keyword, insertText: kw, range })
       }
 
@@ -256,6 +280,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const relation of visibleRelations) {
         const relationName = relation.schema === 'public' ? relation.name : `${relation.schema}.${relation.name}`
         for (const c of relation.columns) {
+          if (!matchesPrefix(c.name)) continue
           const description = `${c.type} · ${relationName}`
           const winner = emit({
             label: { label: c.name, description },
@@ -265,8 +290,10 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             range,
           })
           // A duplicate column also found elsewhere: record the other relation
-          // in the detail line so the single entry stays informative.
-          if (winner.kind !== K.Field || suggestions.indexOf(winner) === -1) continue
+          // in the detail line so the single entry stays informative. The
+          // winner comes from `emit` (the map's surviving entry), so no array
+          // search is needed here.
+          if (winner.kind !== K.Field) continue
           const label = typeof winner.label === 'string' ? { label: winner.label } : winner.label
           const from = String(label.description ?? '').replace(/^.*? · /, '')
           if (!from.split(', ').includes(relationName)) {
@@ -283,7 +310,6 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const f of data?.functions ?? []) itemForFunction(f, false)
       // Built-ins run into the thousands; only offer the ones the user has
       // already started to type, so the list stays focused and cheap.
-      const prefix = word.word.toLowerCase()
       if (data && prefix.length >= 2) {
         for (const f of data.builtins ?? []) {
           if (f.name.toLowerCase().startsWith(prefix)) itemForBuiltin(f)
