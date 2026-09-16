@@ -159,17 +159,17 @@ console.log('\n== P2: collapse is inert while filtering ==')
   const src = readFileSync(join(REAL_WEB, 'components/ObjectBrowser.vue'), 'utf8')
   const groupMenus = [...src.matchAll(/openNodeMenu\(\$event, browserNode\('(\w+-group)'[\s\S]*?\)\)?, (false|true)?\)?/g)]
   const menuLines = [...src.matchAll(/browserNode\('(\w+-group)'[^\n]*/g)].map((m) => m[0])
-  eq('all four group menus exist', menuLines.length, 4)
+  eq('all five group menus exist', menuLines.length, 5)
   eq('every group menu is suppressed while filtering',
      menuLines.every((l) => /, false\)\"?>?\s*$/.test(l.trimEnd())), true)
 
   const guardedClicks = src.match(/@click="!isFiltering && toggle(Table|Object)Group\(/g) || []
-  eq('all four group toggles are guarded', guardedClicks.length, 4)
+  eq('all five group toggles are guarded', guardedClicks.length, 5)
   const guardedCarets = src.match(/@dblclick\.stop @click\.stop="!isFiltering && toggleChildren\(/g) || []
-  eq('all eight object carets are guarded', guardedCarets.length, 8)
+  eq('all nine object carets are guarded', guardedCarets.length, 9)
   eq('no unguarded group toggle remains', /@click="toggle(Table|Object)Group\(/.test(src), false)
   eq('no unguarded caret toggle remains', /@dblclick\.stop @click\.stop="toggleChildren\(/.test(src), false)
-  eq('group carets hidden while filtering', (src.match(/<ChevronRight v-if="!isFiltering"/g) || []).length, 4)
+  eq('group carets hidden while filtering', (src.match(/<ChevronRight v-if="!isFiltering"/g) || []).length, 5)
 }
 
 console.log('\n== P2: grid footer counts loaded rows, not the rendered slice ==')

@@ -30,6 +30,7 @@ import {
   ShieldCheck,
   Shapes,
   Sigma,
+  Hash,
   SquareFunction,
   SquareTerminal,
   Table2,
@@ -68,7 +69,7 @@ const settings = useSettings()
 const tabs = useTabs()
 const toast = useToast()
 
-const open = reactive({ tables: false, views: false, functions: false, types: false })
+const open = reactive({ tables: false, views: false, functions: false, types: false, sequences: false })
 const expanded = reactive(new Set<string>())
 
 type BrowserNodeType =
@@ -89,6 +90,9 @@ type BrowserNodeType =
   | 'function-group'
   | 'function'
   | 'function-parameter'
+  | 'sequence-group'
+  | 'sequence'
+  | 'sequence-detail'
 
 interface BrowserNode {
   type: BrowserNodeType
@@ -99,7 +103,7 @@ interface BrowserNode {
   groupState?: Set<string>
 }
 
-type BrowserSection = 'tables' | 'views' | 'types' | 'functions'
+type BrowserSection = 'tables' | 'views' | 'types' | 'functions' | 'sequences'
 
 interface BrowserContextMenu {
   x: number
@@ -325,6 +329,9 @@ const showFunctions = computed(
 const showTypes = computed(
   () => !isFiltering.value || searchType.value === null || searchType.value === 'type',
 )
+const showSequences = computed(
+  () => !isFiltering.value || searchType.value === null || searchType.value === 'sequence',
+)
 
 const filteredTables = computed(() =>
   showTables.value
@@ -374,12 +381,24 @@ const filteredTypes = computed(() =>
       )
     : [],
 )
+const sequences = computed(() => schema.state.data?.sequences ?? [])
+const filteredSequences = computed(() =>
+  showSequences.value
+    ? sequences.value.filter(
+        (s) =>
+          !isFiltering.value ||
+          nameMatched(s.name, s.schema) ||
+          matchesAll(s.detail),
+      )
+    : [],
+)
 const totalMatches = computed(
   () =>
     filteredTables.value.length +
     filteredViews.value.length +
     filteredFunctions.value.length +
-    filteredTypes.value.length,
+    filteredTypes.value.length +
+    filteredSequences.value.length,
 )
 
 function flip(key: string) {
@@ -426,10 +445,12 @@ const expandedTableGroups = reactive(new Set<string>())
 const expandedViewGroups = reactive(new Set<string>())
 const expandedFunctionGroups = reactive(new Set<string>())
 const expandedTypeGroups = reactive(new Set<string>())
+const expandedSequenceGroups = reactive(new Set<string>())
 const tableEntries = computed(() => groupTables(filteredTables.value, settings.state.groupObjects))
 const viewEntries = computed(() => groupNamedObjects(filteredViews.value, settings.state.groupObjects, 'view'))
 const functionEntries = computed(() => groupNamedObjects(filteredFunctions.value, settings.state.groupObjects, 'function'))
 const typeEntries = computed(() => groupNamedObjects(filteredTypes.value, settings.state.groupObjects, 'type'))
+const sequenceEntries = computed(() => groupNamedObjects(filteredSequences.value, settings.state.groupObjects, 'sequence'))
 
 function sectionNode(section: BrowserSection): BrowserNode {
   const collapseKeys =
@@ -439,7 +460,9 @@ function sectionNode(section: BrowserSection): BrowserNode {
         ? views.value.map((view) => `v-${view.oid}`)
         : section === 'types'
           ? types.value.map((type) => `ty-${type.oid}`)
-          : functions.value.map((func) => `f-${func.oid}`)
+          : section === 'sequences'
+            ? sequences.value.map((seq) => `s-${seq.oid}`)
+            : functions.value.map((func) => `f-${func.oid}`)
   const groupKeys =
     section === 'tables'
       ? groupTables(tables.value, settings.state.groupObjects)
@@ -449,7 +472,9 @@ function sectionNode(section: BrowserSection): BrowserNode {
         ? viewEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
         : section === 'types'
           ? typeEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
-          : functionEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
+          : section === 'sequences'
+            ? sequenceEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
+            : functionEntries.value.filter((entry) => entry.kind === 'group').map((entry) => entry.key)
   const groupState =
     section === 'tables'
       ? expandedTableGroups
@@ -457,7 +482,10 @@ function sectionNode(section: BrowserSection): BrowserNode {
         ? expandedViewGroups
         : section === 'types'
           ? expandedTypeGroups
-          : expandedFunctionGroups
+          : section === 'sequences'
+            ? expandedSequenceGroups
+            : expandedFunctionGroups
+
   return { ...browserNode('section', `section-${section}`, collapseKeys, groupState), section, groupKeys }
 }
 
@@ -505,7 +533,6 @@ const INDEX_ICONS: Record<IndexType, LucideIcon> = {
 }
 
 type FunctionKind = 'function' | 'procedure' | 'window' | 'trigger' | 'aggregate'
-
 const FUNCTION_ICONS: Record<FunctionKind, LucideIcon> = {
   function: SquareFunction,
   procedure: SquareTerminal,
@@ -582,6 +609,7 @@ watch(
     expandedViewGroups.clear()
     expandedFunctionGroups.clear()
     expandedTypeGroups.clear()
+    expandedSequenceGroups.clear()
     ddlRequests.clear()
     appliedLabel = ''
     // A table-edit dialog captured the connection id when it opened; editing
@@ -607,11 +635,13 @@ watch(
     open.views = saved.sections.views
     open.functions = saved.sections.functions
     open.types = saved.sections.types
+    open.sequences = saved.sections.sequences
     for (const key of saved.expanded) expanded.add(key)
     for (const key of saved.groups.tables) expandedTableGroups.add(key)
     for (const key of saved.groups.views) expandedViewGroups.add(key)
     for (const key of saved.groups.functions) expandedFunctionGroups.add(key)
     for (const key of saved.groups.types) expandedTypeGroups.add(key)
+    for (const key of saved.groups.sequences) expandedSequenceGroups.add(key)
   },
   // `immediate` so a component that mounts while a connection is already
   // loaded restores its sections too — the watcher would otherwise wait for
@@ -636,6 +666,7 @@ function flushUiSave() {
       views: [...expandedViewGroups],
       functions: [...expandedFunctionGroups],
       types: [...expandedTypeGroups],
+      sequences: [...expandedSequenceGroups],
     },
   })
 }
@@ -644,10 +675,11 @@ watch(() => [...expandedTableGroups], scheduleUiSave)
 watch(() => [...expandedViewGroups], scheduleUiSave)
 watch(() => [...expandedFunctionGroups], scheduleUiSave)
 watch(() => [...expandedTypeGroups], scheduleUiSave)
+watch(() => [...expandedSequenceGroups], scheduleUiSave)
 watch(open, scheduleUiSave)
 
 async function openObject(
-  type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type',
+  type: 'table' | 'view' | 'function' | 'index' | 'constraint' | 'trigger' | 'type' | 'sequence',
   schemaName: string,
   name: string,
   oid?: string,
@@ -1050,6 +1082,61 @@ async function refresh() {
             </template>
           </template>
           <div v-if="!filteredFunctions.length" class="empty">No functions</div>
+        </template>
+      </section>
+
+      <section v-if="showSequences" class="group">
+        <h3 @click="open.sequences = !open.sequences" @contextmenu="openNodeMenu($event, sectionNode('sequences'))">
+          <component :is="open.sequences || isFiltering ? ChevronDown : ChevronRight" class="arrow" :size="11" />
+          Sequences
+          <span class="count">{{ isFiltering ? `${filteredSequences.length}/${sequences.length}` : sequences.length }}</span>
+        </h3>
+        <template v-if="open.sequences || isFiltering">
+          <template v-for="entry in sequenceEntries" :key="entry.key">
+            <div
+              v-if="entry.kind === 'group'"
+              class="node object-group-node"
+              :title="`${displayName(entry.schema, entry.name)} · ${entry.objects.length} sequences`"
+              @click="!isFiltering && toggleObjectGroup(entry.key, expandedSequenceGroups)"
+              @contextmenu="openNodeMenu($event, browserNode('sequence-group', entry.key, entry.objects.map((s) => 's-' + s.oid), expandedSequenceGroups), false)"
+            >
+              <span class="caret" :class="{ open: objectGroupOpen(entry, expandedSequenceGroups) }"><ChevronRight v-if="!isFiltering" :size="12" /></span>
+              <span class="obj-icon"><component :is="objectGroupOpen(entry, expandedSequenceGroups) ? FolderOpen : Folder" :size="14" /></span>
+              <span class="obj-name" v-html="highlightIn(displayName(entry.schema, entry.name), 'sequence')" />
+              <span class="node-badges"></span>
+              <span class="count">{{ entry.objects.length }}</span>
+            </div>
+            <template v-if="objectGroupOpen(entry, expandedSequenceGroups)">
+              <div class="object-entry-children" :class="{ 'object-group-children': entry.kind === 'group' }">
+                <div v-for="s in entry.objects" :key="'s-' + s.oid" class="tree">
+                  <div
+                    class="node"
+                    :title="`${s.dataType} · ${s.detail} · Click to expand/collapse · double-click to open DDL`"
+                    @click="queueToggle($event, 's-' + s.oid)"
+                    @dblclick="openObject('sequence', s.schema, s.name, s.oid)"
+                    @contextmenu="openNodeMenu($event, browserNode('sequence', 's-' + s.oid))"
+                  >
+                    <span
+                      class="caret"
+                      :class="{ open: expanded.has('s-' + s.oid) }"
+                      title="Toggle detail"
+                      @dblclick.stop @click.stop="!isFiltering && toggleChildren('s-' + s.oid)"
+                    ><ChevronRight :size="12" /></span>
+                    <span class="obj-icon"><Hash :size="14" /></span>
+                    <span class="obj-name" v-html="highlightIn(displayName(s.schema, s.name), 'sequence')" />
+                    <span class="node-badges"><span class="void-badge">{{ s.dataType }}</span><span v-if="s.detail.includes('owned by')" class="void-badge">owned</span><span v-if="isTbd(s.name)" class="void-badge tbd-badge">tbd</span></span>
+                  </div>
+                  <template v-if="expanded.has('s-' + s.oid)">
+                    <div class="node child" :title="s.detail" @contextmenu="openNodeMenu($event, browserNode('sequence-detail', `s-${s.oid}-detail`, []), false)">
+                      <span class="obj-name" v-html="highlightText(s.detail || '—')" />
+                      <span class="node-badges"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </template>
+          <div v-if="!filteredSequences.length" class="empty">No sequences</div>
         </template>
       </section>
 

@@ -2,7 +2,7 @@
 // matching, highlighting, and function-argument parsing. No Vue imports —
 // everything here is unit-testable directly.
 
-export type SearchType = 'table' | 'view' | 'function' | 'column' | 'parameter' | 'type'
+export type SearchType = 'table' | 'view' | 'function' | 'column' | 'parameter' | 'type' | 'sequence'
 
 const TYPE_WORDS: Record<string, SearchType> = {
   table: 'table',
@@ -22,6 +22,9 @@ const TYPE_WORDS: Record<string, SearchType> = {
   parameters: 'parameter',
   type: 'type',
   types: 'type',
+  sequence: 'sequence',
+  sequences: 'sequence',
+  seq: 'sequence',
 }
 
 export interface ParsedSearch {

@@ -155,11 +155,22 @@ export interface TypeInfo {
   detail: string
 }
 
+export interface SequenceInfo {
+  schema: string
+  name: string
+  oid: string
+  /** format_type output of the underlying integer type. */
+  dataType: string
+  /** Rendered summary: increment, bounds, cache, cycle, ownership. */
+  detail: string
+}
+
 export interface SchemaData {
   tables: TableInfo[]
   views: ViewInfo[]
   functions: FunctionInfo[]
   types: TypeInfo[]
+  sequences: SequenceInfo[]
   /** Built-in pg_catalog functions for completion only: internal helpers are
    * filtered out, and the object browser never lists them. */
   builtins?: FunctionInfo[]

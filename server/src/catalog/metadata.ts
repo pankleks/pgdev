@@ -5,6 +5,7 @@ import type {
   FunctionInfo,
   IndexInfo,
   SchemaData,
+  SequenceInfo,
   TableInfo,
   TriggerInfo,
   TypeInfo,
@@ -146,6 +147,32 @@ WHERE n.nspname = 'pg_catalog'
   )
 ORDER BY p.proname, p.oid`
 
+// Every sequence in a user schema, with its properties and (when it exists)
+// the column that owns it. Column-owned sequences (identity/serial) are
+// listed too and flagged in the UI — pgAdmin lists them — while their DDL
+// carries the OWNED BY that ties the rebuild to its table.
+const SEQUENCES_SQL = `
+SELECT n.nspname AS schema, c.relname AS name, c.oid::text AS oid,
+  format_type(s.seqtypid, NULL) AS data_type,
+  s.seqstart AS start, s.seqincrement AS increment, s.seqmin AS min,
+  s.seqmax AS max, s.seqcache AS cache, s.seqcycle AS cycle,
+  own.table_name AS owned_table, own.own_schema AS owned_table_schema,
+  own.column_name AS owned_column
+FROM pg_sequence s
+JOIN pg_class c ON c.oid = s.seqrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN LATERAL (
+  SELECT tn.nspname AS own_schema, t.relname AS table_name, a.attname AS column_name
+  FROM pg_depend d
+  JOIN pg_class t ON t.oid = d.refobjid
+  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+  JOIN pg_namespace tn ON tn.oid = t.relnamespace
+  WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass
+    AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+) own ON true
+WHERE ${USER_SCHEMA_SQL}
+ORDER BY n.nspname, c.relname`
+
 // COALESCE, NULLIF, GREATEST and LEAST are grammar constructs rather than
 // pg_proc entries, so BUILTINS_SQL never returns them; they are still written
 // and called like functions and belong in completion and hover. The argument
@@ -233,13 +260,14 @@ function groupBy<Row, T>(
 }
 
 export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
-  const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, indexesRes, constraintsRes, triggersRes, builtinsRes] =
+  const [tablesRes, viewsRes, columnsRes, functionsRes, typesRes, sequencesRes, indexesRes, constraintsRes, triggersRes, builtinsRes] =
     await Promise.all([
       pool.query(TABLES_SQL),
       pool.query(VIEWS_SQL),
       pool.query(COLUMNS_SQL),
       pool.query(FUNCTIONS_SQL),
       pool.query(TYPES_SQL),
+      pool.query(SEQUENCES_SQL),
       pool.query(INDEXES_SQL),
       pool.query(CONSTRAINTS_SQL),
       pool.query(TRIGGERS_SQL),
@@ -319,6 +347,36 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     detail: r.detail ?? '',
   }))
 
+  /** The rendered summary a sequence row shows: increment, bounds, cache,
+   * cycle and ownership. `bigint · inc 1 · cache 1 · cycle · owned by …`. */
+  const sequenceDetail = (r: {
+    increment: unknown
+    cache: unknown
+    cycle: unknown
+    start: unknown
+    min: unknown
+    max: unknown
+    owned_table?: unknown
+    owned_table_schema?: unknown
+    owned_column?: unknown
+  }): string => {
+    const parts = [`inc ${r.increment}`, `min ${r.min}`, `max ${r.max}`, `cache ${r.cache}`]
+    if (r.cycle === true) parts.push('cycle')
+    if (r.owned_table != null) {
+      const schema = r.owned_table_schema === 'public' ? '' : `${r.owned_table_schema}.`
+      parts.push(`owned by ${schema}${String(r.owned_table)}.${String(r.owned_column)}`)
+    }
+    return parts.join(' · ')
+  }
+
+  const sequences: SequenceInfo[] = sequencesRes.rows.map((r) => ({
+    schema: r.schema,
+    name: r.name,
+    oid: r.oid,
+    dataType: r.data_type,
+    detail: sequenceDetail(r),
+  }))
+
   const builtins: FunctionInfo[] = [
     ...builtinsRes.rows.map((r) => ({
       schema: 'pg_catalog',
@@ -335,5 +393,5 @@ export async function fetchSchemaData(pool: Pool): Promise<SchemaData> {
     ...SPECIAL_FUNCTIONS,
   ]
 
-  return { tables, views, functions, types, builtins }
+  return { tables, views, functions, types, sequences, builtins }
 }

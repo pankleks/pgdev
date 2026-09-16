@@ -254,6 +254,9 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
         types: data.types
           .filter((t) => match(t.schema, t.name))
           .map((t) => ({ schema: t.schema, name: t.name, kind: t.kind, detail: t.detail })),
+        sequences: data.sequences
+          .filter((s) => match(s.schema, s.name))
+          .map((s) => ({ schema: s.schema, name: s.name, dataType: s.dataType, detail: s.detail })),
         truncated: relationCount > MAX_RELATIONS,
       },
     }

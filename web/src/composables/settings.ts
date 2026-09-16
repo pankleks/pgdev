@@ -6,9 +6,9 @@ import { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS } from '../types'
  * (`t-<oid>`, `t-<oid>-cols`, …) and group keys; OIDs are only unique per
  * database, so state is stored per connection label, never globally. */
 export interface BrowserUiState {
-  sections: { tables: boolean; views: boolean; functions: boolean; types: boolean }
+  sections: { tables: boolean; views: boolean; functions: boolean; types: boolean; sequences: boolean }
   expanded: string[]
-  groups: { tables: string[]; views: string[]; functions: string[]; types: string[] }
+  groups: { tables: string[]; views: string[]; functions: string[]; types: string[]; sequences: string[] }
 }
 
 interface SettingsState {
@@ -85,6 +85,7 @@ function sanitizeBrowserState(value: unknown): BrowserUiState | null {
       views: bool(s.sections?.views),
       functions: bool(s.sections?.functions),
       types: bool(s.sections?.types),
+      sequences: bool(s.sections?.sequences),
     },
     expanded: stringList(s.expanded),
     groups: {
@@ -92,6 +93,7 @@ function sanitizeBrowserState(value: unknown): BrowserUiState | null {
       views: stringList(s.groups?.views),
       functions: stringList(s.groups?.functions),
       types: stringList(s.groups?.types),
+      sequences: stringList(s.groups?.sequences),
     },
   }
 }

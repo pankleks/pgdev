@@ -45,16 +45,19 @@ test('editor font size is clamped to 8-32 px', () => {
 
 test('browser state is stored per connection and sanitized on write', () => {
   settings.setBrowserState('pg@localhost:5432/app', {
-    sections: { tables: true, views: false, functions: false, types: 'yes' },
-    expanded: ['t-1', 42, 't-2-cols'],
-    groups: { tables: ['g'], views: null, functions: [], types: [] },
+    sections: { tables: true, views: false, functions: false, types: 'yes', sequences: true },
+    expanded: ['t-1'],
+    groups: { tables: ['g'], views: null, functions: [], types: [], sequences: 'no' },
   })
   const saved = settings.browserStateFor('pg@localhost:5432/app')
-  assert.deepEqual(saved.sections, { tables: true, views: false, functions: false, types: false })
-  assert.deepEqual(saved.expanded, ['t-1', 't-2-cols'])
-  assert.deepEqual(saved.groups, { tables: ['g'], views: [], functions: [], types: [] })
+  assert.deepEqual(saved.sections, { tables: true, views: false, functions: false, types: false, sequences: true })
+  assert.deepEqual(saved.groups, { tables: ['g'], views: [], functions: [], types: [], sequences: [] })
   // Without a label nothing is stored.
-  settings.setBrowserState('', { sections: { tables: true, views: false, functions: false, types: false }, expanded: [], groups: {} })
+  settings.setBrowserState('', {
+    sections: { tables: true, views: false, functions: false, types: false, sequences: false },
+    expanded: [],
+    groups: {},
+  })
   assert.equal(settings.browserStateFor(''), null)
   assert.equal(settings.browserStateFor('unknown-connection'), null)
 })

@@ -19,8 +19,7 @@ const {
   autoExpandFunction,
 } = await load('web/lib/browserSearch.ts')
 
-test('parseSearch picks the section from a trailing or leading type word', () => {
-  assert.deepEqual(parseSearch(''), { term: '', type: null })
+test('parseSearch picks the section from a trailing or leading type word', () => {  assert.deepEqual(parseSearch(''), { term: '', type: null })
   assert.deepEqual(parseSearch('unit table'), { term: 'unit', type: 'table' })
   assert.deepEqual(parseSearch('col id'), { term: 'id', type: 'column' })
   assert.deepEqual(parseSearch('fn count'), { term: 'count', type: 'function' })
@@ -30,6 +29,9 @@ test('parseSearch picks the section from a trailing or leading type word', () =>
   assert.deepEqual(parseSearch('table'), { term: '', type: 'table' })
   // "params" is a type word, so this targets the parameter sections.
   assert.deepEqual(parseSearch('User Params'), { term: 'user', type: 'parameter' })
+  // The Sequences section has its own type words.
+  assert.deepEqual(parseSearch('seq item'), { term: 'item', type: 'sequence' })
+  assert.deepEqual(parseSearch('items sequence'), { term: 'items', type: 'sequence' })
 })
 
 test('searchTerms makes plus an AND and a space an OR', () => {

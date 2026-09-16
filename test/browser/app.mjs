@@ -57,6 +57,9 @@ await pool.query(`
   CREATE TABLE a_b (a integer NOT NULL, CONSTRAINT c CHECK (a > 0));
   CREATE VIEW v_items AS SELECT id, label FROM items;
   CREATE MATERIALIZED VIEW mv_items AS SELECT count(*) AS n FROM items;
+  -- A single sequence: the collapse-inert group checks count group rows, and
+  -- one sequence cannot form a second group.
+  CREATE SEQUENCE item_counter AS integer INCREMENT 10 MINVALUE 5 START 100;
   CREATE FUNCTION item_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM items $$;
   CREATE FUNCTION label(p integer) RETURNS integer LANGUAGE sql AS $$ SELECT p $$;
   CREATE PROCEDURE proc_noop() LANGUAGE sql AS $$ SELECT 1 $$;
@@ -318,6 +321,49 @@ try {
   ok('function found in the tree', await openDdl('item_count', 'Functions'))
   await page.waitFor(`window.__pgdev && window.__pgdev.getValue().includes('item_count')`, { timeout: 15000 })
   eq('function tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
+
+  console.log('\n== Sequences section ==')
+  {
+    // The section header appears with its count and a typed search finds it.
+    const header = await page.waitFor(
+      `[...document.querySelectorAll('.group h3')].some((h) => h.textContent.includes('Sequences'))`,
+      { timeout: 15000 },
+    ).then(() => true).catch(() => false)
+    ok('Sequences section listed', header)
+    const typed = async (text) => {
+      await page.evaluate(`
+        const input = document.querySelector('.browser-search input')
+        input.value = ${JSON.stringify(text)}
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      `)
+      await new Promise((r) => setTimeout(r, 250))
+      return page.evaluate(`
+        return [...document.querySelectorAll('.group')]
+          .filter((g) => g.offsetParent !== null)
+          .map((g) => g.querySelector('h3')?.textContent?.trim().split('\\n')[0]?.trim())
+      `)
+    }
+    eq('typed search seq filters to the Sequences section', await typed('seq counter'), ['Sequences 1/4'])
+    await page.evaluate(`
+      const input = document.querySelector('.browser-search input')
+      input.value = ''
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    `)
+    // Open the section and read the row.
+    ok('sequence found in the tree', await openDdl('item_counter', 'Sequences'))
+    await page.waitFor(`window.__pgdev && window.__pgdev.getValue().includes('CREATE SEQUENCE')`, { timeout: 15000 })
+    eq('sequence tab is editable', await page.evaluate(`return window.__pgdev.getReadOnly()`), false)
+    const detail = await page.evaluate(`
+      // Expand the row's caret, then read the detail child.
+      const row = [...document.querySelectorAll('.node')]
+        .find((n) => n.querySelector('.obj-name')?.textContent?.trim() === 'item_counter')
+      row?.querySelector('.caret')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 300))
+      return [...row.closest('.tree').querySelectorAll('.node')]
+        .some((n) => n.querySelector('.obj-name')?.textContent?.includes('inc 10'))
+    `)
+    ok('sequence detail shows increment and start', detail === true, String(detail))
+  }
 
   // Two same-named constraints under parents whose keys sanitize alike
   // ("a.b" and a_b both folded to a_b): both tabs must open, each with its

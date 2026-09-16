@@ -45,6 +45,7 @@ CREATE UNIQUE INDEX idx_emp_email ON employees(lower(email));
 CREATE VIEW v_emp AS SELECT e.id, e.first_name, d.name AS department
   FROM employees e JOIN departments d ON d.id = e.department_id;
 CREATE MATERIALIZED VIEW mv_dept AS SELECT department_id, count(*) AS n FROM employees GROUP BY department_id;
+CREATE SEQUENCE seq_apitest INCREMENT 10 MINVALUE 5 MAXVALUE 500 START 100;
 CREATE TYPE mood AS ENUM ('sad','ok','happy');
 CREATE DOMAIN positive_int AS integer NOT NULL DEFAULT 1 CHECK (VALUE > 0);
 CREATE TYPE floatrange AS RANGE (subtype = float8);
@@ -169,6 +170,7 @@ const names = {
   views: schema.body.views.map((v) => v.name).sort(),
   functions: schema.body.functions.map((f) => f.name).sort(),
   types: schema.body.types.map((t) => t.name).sort(),
+  sequences: schema.body.sequences.map((s) => s.name).sort(),
 }
 eq('tables harvested', names.tables, ['big', 'departments', 'employees'])
 eq('views harvested', names.views, ['mv_dept', 'v_emp'])
@@ -178,6 +180,11 @@ ok('aggregate harvested as such', schema.body.functions.some((f) => f.name === '
 ok('trigger function flagged', schema.body.functions.some((f) => f.kind === 'trigger'),
   JSON.stringify(schema.body.functions.filter((f) => f.kind === 'trigger').map((f) => f.name)))
 eq('types harvested', names.types, ['floatrange', 'mood', 'positive_int'])
+eq('sequences harvested', names.sequences, ['big_id_seq', 'departments_id_seq', 'employees_id_seq', 'seq_apitest'])
+const apitestSeq = schema.body.sequences.find((s) => s.name === 'seq_apitest')
+ok('sequence harvest carries type and detail',
+  apitestSeq && apitestSeq.dataType === 'bigint' && /inc 10/.test(apitestSeq.detail),
+  JSON.stringify(apitestSeq))
 const emp = schema.body.tables.find((t) => t.name === 'employees')
 eq('identity column surfaced', emp.columns.find((c) => c.name === 'id').type, 'bigint')
 eq('generated column surfaced', emp.columns.find((c) => c.name === 'total').type, 'numeric(12,2)')
@@ -226,6 +233,7 @@ for (const [type, name, extra, expect] of [
   ['type', 'positive_int', { oid: schema.body.types.find((x) => x.name === 'positive_int').oid }, /CREATE DOMAIN/],
   ['type', 'floatrange', { oid: schema.body.types.find((x) => x.name === 'floatrange').oid }, /AS RANGE/],
   ['index', 'idx_emp_dept', {}, /CREATE INDEX/],
+  ['sequence', 'seq_apitest', { oid: schema.body.sequences.find((s) => s.name === 'seq_apitest').oid }, /CREATE SEQUENCE/],
   ['trigger', 'trg_emp', { parent: 'employees' }, /CREATE TRIGGER/],
   ['constraint', emp.constraints.find((c) => c.type === 'f').name, { parent: 'employees' }, /ADD CONSTRAINT/],
 ]) {
@@ -951,6 +959,8 @@ console.log('\n== AI tool surface ==')
   const filtered = await tool('get_schema', { table: 'departments' })
   eq('get_schema filters to the named relation',
     filtered.body.result.tables.map((t) => t.name), ['departments'])
+  eq('get_schema carries sequences',
+    filtered.body.result.sequences.map((s) => s.name), [])
 
   const deptOid = schema.body.tables.find((t) => t.name === 'departments').oid
   const ddl = await tool('get_ddl', { type: 'table', schema: 'public', name: 'departments', oid: deptOid })

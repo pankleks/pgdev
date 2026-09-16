@@ -753,9 +753,65 @@ export async function typeDdl(pool: Pool, oid: string, schema: string, name: str
   return `${drop}\n\n${ddl}`
 }
 
+export async function sequenceDdl(pool: Pool, oid: string, schema: string, name: string): Promise<string> {
+  let target = oid
+  if (!target) {
+    const fallback = await pool.query(
+      `SELECT c.oid::text AS oid
+       FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1 AND c.relname = $2
+       LIMIT 1`,
+      [schema, name],
+    )
+    if (!fallback.rows[0]) notFound()
+    target = fallback.rows[0].oid
+  }
+  const res = await pool.query(
+    `SELECT s.seqtypid, s.seqstart, s.seqincrement, s.seqmin, s.seqmax,
+            s.seqcache, s.seqcycle, c.relname AS name, n.nspname AS schema,
+            format_type(s.seqtypid, NULL) AS data_type,
+            -- Ownership: the column this sequence generates for, when any.
+            (SELECT format('%I.%I.%I', tn.nspname, t.relname, a.attname)
+               FROM pg_depend d
+               JOIN pg_class t ON t.oid = d.refobjid
+               JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+               JOIN pg_namespace tn ON tn.oid = t.relnamespace
+              WHERE d.objid = c.oid AND d.classid = 'pg_class'::regclass
+                AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+              LIMIT 1) AS owned_by
+     FROM pg_sequence s
+     JOIN pg_class c ON c.oid = s.seqrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.oid = $1::oid`,
+    [target],
+  )
+  const row = res.rows[0]
+  if (!row) notFound()
+  const q = `${ident(row.schema)}.${ident(row.name)}`
+  const props = {
+    type: String(row.data_type),
+    start: String(row.seqstart),
+    increment: String(row.seqincrement),
+    min: String(row.seqmin),
+    max: String(row.seqmax),
+    cache: String(row.seqcache),
+    cycle: row.seqcycle === true,
+  }
+  const opts = sequenceOptions(props, null)
+  // Options only when they differ from a bare creation; OWNED BY is emitted
+  // only when the dependency exists (serial/identity columns own theirs).
+  let create = `CREATE SEQUENCE ${q} AS ${props.type}`
+  if (opts.length) create += ` ${opts.join(' ')}`
+  if (row.owned_by) create += ` OWNED BY ${String(row.owned_by)}`
+  const ddl = `${create};`
+  const drop = `-- DROP SEQUENCE IF EXISTS ${q};`
+  return `${drop}\n\n${ddl}`
+}
+
 /** The object types the DDL generators cover; the route and the AI tool both
  * validate against this list. */
-export const DDL_TYPES = ['table', 'view', 'function', 'index', 'constraint', 'trigger', 'type']
+export const DDL_TYPES = ['table', 'view', 'function', 'index', 'constraint', 'trigger', 'type', 'sequence']
 
 /** A DDL request as the browser and the agent send it: the type selects the
  * generator, `oid` wins over `schema`/`name` where a generator resolves by
@@ -789,6 +845,8 @@ export async function objectDdl(pool: Pool, request: DdlTarget): Promise<string>
       return triggerDdl(pool, request.schema, parent, request.name)
     case 'type':
       return typeDdl(pool, oid, request.schema, request.name)
+    case 'sequence':
+      return sequenceDdl(pool, oid, request.schema, request.name)
     default: {
       const err: Error & { statusCode: number } = Object.assign(
         new Error(`Unknown object type: ${request.type}`),

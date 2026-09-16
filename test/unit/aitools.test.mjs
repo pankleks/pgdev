@@ -44,6 +44,7 @@ const schema = () => ({
     },
   ],
   types: [],
+  sequences: [],
 })
 
 function dataResult(rows, extra = {}) {
@@ -206,14 +207,18 @@ test('get_schema filters and carries comments', async () => {
 
 test('get_ddl validates the type and forwards the target', async () => {
   const { tools, calls } = setup()
-  const bad = await tools.get_ddl({ type: 'sequence', schema: 'public', name: 's' })
+  const bad = await tools.get_ddl({ type: 'nope', schema: 'public', name: 's' })
   assert.equal(bad.ok, false)
   assert.match(bad.error, /"type" must be one of/)
+  // The sequence type is now part of the DDL surface.
+  const seq = await tools.get_ddl({ type: 'sequence', schema: 'public', name: 's' })
+  assert.equal(seq.ok, true)
+  assert.deepEqual(calls.ddl[0], ['conn-1', { type: 'sequence', schema: 'public', name: 's', oid: undefined, parent: undefined }])
 
   const ok = await tools.get_ddl({ type: 'table', schema: 'public', name: 'items', oid: '1' })
   assert.equal(ok.ok, true)
   assert.equal(ok.result.ddl, 'CREATE TABLE items (id integer);')
-  assert.deepEqual(calls.ddl[0], ['conn-1', { type: 'table', schema: 'public', name: 'items', oid: '1', parent: undefined }])
+  assert.deepEqual(calls.ddl[1], ['conn-1', { type: 'table', schema: 'public', name: 'items', oid: '1', parent: undefined }])
 })
 
 test('editor tools report a missing window instead of hanging', async () => {

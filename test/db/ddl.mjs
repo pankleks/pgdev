@@ -427,12 +427,83 @@ await roundTrip({
     text.split('\n').find((l) => /remote_id/.test(l))?.trim())
 }
 
+console.log('\n== sequences ==')
+// The identity-section fingerprint plus ownership, for standalone sequences.
+const seqOwnedFp = `SELECT format_type(s.seqtypid, NULL) AS type, s.seqstart::text AS start,
+    s.seqincrement::text AS inc, s.seqmin::text AS min, s.seqmax::text AS max,
+    s.seqcache::text AS cache, s.seqcycle AS cycle,
+    (SELECT tn.nspname || '.' || t.relname || '.' || a.attname
+       FROM pg_depend d JOIN pg_class t ON t.oid = d.refobjid
+       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+       JOIN pg_namespace tn ON tn.oid = t.relnamespace
+      WHERE d.objid = c.oid AND d.deptype IN ('a','i')) AS owned
+  FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relname = $1 AND n.nspname = 'public'`
+const oidOfSeq = async (name) =>
+  (await pool.query(`SELECT c.oid::text AS o FROM pg_sequence s JOIN pg_class c ON c.oid=s.seqrelid
+     JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=$1`, [name])).rows[0]?.o
+await roundTrip({
+  pool, eq, ok, params: ['seq_plain'], create: `CREATE SEQUENCE seq_plain`,
+  drop: `DROP SEQUENCE seq_plain`, label: 'plain default sequence',
+  fingerprint: seqOwnedFp,
+  ddl: async () => ddl.sequenceDdl(pool, await oidOfSeq('seq_plain'), 'public', 'seq_plain'),
+})
+await roundTrip({
+  pool, eq, ok, params: ['seq_custom'],
+  create: `CREATE SEQUENCE seq_custom INCREMENT 10 MINVALUE 50 MAXVALUE 1000 START 500 CACHE 5 CYCLE`,
+  drop: `DROP SEQUENCE seq_custom`, label: 'custom sequence options',
+  fingerprint: seqOwnedFp,
+  ddl: async () => ddl.sequenceDdl(pool, await oidOfSeq('seq_custom'), 'public', 'seq_custom'),
+})
+await roundTrip({
+  pool, eq, ok, params: ['seq_desc'],
+  create: `CREATE SEQUENCE seq_desc INCREMENT -1 MAXVALUE 50 MINVALUE 1 START 50`,
+  drop: `DROP SEQUENCE seq_desc`, label: 'descending sequence',
+  fingerprint: seqOwnedFp,
+  ddl: async () => ddl.sequenceDdl(pool, await oidOfSeq('seq_desc'), 'public', 'seq_desc'),
+})
+await roundTrip({
+  pool, eq, ok, params: ['seq_small'],
+  create: `CREATE SEQUENCE seq_small AS smallint MINVALUE 5 MAXVALUE 300`,
+  drop: `DROP SEQUENCE seq_small`, label: 'smallint sequence keeps its type and bounds',
+  fingerprint: seqOwnedFp,
+  ddl: async () => ddl.sequenceDdl(pool, await oidOfSeq('seq_small'), 'public', 'seq_small'),
+})
+// A column-owned sequence: the standalone script carries OWNED BY, so the
+// rebuild runs while its table exists (the drop removes only the sequence).
+await pool.query(`CREATE TABLE seq_owned_t (id serial)`)
+await roundTrip({
+  pool, eq, ok, params: ['seq_owned_t_id_seq'],
+  create: [], drop: `DROP SEQUENCE seq_owned_t_id_seq CASCADE`,
+  label: 'column-owned sequence keeps its ownership',
+  fingerprint: seqOwnedFp,
+  ddl: async () => ddl.sequenceDdl(pool, await oidOfSeq('seq_owned_t_id_seq'), 'public', 'seq_owned_t_id_seq'),
+})
+{
+  const text = await ddl.sequenceDdl(pool, await oidOfSeq('seq_owned_t_id_seq'), 'public', 'seq_owned_t_id_seq')
+  ok('owned sequence emits OWNED BY', /OWNED BY public\.seq_owned_t\.id;/.test(text),
+    text.split('\n').find((l) => /OWNED BY/.test(l))?.trim())
+  const plain = await ddl.sequenceDdl(pool, await oidOfSeq('seq_plain'), 'public', 'seq_plain')
+  const plainLine = (plain.split('\n').find((l) => /CREATE SEQUENCE/.test(l)) ?? '').trim()
+  ok('default sequence is bare', plainLine === 'CREATE SEQUENCE "public"."seq_plain" AS bigint;', plainLine)
+  const custom = await ddl.sequenceDdl(pool, await oidOfSeq('seq_custom'), 'public', 'seq_custom')
+  ok('custom sequence emits its options',
+    /CREATE SEQUENCE "public"\."seq_custom" AS bigint MINVALUE 50 MAXVALUE 1000 START WITH 500 INCREMENT BY 10 CACHE 5 CYCLE;/.test(custom),
+    custom.split('\n').find((l) => /CREATE SEQUENCE/.test(l))?.trim())
+}
+await pool.query(`DROP TABLE seq_owned_t CASCADE`)
+
 console.log('\n== metadata harvest still works over this schema ==')
 {
   const { fetchSchemaData } = await import('../../server/dist/catalog/metadata.js')
   const schema = await fetchSchemaData(pool)
   ok('harvests every table', schema.tables.length >= 8, `${schema.tables.length} tables`)
   ok('harvests the enum and composite', schema.types.length >= 2, JSON.stringify(schema.types.map((t) => t.name)))
+  ok('harvests sequences with details', schema.sequences.length >= 4 &&
+    schema.sequences.some((s) => s.name === 'seq_custom' && /inc 10/.test(s.detail)) &&
+    schema.sequences.every((s) => s.dataType && s.detail),
+    JSON.stringify(schema.sequences.map((s) => `${s.name}: ${s.detail}`)))
   ok('partitions are flagged', schema.tables.filter((t) => t.isPartition).length >= 4)
   ok('partitioned parents are flagged', schema.tables.filter((t) => t.isPartitioned).length >= 2)
   let generated = 0
