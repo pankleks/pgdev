@@ -30,7 +30,7 @@ test('explicit transaction validation accounts for savepoints, chaining and comm
 /** A fake pooled client that records statements and releases. */
 function fakePool(options = {}) {
   const executed = []
-  const state = { releases: 0, connects: 0 }
+  const state = { releases: 0, connects: 0, held: [] }
   const client = {
     on() {},
     removeListener() {},
@@ -40,6 +40,12 @@ function fakePool(options = {}) {
       const text = typeof query === 'string' ? query : query.text
       executed.push(text)
       if (options.fail && text.includes(options.fail)) throw new Error(`boom: ${text}`)
+      // Statements matching `hold` stay in flight: the Query object is kept so
+      // the test can complete (or fail) it later, simulating a cancel race.
+      if (options.hold && text.includes(options.hold) && typeof query.emit === 'function') {
+        state.held.push(query)
+        return { fields: [], rows: [], command: 'OK', rowCount: 1 }
+      }
       if (typeof query.emit === 'function') {
         queueMicrotask(() => query.emit('end', { fields: [], rows: [], command: 'OK', rowCount: 1 }))
       }
@@ -52,6 +58,7 @@ function fakePool(options = {}) {
   return {
     executed,
     state,
+    client,
     pool: {
       async connect() {
         state.connects++
@@ -77,7 +84,7 @@ async function withApp(id, fake, run) {
       payload: { sql },
     })
   try {
-    await run(inject)
+    await run(inject, app)
   } finally {
     await removePool(id)
     await app.close()
@@ -152,6 +159,43 @@ test('an error in the batch that opened the transaction rolls it back immediatel
     assert.ok(fake.executed.includes('ROLLBACK'), JSON.stringify(fake.executed))
 
     // The tab is clean again: the next batch checks out a fresh client.
+    const next = await inject('SELECT 1')
+    assert.equal(next.statusCode, 200)
+    assert.equal(fake.state.connects, 2)
+  })
+})
+
+test('closing a busy transaction tab rolls it back instead of pinning the client', async () => {
+  const fake = fakePool({ hold: 'pg_sleep' })
+  await withApp('close-busy-test', fake, async (inject, app) => {
+    const begun = await inject('BEGIN; UPDATE t SET x = 1')
+    assert.equal(begun.json().transactionOpen, true)
+    assert.equal(fake.state.releases, 0, 'the transaction pins its client')
+
+    // A long statement on the pinned session while the tab is closed.
+    const running = inject('SELECT pg_sleep(60)')
+    for (let waited = 0; !fake.state.held.length && waited < 1000; waited++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    assert.equal(fake.state.held.length, 1, 'the statement is in flight')
+
+    const close = await app.inject({
+      method: 'POST',
+      url: `/api/connections/close-busy-test/query/close`,
+      headers: { origin: 'http://localhost' },
+      payload: { tabKey: '' },
+    })
+    assert.equal(close.statusCode, 200, JSON.stringify(close.json()))
+
+    // The canceled statement unwinds as a query error; the session must not
+    // survive the close it was flagged for.
+    fake.state.held[0].emit('error', Object.assign(new Error('query canceled'), { code: '57014' }))
+    const outcome = await running
+    assert.equal(outcome.statusCode, 400)
+    assert.equal(fake.state.releases, 1, 'the closed tab releases the pinned client')
+
+    // The tab is clean again: a new run checks out a fresh client.
+    fake.state.held.length = 0
     const next = await inject('SELECT 1')
     assert.equal(next.statusCode, 200)
     assert.equal(fake.state.connects, 2)

@@ -558,13 +558,17 @@ export function cancelConnection(connId: string): void {
 }
 
 /**
- * Close an idle tab session, canceling an active operation instead —
- * releasing a busy client here would race the FETCH/query using it.
+ * Close a tab session: an idle one is released right away (rollback). While an
+ * operation is running the release would race the FETCH/query using the
+ * client, so the operation is canceled first — and the session is always
+ * flagged for teardown, so the unwind finishes into a release instead of
+ * keeping a canceled transaction (or cursor) pinned for the idle timeout on a
+ * tab that no longer exists.
  */
 export async function closeTabSession(connId: string, tabKey: string): Promise<void> {
   getPool(connId)
   const key = sessionKey(connId, tabKey)
   const running = getRunning(key)
   if (running) cancelClientQuery(running)
-  else await teardownSession(key, 'rollback')
+  await teardownSession(key, 'rollback')
 }
