@@ -33,6 +33,7 @@ export type {
   TableEditState,
   TableInfo,
   TriggerInfo,
+  TransactionState,
   TypeInfo,
   ViewInfo,
 } from '../../server/src/schema-types'

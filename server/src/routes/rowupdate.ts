@@ -6,7 +6,7 @@ import { planRowUpdate, type RowUpdateError } from '../rowupdate.js'
 import { rawTextTypes } from '../pgtypes.js'
 import { guardCheckedOutClient } from '../checkout.js'
 import { pgErrorMessage } from '../pgerror.js'
-import { sessionKey, getSession, beginSession, finishSession } from '../sessions.js'
+import { sessionKey, getSession, beginSession, finishSession, parseTransactionId, assertTransaction, transactionState } from '../sessions.js'
 import { normalizeCell } from '../queryexec.js'
 import type { RowUpdateRequest } from '../schema-types.js'
 
@@ -22,6 +22,7 @@ interface UpdateBody {
   table?: unknown
   key?: unknown
   set?: unknown
+  transactionId?: unknown
 }
 
 type RunResult =
@@ -38,7 +39,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function parseBody(body: unknown): RowUpdateRequest {
   if (!isRecord(body)) throw invalid('Invalid request body')
-  const { tabKey, schema, table, key, set } = body
+  const { tabKey, schema, table, key, set, transactionId } = body
   if (typeof schema !== 'string' || !schema || schema.length > 255) {
     throw invalid('schema is required')
   }
@@ -50,7 +51,7 @@ function parseBody(body: unknown): RowUpdateRequest {
   for (const column of [...Object.keys(key), ...Object.keys(set)]) {
     if (column.length > 255) throw invalid('Invalid column name')
   }
-  return { tabKey: tabKey ?? '', schema, table, key, set }
+  return { tabKey: tabKey ?? '', schema, table, key, set, transactionId: parseTransactionId(transactionId) }
 }
 
 function planError(error: RowUpdateError): Error {
@@ -77,8 +78,8 @@ function storedRow(row: Record<string, unknown>): Record<string, unknown> {
 }
 
 async function runUpdate(client: PoolClient, request: RowUpdateRequest): Promise<RunResult> {
-  const info = await fetchRowEditInfo(client, request.schema, request.table)
-  if (!info) throw invalid('Table not found')
+  const info = await fetchRowEditInfo(client, request)
+  if (!info) throw invalid('Table not found or not row-editable')
   if (!info.pk.length) throw invalid('The table has no primary key')
   const planned = planRowUpdate(request, info)
   if (planned.kind === 'error') throw planError(planned.error)
@@ -104,34 +105,29 @@ export async function rowUpdateRoutes(app: FastifyInstance) {
     const request = parseBody(req.body)
     const pool = getPool(id)
     const runKey = sessionKey(id, request.tabKey)
+    assertTransaction(runKey, request.transactionId)
     const active = getSession(runKey)
-
-    if (active?.kind === 'transaction') {
-      const sess = beginSession(runKey)
-      if (!sess) return reply.code(409).send({ error: 'A query is already running for this tab' })
-      try {
-        const result = await runUpdate(sess.client, request)
-        if (result.kind === 'not-found') {
-          return reply.code(404).send({ error: 'Row not found — it may have been deleted; re-run the query.' })
-        }
-        return { row: result.row, transactionOpen: true }
-      } finally {
-        // Keep the user's transaction — including an aborted one after a
-        // failed statement — for the tab's COMMIT/ROLLBACK buttons.
-        await finishSession(runKey, sess, 'keep')
-      }
+    const sess = active?.kind === 'transaction' ? beginSession(runKey) : undefined
+    if (active?.kind === 'transaction' && !sess) {
+      return reply.code(409).send({ error: 'A query is already running for this tab', ...transactionState(runKey) })
     }
 
-    const client = await pool.connect()
-    guardCheckedOutClient(client)
+    const client = sess?.client ?? await pool.connect()
+    if (!sess) guardCheckedOutClient(client)
     try {
+      // Recheck after a potentially queued checkout, before any update runs.
+      if (!sess) assertTransaction(runKey, request.transactionId)
       const result = await runUpdate(client, request)
       if (result.kind === 'not-found') {
-        return reply.code(404).send({ error: 'Row not found — it may have been deleted; re-run the query.' })
+        return reply.code(404).send({ error: 'Row not found — it may have been deleted; re-run the query.', ...transactionState(runKey) })
       }
-      return { row: result.row, transactionOpen: false }
+      return { row: result.row, ...transactionState(runKey) }
+    } catch (err) {
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), transactionState(runKey))
     } finally {
-      client.release()
+      // Keep an open (possibly aborted) user transaction for COMMIT/ROLLBACK.
+      if (sess) await finishSession(runKey, sess, 'keep')
+      else client.release()
     }
   })
 }

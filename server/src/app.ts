@@ -11,6 +11,7 @@ import { rowUpdateRoutes } from './routes/rowupdate.js'
 import { aiRoutes } from './routes/ai.js'
 import { loadOrCreateToken } from './ai/token.js'
 import { appVersion } from './version.js'
+import type { TransactionState } from './schema-types.js'
 
 // Application construction lives here rather than in index.ts so tests can
 // start the real app — including the origin guard — without binding a port.
@@ -80,9 +81,12 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   const app = Fastify({ bodyLimit: 4 * 1024 * 1024 })
   const aiToken = loadOrCreateToken(options.aiTokenFile)
 
-  app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
+  app.setErrorHandler((err: Error & Partial<TransactionState> & { statusCode?: number; code?: string }, _req, reply) => {
     const statusCode = err.statusCode ?? 500
-    reply.code(statusCode).send({ error: err.message })
+    reply.code(statusCode).send({
+      error: err.message, code: err.code,
+      transactionId: err.transactionId, transactionOpen: err.transactionOpen,
+    })
   })
 
   app.addHook('onRequest', async (req, reply) => {

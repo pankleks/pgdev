@@ -184,19 +184,36 @@ test('command-only runs show Messages and selections are independent across edit
 
 test('transactionOpen follows the server flag and survives a failed statement', async () => {
   const { api, results } = setup()
-  api.query = async () => ({ durationMs: 1, transactionOpen: true, results: [{ kind: 'command', command: 'UPDATE', rowCount: 1 }] })
+  api.query = async () => ({ durationMs: 1, transactionOpen: true, transactionId: 'tx-1', results: [{ kind: 'command', command: 'UPDATE', rowCount: 1 }] })
   await results.run('tab', 'db', 'BEGIN; UPDATE t SET x = 1')
   assert.equal(results.state.byTab.tab.transactionOpen, true)
+  assert.equal(results.state.byTab.tab.transactionId, 'tx-1')
 
   // A SQL error does not clear the flag: the transaction is still open
   // (aborted) server-side and needs an explicit ROLLBACK.
-  api.query = async () => { throw Object.assign(new Error('boom'), { code: '25P02' }) }
+  api.query = async () => { throw Object.assign(new Error('boom'), { code: '25P02', transactionOpen: true, transactionId: 'tx-1' }) }
   await results.run('tab', 'db', 'SELECT 1')
   assert.equal(results.state.byTab.tab.transactionOpen, true)
+  assert.equal(results.state.byTab.tab.transactionId, 'tx-1')
 
-  api.query = async () => ({ durationMs: 1, results: [{ kind: 'command', command: 'ROLLBACK', rowCount: 0 }] })
+  api.query = async () => ({ durationMs: 1, transactionOpen: false, transactionId: null, results: [{ kind: 'command', command: 'ROLLBACK', rowCount: 0 }] })
   await results.run('tab', 'db', 'ROLLBACK')
   assert.equal(results.state.byTab.tab.transactionOpen, false)
+  assert.equal(results.state.byTab.tab.transactionId, null)
+})
+
+test('a stale transaction expectation surfaces the conflict without running', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, transactionOpen: true, transactionId: 'tx-live', results: [{ kind: 'command', command: 'BEGIN', rowCount: 0 }] })
+  await results.run('tab', 'db', 'BEGIN')
+  assert.equal(results.state.byTab.tab.transactionId, 'tx-live')
+  api.query = async (_connectionId, _sql, _tabKey, transactionId) => {
+    assert.equal(transactionId, 'tx-live')
+    throw Object.assign(new Error('The tab transaction ended or changed. Nothing was executed; review the transaction state before retrying.'), { code: 'TRANSACTION_CHANGED', transactionOpen: true, transactionId: 'tx-live' })
+  }
+  await results.run('tab', 'db', 'SELECT 1')
+  assert.equal(results.state.byTab.tab.transactionId, 'tx-live')
+  assert.match(results.state.byTab.tab.messages.at(-1).text, /ended or changed/)
 })
 
 test('showGrid refuses busy tabs without touching state', async () => {

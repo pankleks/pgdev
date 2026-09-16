@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Save, X } from 'lucide-vue-next'
 import { useToast } from '../composables/toast'
-import { api } from '../api'
+import { useResults } from '../composables/results'
+import { api, type ApiError } from '../api'
 import { formatCellForDisplay } from '../lib/gridio'
 import {
   editorKind,
@@ -32,8 +33,8 @@ export interface RowEditTarget {
   row: unknown[]
   connectionId: string
   tabKey: string
-  /** True when the tab has an open manual transaction the save will join. */
-  inTransaction: boolean
+  /** Captured when the dialog opens; a lost/replaced transaction must reject SAVE. */
+  transactionId: string | null
 }
 
 interface Field {
@@ -63,6 +64,7 @@ interface Field {
 const props = defineProps<{ target: RowEditTarget }>()
 const emit = defineEmits<{ close: []; saved: [row: Record<string, unknown>] }>()
 const toast = useToast()
+const results = useResults()
 
 function buildFields(target: RowEditTarget): Field[] {
   const { grid, row } = target
@@ -174,15 +176,18 @@ async function save() {
   try {
     const res = await api.updateRow(props.target.connectionId, {
       tabKey: props.target.tabKey,
+      transactionId: props.target.transactionId,
       schema: editable.schema,
       table: editable.table,
       key,
       set,
     })
+    results.updateTransaction(props.target.tabKey, res, props.target.transactionId)
     toast.show(res.transactionOpen ? 'Row updated in the open transaction.' : 'Row updated.')
     emit('saved', res.row)
     emit('close')
   } catch (e) {
+    results.updateTransaction(props.target.tabKey, e as ApiError, props.target.transactionId)
     error.value = (e as Error).message
   } finally {
     saving.value = false
@@ -220,7 +225,7 @@ onBeforeUnmount(() => {
       <h2>
         <span class="rowedit-title">Edit row</span>
         <span v-if="tableLabel" class="rowedit-table">{{ tableLabel }}</span>
-        <span v-if="target.inTransaction" class="txn-badge" title="SAVE joins the open transaction">TXN</span>
+        <span v-if="target.transactionId" class="txn-badge" title="SAVE joins the open transaction">TXN</span>
       </h2>
 
       <div class="rowedit-fields">

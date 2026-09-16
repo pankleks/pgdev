@@ -1,5 +1,7 @@
 import type { PoolClient } from 'pg'
+import { randomUUID } from 'node:crypto'
 import { cancelClientQuery } from './pgcancel.js'
+import type { TransactionState } from './schema-types.js'
 
 // Per-tab sessions: a dedicated pooled client holding an open transaction
 // with a server-side cursor, so large result sets can be paged with
@@ -19,6 +21,7 @@ interface Session {
   connId: string
   client: PoolClient
   kind: SessionKind
+  transactionId: string | null
   /** Open cursor awaiting FETCH, or null when nothing is pending. */
   cursor: string | null
   /** One lookahead row already consumed from the cursor. */
@@ -36,6 +39,29 @@ export function sessionKey(connId: string, tabKey: string): string {
 
 export function getSession(key: string): Session | undefined {
   return sessions.get(key)
+}
+
+export function transactionState(key: string): TransactionState {
+  const s = sessions.get(key)
+  const transactionId = s?.kind === 'transaction' && !s.closeRequested ? s.transactionId : null
+  return { transactionId, transactionOpen: transactionId !== null }
+}
+
+export function parseTransactionId(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value
+  if (typeof value === 'string' && value.length > 0 && value.length <= 128) return value
+  throw Object.assign(new Error('Invalid transaction id'), { statusCode: 400 })
+}
+
+/** Omitted by legacy/internal callers; the browser always sends its expectation. */
+export function assertTransaction(key: string, expected: string | null | undefined): void {
+  if (expected === undefined) return
+  const current = transactionState(key)
+  if (current.transactionId !== expected) {
+    throw Object.assign(new Error('The tab transaction ended or changed. Nothing was executed; review the transaction state before retrying.'), {
+      statusCode: 409, code: 'TRANSACTION_CHANGED', ...current,
+    })
+  }
 }
 
 function armReaper(key: string, s: Session): void {
@@ -57,7 +83,10 @@ export function setSession(
 ): void {
   const prev = sessions.get(key)
   if (prev?.timer) clearTimeout(prev.timer)
-  const s: Session = { connId, client, kind, cursor, pendingRow, timer: null, busy: false, closeRequested: false }
+  const s: Session = {
+    connId, client, kind, cursor, pendingRow, timer: null, busy: false, closeRequested: false,
+    transactionId: kind === 'transaction' ? randomUUID() : null,
+  }
   sessions.set(key, s)
   // Arm the reaper whenever a transaction may be left open.
   if (cursor || kind === 'transaction') armReaper(key, s)

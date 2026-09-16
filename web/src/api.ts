@@ -10,18 +10,25 @@ import type {
   TableEditRequest,
   TableEditResponse,
   TableEditState,
+  TransactionState,
 } from './types'
+
+export type ApiError = Error & Partial<TransactionState> & { code?: string | null; position?: string | null }
 
 async function unwrap<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    const errBody = body as { error?: string; code?: string | null; position?: string | null }
-    const err = new Error(errBody.error || `Request failed (${res.status})`)
+    const errBody = body as Partial<TransactionState> & { error?: string; code?: string | null; position?: string | null }
+    const err: ApiError = new Error(errBody.error || `Request failed (${res.status})`)
     ;(err as Error & { code?: string | null }).code = errBody.code ?? null
     // PostgreSQL 1-based error offset within the sent statement (null when
     // the server has none). Carried for editor markers; Phase 1 treats it as
     // relative to the sent SQL of a single-statement run.
     ;(err as Error & { position?: string | null }).position = errBody.position ?? null
+    if (errBody.transactionId !== undefined) {
+      err.transactionId = errBody.transactionId
+      err.transactionOpen = errBody.transactionOpen
+    }
     throw err
   }
   return body as T
@@ -59,11 +66,11 @@ export const api = {
     return fetch(`/api/connections/${id}/ddl?${params}`).then((r) => unwrap<{ ddl: string }>(r))
   },
 
-  query(id: string, sql: string, tabKey: string): Promise<QueryResponse> {
+  query(id: string, sql: string, tabKey: string, transactionId: string | null): Promise<QueryResponse> {
     return fetch(`/api/connections/${id}/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql, maxRows: 500, tabKey }),
+      body: JSON.stringify({ sql, maxRows: 500, tabKey, transactionId }),
     }).then((r) => unwrap<QueryResponse>(r))
   },
 

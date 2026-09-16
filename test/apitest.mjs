@@ -328,6 +328,40 @@ try {
   eq('the aborted transaction discarded its rows',
     (await observer.query('SELECT id FROM tx_check ORDER BY id')).rows.map((r) => r.id), [3])
 
+  // Transaction identity: the server pins one session per tab and rejects a
+  // stale expectation without executing anything.
+  const qTxn = (sql, tabKey, transactionId) =>
+    call('POST', `/api/connections/${id}/query`, { sql, tabKey, transactionId })
+  const txBegin = await qTxn('BEGIN; INSERT INTO tx_check VALUES (30)', 'tx-id')
+  eq('begin reports an open transaction', txBegin.body.transactionOpen, true)
+  ok('begin reports a transaction id', typeof txBegin.body.transactionId === 'string' && txBegin.body.transactionId.length > 0, txBegin.body.transactionId)
+  const txId = txBegin.body.transactionId
+  const txContinue = await qTxn('SELECT count(*)::int AS n FROM tx_check', 'tx-id', txId)
+  eq('matching id continues the transaction', txContinue.status, 200)
+  eq('transaction id is stable', txContinue.body.transactionId, txId)
+  const txStale = await qTxn('INSERT INTO tx_check VALUES (31)', 'tx-id', 'stale-id')
+  eq('stale id is rejected', txStale.status, 409)
+  eq('stale rejection names the conflict', txStale.body.code, 'TRANSACTION_CHANGED')
+  eq('stale rejection syncs the live id', txStale.body.transactionId, txId)
+  eq('stale batch executed nothing',
+    (await qTxn('SELECT count(*)::int AS n FROM tx_check WHERE id = 31', 'tx-id', txId)).body.results[0].rows[0][0], 0)
+  const txNull = await qTxn('SELECT 1', 'tx-id', null)
+  eq('null id does not join the open transaction', txNull.status, 409)
+  const txRowStale = await call('POST', `/api/connections/${id}/row-update`, {
+    tabKey: 'tx-id', transactionId: 'stale-id', schema: 'public', table: 'tx_check',
+    key: { id: 30 }, set: { id: 30 },
+  })
+  eq('stale row edit is rejected', txRowStale.status, 409)
+  eq('rejected edit leaves the row alone',
+    (await qTxn('SELECT count(*)::int AS n FROM tx_check WHERE id = 30', 'tx-id', txId)).body.results[0].rows[0][0], 1)
+  eq('rollback with the live id closes it', (await qTxn('ROLLBACK', 'tx-id', txId)).body.transactionOpen, false)
+  eq('closed id reports no transaction', (await qTxn('ROLLBACK', 'tx-id', txId)).body.transactionId ?? null, null)
+  eq('reusing a closed id is rejected', (await qTxn('SELECT 1', 'tx-id', txId)).status, 409)
+  const txEnded = await q('COMMIT; SELECT 1/0', 'tx-ended')
+  eq('error after COMMIT is reported', txEnded.status, 400)
+  eq('error after COMMIT syncs closed state', txEnded.body.transactionOpen, false)
+  eq('error after COMMIT clears the id', txEnded.body.transactionId ?? null, null)
+
   // Begin/insert and commit across two runs.
   eq('begin+insert across runs', (await q('BEGIN; INSERT INTO tx_check VALUES (10)', 'tx2')).body.transactionOpen, true)
   eq('commit across runs', (await q('COMMIT', 'tx2')).body.transactionOpen, false)
@@ -607,9 +641,90 @@ console.log('\n== row editor ==')
 
   const rowUpdate = (body) => call('POST', `/api/connections/${id}/row-update`, body)
 
+  await q(`
+    CREATE TABLE rowedit_parent (id integer PRIMARY KEY, label text);
+    INSERT INTO rowedit_parent VALUES (1, 'parent');
+  `, 're-inheritance')
+  const beforeChild = (await q('SELECT * FROM rowedit_parent', 're-inheritance')).body.results[0]
+  ok('ordinary leaf table is initially editable', !!beforeChild.editable)
+  await q(`
+    CREATE TABLE rowedit_child (PRIMARY KEY (id)) INHERITS (rowedit_parent);
+    INSERT INTO rowedit_child VALUES (1, 'child');
+    CREATE TABLE rowedit_partitioned (id integer PRIMARY KEY, label text) PARTITION BY RANGE (id);
+    CREATE TABLE rowedit_partition PARTITION OF rowedit_partitioned FOR VALUES FROM (0) TO (10);
+    INSERT INTO rowedit_partitioned VALUES (1, 'partition');
+  `, 're-inheritance')
+  const inherited = (await q('SELECT * FROM rowedit_parent ORDER BY label', 're-inheritance')).body.results[0]
+  eq('inheritance parent contains duplicate keys', inherited.rows, [[1, 'child'], [1, 'parent']])
+  eq('inheritance parent has no edit buttons', inherited.editable ?? null, null)
+  const staleParentEdit = await rowUpdate({
+    schema: beforeChild.editable.schema, table: beforeChild.editable.table,
+    key: { id: 1 }, set: { label: 'wrong' },
+  })
+  eq('stale parent metadata cannot authorize an update', staleParentEdit.status, 400)
+  eq('rejected parent edit changes no rows',
+    (await q('SELECT * FROM rowedit_parent ORDER BY label', 're-inheritance')).body.results[0].rows,
+    [[1, 'child'], [1, 'parent']])
+  const leaf = (await q('SELECT * FROM rowedit_child', 're-inheritance')).body.results[0]
+  ok('inheritance leaf with its own primary key remains editable', !!leaf.editable)
+  const partitioned = (await q('SELECT * FROM rowedit_partitioned', 're-partitioned')).body.results[0]
+  ok('partitioned parent remains editable', !!partitioned.editable)
+  eq('partitioned parent update succeeds', (await rowUpdate({
+    schema: 'public', table: 'rowedit_partitioned', key: { id: 1 }, set: { label: 'changed' },
+  })).status, 200)
+  eq('partition row is updated',
+    (await q('SELECT label FROM rowedit_partition', 're-partitioned')).body.results[0].rows, [['changed']])
+  await q('DROP TABLE rowedit_child, rowedit_parent, rowedit_partitioned CASCADE', 're-inheritance')
+
   const watcher = new Client({ ...base, database: DB })
   await watcher.connect()
   try {
+    // Result identity must survive later search_path changes, including the
+    // reset at COMMIT. Both tables deliberately have the same key and columns.
+    await watcher.query(`
+      CREATE SCHEMA rowedit_other;
+      CREATE TABLE rowedit_other.rowedit_probe (id integer PRIMARY KEY, label text);
+      INSERT INTO rowedit_other.rowedit_probe VALUES (1, 'shadow');
+    `)
+    try {
+      const batch = await q(`
+        BEGIN;
+        SET LOCAL search_path = public;
+        SELECT id, label FROM rowedit_probe WHERE id = 1;
+        SET LOCAL search_path = rowedit_other;
+        SELECT id, label FROM rowedit_probe WHERE id = 1;
+        SELECT id, label FROM rowedit_probe WHERE false;
+        COMMIT;
+      `, 're-searchpath')
+      eq('search_path batch succeeds', batch.status, 200)
+      const grids = batch.body.results.filter((r) => r.kind === 'data')
+      eq('each result keeps the schema it read', grids.map((g) => g.editable?.schema),
+        ['public', 'rowedit_other', 'rowedit_other'])
+      eq('same-named tables return their own rows', grids.map((g) => g.rows),
+        [[[1, 'first']], [[1, 'shadow']], []])
+
+      const source = grids[1].editable
+      const edited = await rowUpdate({
+        schema: source?.schema, table: source?.table, key: { id: 1 }, set: { label: 'edited shadow' },
+      })
+      eq('edit using result metadata succeeds', edited.status, 200)
+      eq('the edit reaches only the selected table', (await watcher.query(`
+        SELECT label FROM public.rowedit_probe WHERE id = 1
+        UNION ALL SELECT label FROM rowedit_other.rowedit_probe WHERE id = 1
+      `)).rows.map((r) => r.label), ['first', 'edited shadow'])
+
+      const replaced = await q(`
+        SELECT * FROM rowedit_other.rowedit_probe;
+        DROP TABLE rowedit_other.rowedit_probe;
+        CREATE TABLE rowedit_other.rowedit_probe (id integer PRIMARY KEY, label text);
+      `, 're-replaced')
+      eq('table replacement batch succeeds', replaced.status, 200)
+      eq('a replaced table is not mistaken for the result source',
+        replaced.body.results[0].editable ?? null, null)
+    } finally {
+      await watcher.query('DROP SCHEMA rowedit_other CASCADE')
+    }
+
     const upd = await rowUpdate({
       schema: 'public', table: 'rowedit_probe', key: { id: 1 },
       set: { label: 'FIRST', qty: '2.25', active: false, payload: '{"x":1}' },

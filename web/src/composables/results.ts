@@ -1,10 +1,10 @@
 import { reactive } from 'vue'
-import { api } from '../api'
-import type { DataResult, FetchMoreResponse, QueryResponse } from '../types'
+import { api, type ApiError } from '../api'
+import type { DataResult, FetchMoreResponse, QueryResponse, TransactionState } from '../types'
 
 /** The slice of the API the results state machine drives; tests inject a fake. */
 export interface ResultsApi {
-  query(connectionId: string, sql: string, tabKey: string): Promise<QueryResponse>
+  query(connectionId: string, sql: string, tabKey: string, transactionId: string | null): Promise<QueryResponse>
   fetchMore(connectionId: string, tabKey: string): Promise<FetchMoreResponse>
   cancel(connectionId: string, tabKey: string): Promise<{ ok: boolean }>
 }
@@ -64,6 +64,7 @@ export interface TabResult {
   showMessages: boolean
   /** A user-managed transaction is open for this tab (BEGIN without COMMIT yet). */
   transactionOpen: boolean
+  transactionId: string | null
 }
 
 /**
@@ -90,6 +91,7 @@ export function createResults(api: ResultsApi) {
         messages: [],
         showMessages: false,
         transactionOpen: false,
+        transactionId: null,
       })
       state.byTab[key] = r
     }
@@ -134,6 +136,26 @@ export function createResults(api: ResultsApi) {
     delete state.byTab[key]
   }
 
+  /** Errors without server state (e.g. a network failure) must preserve our expectation. */
+  function updateTransaction(
+    tabKey: string,
+    transaction: Partial<TransactionState>,
+    expected?: string | null,
+  ) {
+    const r = state.byTab[tabKey]
+    if (!r || (expected !== undefined && r.transactionId !== expected)) return
+    if (transaction.transactionId !== undefined) {
+      r.transactionId = transaction.transactionId
+      r.transactionOpen = r.transactionId !== null
+      return
+    }
+    // Legacy payloads carry only the boolean flag.
+    if (transaction.transactionOpen !== undefined) {
+      r.transactionOpen = transaction.transactionOpen
+      if (!transaction.transactionOpen) r.transactionId = null
+    }
+  }
+
   async function run(tabKey: string, connectionId: string, sql: string) {
     const r = ensure(tabKey)
     if (!sql.trim() || r.running || r.loadingMore) return
@@ -145,11 +167,9 @@ export function createResults(api: ResultsApi) {
     r.showMessages = false
     r.messages = [{ text: 'Running query…', level: 'info' }]
     try {
-      const res = await api.query(connectionId, sql, tabKey)
+      const res = await api.query(connectionId, sql, tabKey, r.transactionId)
       if (!isCurrent(tabKey, r, operation)) return
-      // Errors deliberately leave this untouched: a failed statement inside an
-      // open transaction leaves it open (aborted) server-side.
-      r.transactionOpen = res.transactionOpen === true
+      updateTransaction(tabKey, res)
       const multi = res.results.length > 1
       const messages: Message[] = [
         { text: `${res.results.length} statement(s) in ${res.durationMs} ms`, level: 'info' },
@@ -182,7 +202,8 @@ export function createResults(api: ResultsApi) {
       if (!r.grid) r.showMessages = true
     } catch (e) {
       if (!isCurrent(tabKey, r, operation)) return
-      const err = e as Error & { code?: string | null; position?: string | null }
+      const err = e as ApiError
+      updateTransaction(tabKey, err)
       const info = describeQueryError(err.message, err.code, r.cancelling, err.position)
       r.messages = [{ text: info.text, level: info.level, position: info.position }]
       r.selectedKey = null
@@ -348,7 +369,7 @@ export function createResults(api: ResultsApi) {
     return true
   }
 
-  return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll, showGrid }
+  return { state, drop, selectGrid, run, cancel, loadMore, loadAll, exportAll, showGrid, updateTransaction }
 }
 
 export type Results = ReturnType<typeof createResults>

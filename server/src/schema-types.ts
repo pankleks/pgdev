@@ -208,29 +208,33 @@ export interface DataResult {
 
 export type QueryResult = CommandResult | DataResult
 
+export interface TransactionState {
+  transactionOpen: boolean
+  /** Identity of the pinned manual-transaction session; null when none exists. */
+  transactionId: string | null
+}
+
 /** One row UPDATE built by the row editor: key = full primary key values,
  * set = changed column values (JSON null means SQL NULL). */
 export interface RowUpdateRequest {
   tabKey: string
+  /** Expected transaction session; null explicitly requires no manual transaction. */
+  transactionId?: string | null
   schema: string
   table: string
   key: Record<string, unknown>
   set: Record<string, unknown | null>
 }
 
-export interface RowUpdateResponse {
+export interface RowUpdateResponse extends TransactionState {
   /** The stored row (UPDATE … RETURNING *), keyed by column name with the
    * same value transport as grid cells. */
   row: Record<string, unknown>
-  /** True when the update ran inside the tab's open manual transaction. */
-  transactionOpen: boolean
 }
 
-export interface QueryResponse {
+export interface QueryResponse extends TransactionState {
   results: QueryResult[]
   durationMs: number
-  /** True when the batch left a user-managed transaction open for this tab. */
-  transactionOpen?: boolean
 }
 
 export interface FetchMoreResponse {

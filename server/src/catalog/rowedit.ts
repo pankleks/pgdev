@@ -32,10 +32,10 @@ export interface RowEditInfo {
 
 const TABLE_SQL = `
 SELECT c.oid::text AS oid, c.relkind::text AS relkind,
-  n.nspname AS schema, c.relname AS name
+  n.nspname AS schema, c.relname AS name,
+  EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid) AS has_children
 FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.oid = to_regclass($1)`
+JOIN pg_namespace n ON n.oid = c.relnamespace`
 
 const COLUMNS_SQL = `
 SELECT a.attname AS name,
@@ -55,22 +55,28 @@ WHERE con.conrelid = $1::oid AND con.contype = 'p'
 ORDER BY ord`
 
 /**
- * Resolve schema + table to its editable identity. Returns null when the name
- * does not resolve to an ordinary or partitioned table (views, foreign tables,
- * sequences, missing relations), so callers can treat "not editable" as the
- * normal outcome rather than an error.
+ * Resolve a result's table OID or an update's schema + table to its editable
+ * identity. Returns null for anything but ordinary or partitioned tables
+ * (views, foreign tables, sequences, missing relations), so callers can treat
+ * "not editable" as the normal outcome rather than an error.
  */
 export async function fetchRowEditInfo(
   db: Queryable,
-  schema: string | null,
-  table: string,
+  target: { oid: number } | { schema: string | null; table: string },
 ): Promise<RowEditInfo | null> {
-  const reg = schema ? `${ident(schema)}.${ident(table)}` : ident(table)
-  const found = await db.query(TABLE_SQL, [reg])
+  const byOid = 'oid' in target
+  const ref = byOid
+    ? target.oid
+    : target.schema ? `${ident(target.schema)}.${ident(target.table)}` : ident(target.table)
+  const found = await db.query(`${TABLE_SQL} WHERE c.oid = ${byOid ? '$1::oid' : 'to_regclass($1)'}`, [ref])
   const row = found.rows[0]
   if (!row) return null
   const relkind = String(row.relkind)
   if (relkind !== 'r' && relkind !== 'p') return null
+  // Ordinary inheritance does not enforce a parent's PK across its children.
+  // SELECT/UPDATE include descendants, so a key could name multiple rows.
+  // Declarative partitioned parents do enforce their PK across partitions.
+  if (relkind === 'r' && row.has_children === true) return null
 
   const [colRes, pkRes] = await Promise.all([
     db.query(COLUMNS_SQL, [row.oid]),

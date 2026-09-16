@@ -23,6 +23,7 @@ import {
   beginSession,
   finishSession,
   teardownSession,
+  assertTransaction,
 } from './sessions.js'
 
 // Batch execution engine, extracted from the Fastify route so HTTP concerns
@@ -80,6 +81,7 @@ export function normalizeCell(v: unknown): unknown {
 
 interface FieldInfo {
   name: string
+  tableID: number
   dataTypeID: number
   dataTypeModifier: number
 }
@@ -296,8 +298,14 @@ async function executeStatements(
     if (mappedResult?.kind !== 'data') continue
     const source = plainSelectTable(statement)
     if (!source) continue
+    // Resolve the relation that produced these fields, not the SQL name:
+    // later statements may have changed search_path or replaced the table.
+    const result = results[index]
+    if (result?.kind !== 'data') continue
+    const oid = result.page.fields[0]?.tableID
+    if (!oid || result.page.fields.some((field) => field.tableID !== oid)) continue
     try {
-      const info = await fetchRowEditInfo(client, source.schema, source.table)
+      const info = await fetchRowEditInfo(client, { oid })
       if (!info) continue
       const editable = editableGrid(info, mappedResult.columns, source.columns)
       if (editable) mappedResult.editable = editable
@@ -358,11 +366,13 @@ export async function runBatch(
   tabKey: string,
   sql: string,
   cap: number,
+  transactionId?: string | null,
 ): Promise<BatchOutcome> {
   const statements = splitStatements(sql)
   if (!statements.length) return { kind: 'error', error: { kind: 'empty' } }
   const pool = getPool(connId)
   const runKey = sessionKey(connId, tabKey)
+  assertTransaction(runKey, transactionId)
   if (getRunning(runKey)) return { kind: 'error', error: { kind: 'running' } }
 
   // A user-opened transaction keeps its client pinned for the tab; continue it
@@ -387,6 +397,13 @@ export async function runBatch(
     client = await pool.connect()
   } catch (err) {
     return { kind: 'error', error: { kind: 'connect', message: pgErrorMessage(err) } }
+  }
+  // Checkout can wait: a different request may have opened a transaction meanwhile.
+  try {
+    assertTransaction(runKey, transactionId)
+  } catch (err) {
+    client.release()
+    throw err
   }
   if (getRunning(runKey)) {
     client.release()

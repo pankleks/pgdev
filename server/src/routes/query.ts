@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { getPool } from '../pools.js'
 import { parseMaxRows } from '../queryshape.js'
 import { runBatch, fetchNextPage, cancelRunning, closeTabSession, type BatchError } from '../queryexec.js'
+import { parseTransactionId, sessionKey, transactionState } from '../sessions.js'
+import type { TransactionState } from '../schema-types.js'
 
 // HTTP adapter for query execution. All client ownership, transaction
 // handling, cursor sessions, and cleanup live in queryexec.ts; this module
@@ -11,6 +13,7 @@ interface QueryBody {
   sql?: string
   maxRows?: number
   tabKey?: string
+  transactionId?: unknown
 }
 
 interface MoreBody {
@@ -18,7 +21,7 @@ interface MoreBody {
   maxRows?: number
 }
 
-function mapError(error: BatchError): { code: number; body: unknown } {
+function mapError(error: BatchError): { code: number; body: Record<string, unknown> } {
   switch (error.kind) {
     case 'empty':
       return { code: 400, body: { error: 'Empty query' } }
@@ -36,21 +39,22 @@ function mapError(error: BatchError): { code: number; body: unknown } {
   }
 }
 
-function errorReply(reply: FastifyReply, error: BatchError): unknown {
+function errorReply(reply: FastifyReply, error: BatchError, transaction?: TransactionState): unknown {
   const mapped = mapError(error)
-  return reply.code(mapped.code).send(mapped.body)
+  return reply.code(mapped.code).send({ ...mapped.body, ...transaction })
 }
 
 export async function queryRoutes(app: FastifyInstance) {
   app.post('/api/connections/:id/query', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const { sql, maxRows, tabKey } = (req.body ?? {}) as QueryBody
+    const { sql, maxRows, tabKey, transactionId } = (req.body ?? {}) as QueryBody
     if (typeof sql !== 'string' || !sql.trim()) return reply.code(400).send({ error: 'Empty query' })
     const cap = parseMaxRows(maxRows)
     if (cap === null) return reply.code(400).send({ error: 'maxRows must be an integer from 1 to 10000' })
-    const outcome = await runBatch(id, tabKey ?? '', sql, cap)
-    if (outcome.kind === 'error') return errorReply(reply, outcome.error)
-    return { results: outcome.results, durationMs: outcome.durationMs, transactionOpen: outcome.transactionOpen }
+    const outcome = await runBatch(id, tabKey ?? '', sql, cap, parseTransactionId(transactionId))
+    const transaction = transactionState(sessionKey(id, tabKey ?? ''))
+    if (outcome.kind === 'error') return errorReply(reply, outcome.error, transaction)
+    return { results: outcome.results, durationMs: outcome.durationMs, ...transaction }
   })
 
   app.post('/api/connections/:id/query/more', async (req, reply) => {

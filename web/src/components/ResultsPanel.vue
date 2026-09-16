@@ -182,7 +182,7 @@ function openRowEdit(r: unknown[]) {
     row: r,
     connectionId: conn.state.id,
     tabKey: tabs.state.activeKey,
-    inTransaction: Boolean(result.value?.transactionOpen),
+    transactionId: result.value?.transactionId ?? null,
   }
 }
 
