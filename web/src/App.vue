@@ -224,10 +224,10 @@ function runActive() {  if (!conn.state.id) {
     toast.show('DDL preview is read-only')
     return
   }
-  // DDL is bound to the connection it was generated from; running it after a
-  // connection switch would execute against the wrong database.
+  // Connection-bound SQL must not run against a different database after a
+  // connection switch.
   if (tab.connectionId && tab.connectionId !== conn.state.id) {
-    toast.show('This DDL came from another connection — re-open it to run against the current database')
+    toast.show('This SQL belongs to another connection — re-open it to run against the current database')
     return
   }
   const existing = results.state.byTab[tab.key]

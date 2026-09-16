@@ -26,6 +26,7 @@ export function useAi() {
           title: t.title,
           readOnly: t.readOnly,
           content: t.content,
+          connectionId: t.connectionId,
         })),
       activeKey: () => tabs.state.activeKey,
       activateTab: (key) => tabs.activate(key),

@@ -105,27 +105,29 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     return deps.limits ?? DEFAULT_AI_LIMITS
   }
 
-  async function context(): Promise<BrowserContext | null> {
-    if (!bridge.connected()) return null
-    try {
-      return (await bridge.request('get-context')) as BrowserContext
-    } catch {
-      return null
-    }
-  }
-
   /**
-   * The connection the agent works on: the one open in the pgDEV window, or —
-   * with no window listening — the only pool the server holds. There is no way
-   * to pick another one; the agent sees exactly what the user has open.
+   * The connection the agent works on: the one open in the only listening
+   * pgDEV window, or — with no window listening — the only pool the server
+   * holds. An explicitly disconnected window is authoritative and must not
+   * fall back to a stale pool.
    */
   async function activeConnection(): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
-    const ctx = await context()
-    const ids = deps.connectionIds()
-    if (ctx?.connectionId) {
-      if (ids.includes(ctx.connectionId)) return { ok: true, id: ctx.connectionId }
+    const listening = bridge.count()
+    if (listening === 1) {
+      let ctx: BrowserContext
+      try {
+        ctx = (await bridge.request('get-context')) as BrowserContext
+      } catch (err) {
+        return { ok: false, error: messageOf(err) }
+      }
+      const id = ctx?.connectionId
+      if (typeof id !== 'string' || !id) return { ok: false, error: NOT_CONNECTED }
+      const ids = deps.connectionIds()
+      if (ids.includes(id)) return { ok: true, id }
       return { ok: false, error: NOT_CONNECTED }
     }
+
+    const ids = deps.connectionIds()
     if (ids.length === 1) return { ok: true, id: ids[0] as string }
     if (!ids.length) return { ok: false, error: NOT_CONNECTED }
     return {
@@ -187,6 +189,7 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     if (listening) {
       void bridge
         .request('show-result', {
+          connectionId: connection.id,
           title: AI_TAB_TITLE,
           sql,
           columns: first?.columns ?? [],

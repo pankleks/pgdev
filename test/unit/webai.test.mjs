@@ -9,8 +9,8 @@ const { applyBridgeAction, AI_TAB_TITLE } = await load('web/lib/aibridge.ts')
 
 function setup(overrides = {}) {
   const tabs = [
-    { key: 'query-1', title: 'Query 1', readOnly: false, content: 'SELECT 1' },
-    { key: 'ddl-1', title: 'items', readOnly: true, content: 'CREATE TABLE items ();' },
+    { key: 'query-1', title: 'Query 1', readOnly: false, content: 'SELECT 1', connectionId: 'conn-1' },
+    { key: 'ddl-1', title: 'items', readOnly: true, content: 'CREATE TABLE items ();', connectionId: 'conn-1' },
   ]
   const state = {
     activeKey: 'query-1',
@@ -34,7 +34,7 @@ function setup(overrides = {}) {
     },
     openSqlTab: (title, content, connectionId) => {
       const key = `sql-${++counter}`
-      tabs.push({ key, title, readOnly: false, content })
+      tabs.push({ key, title, readOnly: false, content, connectionId })
       state.activeKey = key
       state.opened.push({ key, title, content, connectionId })
     },
@@ -219,6 +219,7 @@ test('open-query-tab creates a tab and returns its key', async () => {
 test('show-result reuses the AI tab and renders the grid', async () => {
   const { deps, state } = setup()
   const grid = {
+    connectionId: 'conn-1',
     sql: 'SELECT id FROM items',
     columns: ['id'],
     columnTypes: ['integer'],
@@ -236,6 +237,73 @@ test('show-result reuses the AI tab and renders the grid', async () => {
   assert.equal(state.opened.length, 1)
   assert.deepEqual(state.activated, [first.key])
   assert.equal(state.written.at(-1).content, grid.sql)
+})
+
+test('show-result keeps the result bound to its source connection', async () => {
+  const { deps, state, tabs } = setup()
+  tabs.push({
+    key: 'ai-other',
+    title: AI_TAB_TITLE,
+    readOnly: false,
+    content: 'SELECT from_other_connection',
+    connectionId: 'conn-2',
+  })
+  const shown = await applyBridgeAction(deps, {
+    id: '1',
+    action: 'show-result',
+    args: {
+      connectionId: 'conn-1',
+      sql: 'SELECT from_conn_1',
+      columns: ['id'],
+      columnTypes: ['integer'],
+      rows: [[1]],
+      rowCount: 1,
+      truncated: false,
+    },
+  })
+  assert.equal(state.opened.length, 1)
+  assert.equal(state.opened[0].connectionId, 'conn-1')
+  assert.notEqual(shown.key, 'ai-other')
+  assert.deepEqual(state.activated, [])
+})
+
+test('show-result opens another tab instead of invalidating busy AI work', async () => {
+  for (const resultState of [
+    { running: true, transactionOpen: false },
+    { running: false, transactionOpen: true },
+  ]) {
+    const { deps, state, tabs } = setup()
+    tabs.push({
+      key: 'ai-busy',
+      title: AI_TAB_TITLE,
+      readOnly: false,
+      content: 'SELECT busy',
+      connectionId: 'conn-1',
+    })
+    state.results['ai-busy'] = {
+      running: resultState.running,
+      transactionOpen: resultState.transactionOpen,
+      selected: 1,
+      messages: [],
+      grids: [],
+    }
+    const shown = await applyBridgeAction(deps, {
+      id: '1',
+      action: 'show-result',
+      args: {
+        connectionId: 'conn-1',
+        sql: 'SELECT replacement',
+        columns: ['id'],
+        columnTypes: ['integer'],
+        rows: [[1]],
+        rowCount: 1,
+        truncated: false,
+      },
+    })
+    assert.equal(state.opened.length, 1)
+    assert.equal(shown.key, state.opened[0].key)
+    assert.notEqual(shown.key, 'ai-busy')
+  }
 })
 
 test('unknown actions are rejected', async () => {

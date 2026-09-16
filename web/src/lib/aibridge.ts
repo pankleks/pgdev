@@ -20,6 +20,8 @@ export interface BridgeAction {
 }
 
 export interface AgentGrid {
+  /** Server connection that produced these rows. */
+  connectionId: string
   sql: string
   columns: string[]
   columnTypes: string[]
@@ -33,6 +35,8 @@ export interface AiTabView {
   title: string
   readOnly: boolean
   content: string
+  /** Database this tab is bound to, when the tab has connection affinity. */
+  connectionId?: string
 }
 
 /** The result state of one tab, as the reducer needs it to answer the agent. */
@@ -151,15 +155,22 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
 
     case 'show-result': {
       const grid = args as unknown as AgentGrid
-      // Reuse the AI tab so repeated agent queries do not pile up.
-      const existing = deps.tabs().find((t) => t.title === AI_TAB_TITLE)
+      if (!grid.connectionId) throw new Error('The agent result has no source connection.')
+      // Reuse only an idle, editable AI tab bound to the result's source
+      // connection. A different connection or active operation must not be
+      // overwritten or have its result state invalidated.
+      const existing = deps.tabs().find((t) => {
+        if (t.title !== AI_TAB_TITLE || t.connectionId !== grid.connectionId || t.readOnly) return false
+        const result = deps.activeResult(t.key)
+        return !result?.running && !result?.transactionOpen
+      })
       let key: string
       if (existing) {
         key = existing.key
         deps.activateTab(key)
         deps.updateContent(key, grid.sql)
       } else {
-        deps.openSqlTab(AI_TAB_TITLE, grid.sql, deps.connectionId() ?? '')
+        deps.openSqlTab(AI_TAB_TITLE, grid.sql, grid.connectionId)
         key = deps.activeKey()
       }
       deps.showGrid(key, grid)

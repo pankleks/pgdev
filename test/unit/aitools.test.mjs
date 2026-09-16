@@ -67,8 +67,20 @@ function dataResult(rows, extra = {}) {
 }
 
 function setup(overrides = {}) {
+  const {
+    bridge: suppliedBridge,
+    context = {
+      connectionId: 'conn-1',
+      connectionLabel: 'local',
+      activeKey: 'query-1',
+      tabs: [],
+    },
+    autoContext = true,
+    subscribeWindow = suppliedBridge === undefined,
+    ...depOverrides
+  } = overrides
   const calls = { run: [], ddl: [], schema: [] }
-  const bridge = createBridge(200)
+  const bridge = suppliedBridge ?? createBridge(200)
   const deps = {
     connectionIds: () => ['conn-1'],
     getSchema: async (id) => {
@@ -84,11 +96,20 @@ function setup(overrides = {}) {
       return dataResult([[1], [2]])
     },
     bridge,
-    ...overrides,
+    ...depOverrides,
   }
   const tools = createAiTools(deps)
   const events = []
-  const unsubscribe = bridge.subscribe((event) => events.push(JSON.parse(event)))
+  const unsubscribe = subscribeWindow
+    ? bridge.subscribe((event) => {
+        const parsed = JSON.parse(event)
+        if (autoContext && parsed.action === 'get-context') {
+          bridge.resolve(parsed.id, context)
+          return
+        }
+        events.push(parsed)
+      })
+    : () => undefined
   return { tools, calls, events, bridge, unsubscribe }
 }
 
@@ -114,12 +135,15 @@ test('a write is refused before it reaches the database', async () => {
 })
 
 test('a read runs with the configured row limit and returns the rows', async () => {
-  const { tools, calls } = setup()
+  const { tools, calls, events, unsubscribe } = setup()
   const result = await tools.query({ sql: 'SELECT id FROM items' })
   assert.equal(result.ok, true)
   assert.deepEqual(calls.run[0], ['conn-1', 'SELECT id FROM items', DEFAULT_AI_LIMITS.maxRows])
   assert.deepEqual(result.result.results[0].rows, [[1], [2]])
   assert.deepEqual(result.result.results[0].columns, ['id'])
+  assert.equal(events[0].action, 'show-result')
+  assert.equal(events[0].args.connectionId, 'conn-1')
+  unsubscribe()
 })
 
 test('rows are capped by count and by bytes', async () => {
@@ -312,6 +336,33 @@ test('get_active_result needs exactly one window', async () => {
   unsubscribe()
 })
 
+test('a listening disconnected window never falls back to a sole pool', async () => {
+  const { tools, calls, bridge, events, unsubscribe } = setup({ autoContext: false })
+  const pending = tools.query({ sql: 'SELECT 1' })
+  await answer(bridge, events, {
+    connectionId: null,
+    connectionLabel: '',
+    activeKey: 'query-1',
+    tabs: [],
+  })
+  const result = await pending
+  assert.equal(result.ok, false)
+  assert.match(result.error, /not connected to a database/i)
+  assert.deepEqual(calls.run, [])
+  unsubscribe()
+})
+
+test('a listening-window context failure is not hidden by pool fallback', async () => {
+  const { tools, calls, bridge, events, unsubscribe } = setup({ autoContext: false })
+  const pending = tools.query({ sql: 'SELECT 1' })
+  await answer(bridge, events, {}, 'The pgDEV window did not answer in time.')
+  const result = await pending
+  assert.equal(result.ok, false)
+  assert.match(result.error, /did not answer in time/)
+  assert.deepEqual(calls.run, [])
+  unsubscribe()
+})
+
 test('the agent can never run the editor, and never picks a connection', async () => {
   const { tools, calls } = setup()
   assert.deepEqual(Object.keys(tools).sort(), [
@@ -350,7 +401,10 @@ test('the connection open in the window wins over ambiguous pools', async () => 
   assert.match(ambiguous.error, /2 connections open/)
 
   // A listening window names the one in use.
-  const { tools, calls, bridge, events, unsubscribe } = setup({ connectionIds: () => ['conn-1', 'conn-2'] })
+  const { tools, calls, bridge, events, unsubscribe } = setup({
+    connectionIds: () => ['conn-1', 'conn-2'],
+    autoContext: false,
+  })
   const pending = tools.query({ sql: 'SELECT 1' })
   const event = await answer(bridge, events, {
     connectionId: 'conn-2',
