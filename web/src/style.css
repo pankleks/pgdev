@@ -10,6 +10,8 @@
   --accent-2: #2563a8;
   --error: #f48771;
   --ok: #89d185;
+  /* Tabs the agent opened (staged SQL, mirror tabs). */
+  --agent: #c586c0;
   /* Underscore-prefixed (system-ish) columns in the table editor. */
   --meta: #7fb0da;
 }
@@ -865,6 +867,12 @@ body.dragging-results {
       color: var(--text);
       border-top: 2px solid transparent;
       box-shadow: inset 0 2px 0 var(--accent);
+    }
+
+    // Tabs the agent opened carry its color on the title, active or not, so
+    // staged SQL is recognizable in the strip at a glance.
+    &.agent-tab .tab-title {
+      color: var(--agent);
     }
 
     // Drag-and-drop reordering: dim the source and show the insertion line at

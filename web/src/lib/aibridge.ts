@@ -1,11 +1,12 @@
 // Browser half of the AI bridge (pure): the app subscribes to the server's SSE
 // stream and performs the actions an agent asks for — read the active tab, its
-// last result and messages, write SQL into it, open a tab, show agent rows.
-// Nothing here runs SQL: the agent's reads go through the server, and the
-// editor is for the user to run. Everything is injected, so the reducer is
-// unit-testable without Vue or Monaco.
+// last result and messages, write SQL into it, open a tab, show agent rows,
+// and manage the tabs it opened (list, activate, close). Nothing here runs
+// SQL: the agent's reads go through the server, and the editor is for the user
+// to run. Everything is injected, so the reducer is unit-testable without Vue
+// or Monaco.
 
-import type { AiActiveResult, AiResultGrid, AiResultMessage } from '../types'
+import type { AiActiveResult, AiResultGrid, AiResultMessage, AiTabList } from '../types'
 
 export const AI_TAB_TITLE = 'AI'
 
@@ -42,6 +43,11 @@ export interface AiTabView {
   connectionId?: string
   /** Explicit mirror-tab ownership. Title matching alone is not ownership. */
   aiMirror?: boolean
+  /** True only for tabs the agent opened (staged SQL, mirror tabs). The agent
+   * may list, activate and close these — and only these. */
+  agentOpened?: boolean
+  /** True when the content differs from what was staged. */
+  dirty?: boolean
 }
 
 /** The result state of one tab, as the reducer needs it to answer the agent. */
@@ -63,6 +69,10 @@ export interface AiBridgeDeps {
   openSqlTab(title: string, content: string, connectionId: string): void
   openAiMirrorTab(content: string, connectionId: string): void
   updateContent(key: string, content: string): void
+  /** Close a tab with the same cleanup the UI performs (drop its result state,
+   * close its backend session). The reducer refuses dirty and foreign tabs
+   * before this is ever called. */
+  closeTab(key: string): void
   /** Render agent rows in a tab without running a query. Returns false when
    * the tab is busy and must not be overwritten (caller opens another tab). */
   showGrid(tabKey: string, grid: AgentGrid): boolean
@@ -74,6 +84,43 @@ export interface AiBridgeDeps {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/** Tabs the agent may manage: the ones it opened, plus its mirror tabs. */
+function agentTabs(deps: AiBridgeDeps): AiTabView[] {
+  return deps.tabs().filter((t) => t.agentOpened === true || t.aiMirror === true)
+}
+
+function describeTab(tab: AiTabView): string {
+  return `"${tab.title}" (${tab.key})`
+}
+
+/**
+ * Resolve a `tab` argument — a key, else a unique exact title — among the
+ * agent's tabs. Anything else is refused: an unknown name lists what the agent
+ * has, and a user tab is named as foreign (existence only, never content).
+ */
+function resolveAgentTab(deps: AiBridgeDeps, ref: unknown, verb: 'activate' | 'close'): AiTabView {
+  const want = text(ref)
+  if (!want.trim()) throw new Error('"tab" is required: pass a tab key, or the exact title from list_tabs.')
+  const owned = agentTabs(deps)
+  const byKey = owned.find((t) => t.key === want)
+  if (byKey) return byKey
+  const byTitle = owned.filter((t) => t.title === want)
+  if (byTitle.length === 1) return byTitle[0] as AiTabView
+  if (!byTitle.length) {
+    const foreign =
+      deps.tabs().find((t) => t.key === want) ?? deps.tabs().filter((t) => t.title === want)[0]
+    if (foreign) {
+      throw new Error(`"${want}" was not opened by the agent. The agent can only ${verb} tabs it opened itself.`)
+    }
+    throw new Error(
+      owned.length
+        ? `No agent tab "${want}". Open tabs: ${owned.map(describeTab).join(', ')}.`
+        : `No agent tab "${want}". The agent has no tabs open.`,
+    )
+  }
+  throw new Error(`Several agent tabs are titled "${want}": ${byTitle.map(describeTab).join(', ')}. Pass the key.`)
 }
 
 /** Apply one bridge action; the returned value is the tool call's answer. */
@@ -160,6 +207,37 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
       const title = text(args.title).trim() || 'Agent SQL'
       deps.openSqlTab(title, sql, deps.connectionId() ?? '')
       return { key: deps.activeKey(), title }
+    }
+
+    case 'list-tabs': {
+      const owned = agentTabs(deps)
+      const activeKey = deps.activeKey()
+      return {
+        activeKey: activeKey || null,
+        tabs: owned.map((t) => ({
+          key: t.key,
+          title: t.title,
+          kind: t.kind,
+          readOnly: t.readOnly,
+          dirty: t.dirty === true,
+          active: t.key === activeKey,
+        })),
+      } satisfies AiTabList
+    }
+
+    case 'activate-tab': {
+      const tab = resolveAgentTab(deps, args.tab, 'activate')
+      deps.activateTab(tab.key)
+      return { key: tab.key, title: tab.title }
+    }
+
+    case 'close-tab': {
+      const tab = resolveAgentTab(deps, args.tab, 'close')
+      if (tab.dirty === true) {
+        throw new Error(`Refused: "${tab.title}" has unsaved changes. Only the user can close it.`)
+      }
+      deps.closeTab(tab.key)
+      return { closed: tab.key, activeKey: deps.activeKey() }
     }
 
     case 'show-result': {

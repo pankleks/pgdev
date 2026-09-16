@@ -29,12 +29,23 @@ export function useAi() {
           content: t.content,
           connectionId: t.connectionId,
           aiMirror: t.aiMirror,
+          agentOpened: t.agentOpened,
+          dirty: tabs.isDirty(t),
         })),
       activeKey: () => tabs.state.activeKey,
       activateTab: (key) => tabs.activate(key),
-      openSqlTab: (title, content, connectionId) => tabs.openSqlTab(title, content, connectionId),
+      openSqlTab: (title, content, connectionId) => tabs.openSqlTab(title, content, connectionId, true),
       openAiMirrorTab: (content, connectionId) => tabs.openAiMirrorTab(content, connectionId),
       updateContent: (key, content) => tabs.updateContent(key, content),
+      closeTab: (key) => {
+        // Same cleanup as closing the tab in the UI: drop its local result
+        // state and close its backend session (rolling back an open
+        // transaction), then remove the tab itself.
+        results.drop(key)
+        const id = conn.state.id
+        if (id) void api.closeSession(id, key).catch(() => undefined)
+        tabs.close(key)
+      },
       showGrid: (tabKey, grid) => results.showGrid(tabKey, grid),
       insertAtCursor: (sql) => insertAtCursor(sql),
       activeResult: (tabKey) => {
@@ -81,7 +92,7 @@ export function useAi() {
   async function start(): Promise<void> {
     if (source) return
     const config = await api.aiConfig().catch(() => null)
-    if (!config?.enabled) return
+    if (!config) return
     state.enabled = true
     void pushLimits()
     source = new EventSource('/api/ai/bridge')

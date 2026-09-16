@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { connectionIds, getCatalogPool } from '../pools.js'
 import { fetchSchemaData } from '../catalog/metadata.js'
@@ -25,13 +25,7 @@ import { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS, type AiLimits } from '../schema-typ
 //   GET  /api/ai/bridge          SSE stream the browser subscribes to
 //   POST /api/ai/bridge/result   the browser's answer to a bridge action
 //
-// Registered only when AI is enabled (see app.ts), so the endpoints and token
-// do not exist otherwise.
-
-/** One key per server run; only the terminal/agent ever sees it. */
-export function createAiToken(): string {
-  return randomBytes(32).toString('hex')
-}
+// Always registered: the token (stable per user, see ai/token.ts) is the guard.
 
 /** A dedicated tab key for agent reads: no cursor session, no manual transaction. */
 const AI_TAB_KEY = 'ai'
@@ -112,7 +106,6 @@ export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
       },
     }
     return {
-      enabled: true,
       url,
       token: options.token,
       command,

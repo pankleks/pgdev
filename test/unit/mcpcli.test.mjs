@@ -117,6 +117,7 @@ async function handshake(shim) {
   assert.match(init.result.instructions ?? '', /set_active_query.*open_query_tab/s)
   assert.match(init.result.instructions ?? '', /never executes staged SQL/)
   assert.match(init.result.instructions ?? '', /get_active_result/)
+  assert.match(init.result.instructions ?? '', /list_tabs/)
   shim.notify('notifications/initialized')
   return init
 }
@@ -129,10 +130,13 @@ test('the shim lists the tools and forwards calls with the token', async () => {
     const list = await shim.rpc('tools/list', {})
     const names = list.result.tools.map((t) => t.name)
     assert.deepEqual(names.sort(), [
+      'activate_tab',
+      'close_tab',
       'get_active_query',
       'get_active_result',
       'get_ddl',
       'get_schema',
+      'list_tabs',
       'open_query_tab',
       'query',
       'set_active_query',

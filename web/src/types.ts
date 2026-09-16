@@ -8,6 +8,8 @@ export type {
   AiLimits,
   AiResultGrid,
   AiResultMessage,
+  AiTabInfo,
+  AiTabList,
   ColumnInfo,
   CommandResult,
   ConnectionConfig,

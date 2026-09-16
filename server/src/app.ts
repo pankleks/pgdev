@@ -8,7 +8,8 @@ import { ddlRoutes } from './routes/ddl.js'
 import { queryRoutes } from './routes/query.js'
 import { tableEditRoutes } from './routes/tableedit.js'
 import { rowUpdateRoutes } from './routes/rowupdate.js'
-import { aiRoutes, createAiToken } from './routes/ai.js'
+import { aiRoutes } from './routes/ai.js'
+import { loadOrCreateToken } from './ai/token.js'
 import { appVersion } from './version.js'
 
 // Application construction lives here rather than in index.ts so tests can
@@ -21,10 +22,11 @@ export interface AppOptions {
    */
   serveStatic?: boolean
   /**
-   * Expose the AI/MCP tool surface. Off by default: the endpoints and their
-   * token only exist when an operator asked for them.
+   * File the agent's bearer token is read from (and, on first run, written
+   * to). Defaults to the per-user token file; tests point it at a scratch
+   * file so suites never touch the real one.
    */
-  ai?: boolean
+  aiTokenFile?: string
 }
 
 export function isLoopback(host: string): boolean {
@@ -76,7 +78,7 @@ export function allowedOrigin(reqUrl: URL, originUrl: URL): boolean {
 
 export async function createApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ bodyLimit: 4 * 1024 * 1024 })
-  const aiToken = options.ai ? createAiToken() : null
+  const aiToken = loadOrCreateToken(options.aiTokenFile)
 
   app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
     const statusCode = err.statusCode ?? 500
@@ -118,7 +120,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   await app.register(queryRoutes)
   await app.register(tableEditRoutes)
   await app.register(rowUpdateRoutes)
-  if (aiToken) await app.register(aiRoutes, { token: aiToken })
+  await app.register(aiRoutes, { token: aiToken })
 
   const webDist = fileURLToPath(new URL('../../web/dist', import.meta.url))
   if (options.serveStatic !== false && existsSync(webDist)) {

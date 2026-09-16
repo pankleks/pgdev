@@ -4,7 +4,8 @@
 // then drives Chrome. Opt-in: set PGDEV_TEST_URL and PGDEV_BROWSER=1, because
 // it needs the dev stack and a Chrome binary.
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { credentials, scratchDatabase, counters } from '../lib/db.mjs'
@@ -80,8 +81,10 @@ process.on('uncaughtException', async (e) => {
 })
 
 console.log('\n== starting the dev stack ==')
+// Scratch agent token: the suite must never read or write the user's real one.
+const aiTokenFile = join(tmpdir(), `pgdev_aitoken_${process.pid}`)
 const server = spawn('node', [join(REPO, 'server', 'dist', 'index.js')], {
-  env: { ...process.env, PORT: String(API_PORT), PGDEV_AI: '1' },
+  env: { ...process.env, PORT: String(API_PORT), PGDEV_TOKEN_FILE: aiTokenFile },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 children.push(server)
@@ -181,7 +184,7 @@ try {
     if (!aiToken) {
       const cfg = await page.evaluate(`return (await fetch('/api/ai/config')).json()`)
       aiToken = cfg?.token ?? ''
-      ok('AI tools are enabled for this run', Boolean(aiToken))
+      ok('the AI config carries the token', Boolean(aiToken))
     }
     return page.evaluate(`
       const res = await fetch(${JSON.stringify(`/api/ai/tool/${name}`)}, {
@@ -667,6 +670,68 @@ try {
     eq('the row limit from Settings applies to the agent', limited.body.result?.results?.[0]?.rows?.length, 2)
     eq('and the cut is reported', limited.body.result?.results?.[0]?.truncated, true)
     await setAiRowLimit(100)
+
+    // The agent manages the tabs it opened: list, activate, close.
+    const one = await aiTool('open_query_tab', { sql: '-- tab one', title: 'tab_one' })
+    const two = await aiTool('open_query_tab', { sql: '-- tab two', title: 'tab_two' })
+    const listed = await aiTool('list_tabs')
+    const names = (listed.body.result?.tabs ?? []).map((t) => t.title)
+    ok('list_tabs shows the tabs the agent opened',
+      names.includes('tab_one') && names.includes('tab_two'), JSON.stringify(names))
+    const domTitles = await page.evaluate(
+      `return [...document.querySelectorAll('.tabstrip .tab-title')].map((t) => t.textContent.trim().replace(/ \\*$/, ''))`,
+    )
+    ok('and none of the user tabs', domTitles.includes('Query 1') && !names.includes('Query 1'))
+    ok('freshly staged tabs are clean',
+      (listed.body.result?.tabs ?? [])
+        .filter((t) => t.title === 'tab_one' || t.title === 'tab_two')
+        .every((t) => t.dirty === false))
+
+    const stripState = await page.evaluate(`
+      return [...document.querySelectorAll('.tabstrip .tab')].map((t) => ({
+        title: (t.querySelector('.tab-title')?.textContent ?? '').trim().replace(/ \\*$/, ''),
+        agent: t.classList.contains('agent-tab'),
+      }))
+    `)
+    const agentTitles = stripState.filter((t) => t.agent).map((t) => t.title)
+    ok('agent-opened tabs are tinted in the strip',
+      ['tab_one', 'tab_two', 'AI', 'ai_view'].every((want) => agentTitles.includes(want)),
+      JSON.stringify(stripState))
+    ok('user tabs are not tinted',
+      ['Query 1', 'Query 2', 'v_items', 'mv_items', 'items', 'item_count'].every((want) => !agentTitles.includes(want)),
+      JSON.stringify(stripState))
+
+    await aiTool('activate_tab', { tab: 'tab_one' })
+    await aiTool('set_active_query', { sql: '-- appended', mode: 'append' })
+    const dirtied = await aiTool('list_tabs')
+    eq('a modified tab is flagged dirty',
+      dirtied.body.result?.tabs?.find((t) => t.key === one.body.result?.key)?.dirty, true)
+
+    const dirtyClose = await aiTool('close_tab', { tab: 'tab_one' })
+    ok('a dirty tab is refused by name',
+      dirtyClose.body.ok === false && /unsaved changes/.test(dirtyClose.body.error),
+      JSON.stringify(dirtyClose.body))
+
+    const closed = await aiTool('close_tab', { tab: 'tab_two' })
+    eq('a clean agent tab closes', closed.body.ok, true)
+    const after = await aiTool('list_tabs')
+    ok('it is gone afterwards',
+      !(after.body.result?.tabs ?? []).some((t) => t.key === two.body.result?.key))
+
+    const back = await aiTool('activate_tab', { tab: 'tab_one' })
+    eq('activate_tab returns the tab', back.body.result?.key, one.body.result?.key)
+    const tabShown = await page.waitFor(
+      `window.__pgdev.getValue().includes('-- appended')`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('the editor shows the activated tab', tabShown)
+
+    const agentTitleSet = new Set((after.body.result?.tabs ?? []).map((t) => t.title))
+    const foreign = domTitles.find((t) => !agentTitleSet.has(t))
+    const foreignClose = await aiTool('close_tab', { tab: foreign })
+    ok('a user tab is refused as foreign',
+      foreignClose.body.ok === false && /was not opened by the agent/.test(foreignClose.body.error),
+      JSON.stringify(foreignClose.body))
   }
 
   console.log('\n== opened sections survive a reload ==')
@@ -925,6 +990,7 @@ try {
   await page.close().catch(() => {})
   await chrome.close().catch(() => {})
   await stop()
+  rmSync(aiTokenFile, { force: true })
 }
 
 const left = await teardown()

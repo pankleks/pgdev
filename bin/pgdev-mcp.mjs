@@ -76,7 +76,10 @@ const server = new McpServer(
       'from `get_ddl` when the object already exists — and stage it with `set_active_query` (into the ' +
       'tab the user is looking at) or `open_query_tab` (a new tab). pgDEV never executes staged SQL: ' +
       'the user reviews it and runs it. `get_active_result` shows what the active tab last produced ' +
-      '(its result sets and Messages text), so you can check the outcome of a script the user ran.',
+      '(its result sets and Messages text), so you can check the outcome of a script the user ran. ' +
+      'Manage the tabs you opened with `list_tabs` (your tabs are never listed), `activate_tab` and ' +
+      '`close_tab`: only clean tabs the agent opened can be closed, and a staged tab stops being ' +
+      'closable the moment it is modified.',
   },
 )
 
@@ -184,6 +187,48 @@ server.registerTool(
     },
   },
   handler('open_query_tab'),
+)
+
+server.registerTool(
+  'list_tabs',
+  {
+    title: 'List the tabs the agent opened',
+    description:
+      'The tabs the agent opened (with a dirty flag each) and which one the editor shows. ' +
+      'Your tabs are never listed.',
+    inputSchema: {},
+  },
+  handler('list_tabs'),
+)
+
+server.registerTool(
+  'activate_tab',
+  {
+    title: 'Switch to one of the tabs the agent opened',
+    description:
+      'Make one of the agent-opened tabs the active tab, by key or by exact title from list_tabs. ' +
+      'Tabs the agent did not open cannot be activated.',
+    inputSchema: {
+      tab: z.string().describe('Tab key, or the exact title from list_tabs'),
+    },
+  },
+  handler('activate_tab'),
+)
+
+server.registerTool(
+  'close_tab',
+  {
+    title: 'Close one of the tabs the agent opened',
+    description:
+      'Close one of the agent-opened tabs, by key or by exact title from list_tabs, with the same ' +
+      'cleanup closing it in the UI performs. Refused when the tab has unsaved changes — a freshly ' +
+      'staged tab is clean, but the moment it is modified only the user can close it — and for tabs ' +
+      'the agent did not open.',
+    inputSchema: {
+      tab: z.string().describe('Tab key, or the exact title from list_tabs'),
+    },
+  },
+  handler('close_tab'),
 )
 
 server.registerResource(

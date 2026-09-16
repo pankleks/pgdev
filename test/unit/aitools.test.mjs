@@ -373,13 +373,61 @@ test('a listening-window context failure is not hidden by pool fallback', async 
   unsubscribe()
 })
 
+test('list_tabs, activate_tab and close_tab forward to the single window', async () => {
+  const { tools, bridge, events, unsubscribe } = setup()
+  const listed = tools.list_tabs({})
+  const listEvent = await answer(bridge, events, {
+    activeKey: 'sql-2',
+    tabs: [{ key: 'sql-2', title: 'one', kind: 'query', readOnly: false, dirty: false, active: false }],
+  })
+  assert.equal(listEvent.action, 'list-tabs')
+  assert.deepEqual((await listed).result.tabs.map((t) => t.key), ['sql-2'])
+
+  const activated = tools.activate_tab({ tab: 'one' })
+  const activateEvent = await answer(bridge, events, { key: 'sql-2', title: 'one' })
+  assert.equal(activateEvent.action, 'activate-tab')
+  assert.deepEqual(activateEvent.args, { tab: 'one' })
+  assert.deepEqual((await activated).result, { key: 'sql-2', title: 'one' })
+
+  const closed = tools.close_tab({ tab: 'sql-2' })
+  const closeEvent = await answer(bridge, events, { closed: 'sql-2', activeKey: 'query-1' })
+  assert.equal(closeEvent.action, 'close-tab')
+  assert.deepEqual(closeEvent.args, { tab: 'sql-2' })
+  assert.deepEqual((await closed).result, { closed: 'sql-2', activeKey: 'query-1' })
+  unsubscribe()
+})
+
+test('the tab tools validate their argument and refuse without exactly one window', async () => {
+  const { tools } = setup({ bridge: createBridge(20) })
+  for (const result of [
+    await tools.list_tabs({}),
+    await tools.activate_tab({}),
+    await tools.close_tab({}),
+  ]) {
+    assert.equal(result.ok, false)
+  }
+  const empty = await tools.activate_tab({})
+  assert.match(empty.error, /"tab" is required/)
+
+  const { tools: two, bridge, unsubscribe } = setup()
+  bridge.subscribe(() => undefined)
+  const refused = await two.close_tab({ tab: 'sql-2' })
+  // Checked before anything reaches the bridge, even though the tab names one.
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /2 pgDEV windows/)
+  unsubscribe()
+})
+
 test('the agent can never run the editor, and never picks a connection', async () => {
   const { tools, calls } = setup()
   assert.deepEqual(Object.keys(tools).sort(), [
+    'activate_tab',
+    'close_tab',
     'get_active_query',
     'get_active_result',
     'get_ddl',
     'get_schema',
+    'list_tabs',
     'open_query_tab',
     'query',
     'set_active_query',

@@ -20,6 +20,7 @@ function setup(overrides = {}) {
     grids: [],
     activated: [],
     inserted: [],
+    closed: [],
     results: {},
   }
   let counter = 1
@@ -34,7 +35,9 @@ function setup(overrides = {}) {
     },
     openSqlTab: (title, content, connectionId) => {
       const key = `sql-${++counter}`
-      tabs.push({ key, kind: 'query', title, readOnly: false, content, connectionId })
+      // The real composable marks bridge-opened tabs; the table editor's tabs
+      // stay unmarked.
+      tabs.push({ key, kind: 'query', title, readOnly: false, content, connectionId, agentOpened: true, dirty: false })
       state.activeKey = key
       state.opened.push({ key, title, content, connectionId })
     },
@@ -58,6 +61,16 @@ function setup(overrides = {}) {
       return true
     },
     activeResult: (key) => state.results[key] ?? null,
+    closeTab: (key) => {
+      const index = tabs.findIndex((t) => t.key === key)
+      if (index === -1) return
+      tabs.splice(index, 1)
+      state.closed.push(key)
+      if (state.activeKey === key) {
+        const next = tabs[Math.min(index, tabs.length - 1)]
+        state.activeKey = next?.key ?? ''
+      }
+    },
     ...overrides,
   }
   return { deps, state, tabs }
@@ -223,6 +236,99 @@ test('open-query-tab creates a tab and returns its key', async () => {
     content: 'CREATE VIEW v AS SELECT 1',
     connectionId: 'conn-1',
   })
+})
+
+test('list-tabs shows only agent tabs, with dirty flags', async () => {
+  const { deps, state, tabs } = setup()
+  state.activeKey = 'query-1'
+  // Start with none: user tabs are invisible to the agent.
+  assert.deepEqual(await applyBridgeAction(deps, { id: '1', action: 'list-tabs' }), {
+    activeKey: 'query-1',
+    tabs: [],
+  })
+
+  await applyBridgeAction(deps, { id: '2', action: 'open-query-tab', args: { sql: 'SELECT 1', title: 'one' } })
+  const mirror = await applyBridgeAction(deps, {
+    id: '3',
+    action: 'show-result',
+    args: { connectionId: 'conn-1', sql: 'SELECT 1', columns: ['id'], columnTypes: [], rows: [[1]], rowCount: 1, truncated: false },
+  })
+  // The staged tab is clean; the mirror was reused with identical SQL. Mark
+  // one dirty by hand: the real flag comes from tabs.isDirty, mapped by the
+  // composable and covered end to end in the browser suite.
+  tabs.find((t) => t.key === 'sql-2').dirty = true
+  const listed = await applyBridgeAction(deps, { id: '4', action: 'list-tabs' })
+  assert.equal(listed.activeKey, mirror.key)
+  assert.deepEqual(
+    listed.tabs.map((t) => [t.key, t.title, t.kind, t.readOnly, t.dirty, t.active]),
+    [
+      ['sql-2', 'one', 'query', false, true, false],
+      [mirror.key, 'AI', 'query', false, false, true],
+    ],
+  )
+})
+
+test('activate-tab switches by key or unique title, never to user tabs', async () => {
+  const { deps, state } = setup()
+  await applyBridgeAction(deps, { id: '1', action: 'open-query-tab', args: { sql: 'SELECT 1', title: 'one' } })
+  const moved = await applyBridgeAction(deps, { id: '2', action: 'activate-tab', args: { tab: 'sql-2' } })
+  assert.equal(moved.key, 'sql-2')
+  assert.deepEqual(state.activated.at(-1), 'sql-2')
+
+  const byTitle = await applyBridgeAction(deps, { id: '3', action: 'activate-tab', args: { tab: 'one' } })
+  assert.equal(byTitle.key, 'sql-2')
+
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '4', action: 'activate-tab', args: { tab: 'Query 1' } }),
+    /was not opened by the agent/,
+  )
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '5', action: 'activate-tab', args: { tab: '   ' } }),
+    /"tab" is required/,
+  )
+})
+
+test('activate-tab refuses an ambiguous title', async () => {
+  const { deps } = setup()
+  await applyBridgeAction(deps, { id: '1', action: 'open-query-tab', args: { sql: 'SELECT 1', title: 'dup' } })
+  await applyBridgeAction(deps, { id: '2', action: 'open-query-tab', args: { sql: 'SELECT 2', title: 'dup' } })
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '3', action: 'activate-tab', args: { tab: 'dup' } }),
+    /Several agent tabs are titled "dup"/,
+  )
+})
+
+test('close-tab closes a clean agent tab and reports the new active tab', async () => {
+  const { deps, state } = setup()
+  await applyBridgeAction(deps, { id: '1', action: 'open-query-tab', args: { sql: 'SELECT 1', title: 'one' } })
+  const closed = await applyBridgeAction(deps, { id: '2', action: 'close-tab', args: { tab: 'one' } })
+  assert.equal(closed.closed, 'sql-2')
+  assert.deepEqual(state.closed, ['sql-2'])
+  assert.equal(closed.activeKey, 'ddl-1')
+  assert.equal((await applyBridgeAction(deps, { id: '3', action: 'list-tabs' })).tabs.length, 0)
+})
+
+test('close-tab refuses foreign and dirty tabs', async () => {
+  const { deps, state, tabs } = setup()
+  // A user tab, even named like an agent one, is off limits.
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '1', action: 'close-tab', args: { tab: 'query-1' } }),
+    /was not opened by the agent/,
+  )
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '2', action: 'close-tab', args: { tab: 'nope' } }),
+    /No agent tab "nope"/,
+  )
+  assert.deepEqual(state.closed, [])
+
+  // Dirty means modified after staging: only the user can close it.
+  await applyBridgeAction(deps, { id: '3', action: 'open-query-tab', args: { sql: 'SELECT 1', title: 'one' } })
+  tabs.find((t) => t.key === 'sql-2').dirty = true
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '4', action: 'close-tab', args: { tab: 'one' } }),
+    /has unsaved changes/,
+  )
+  assert.deepEqual(state.closed, [])
 })
 
 test('show-result reuses the AI tab and renders the grid', async () => {

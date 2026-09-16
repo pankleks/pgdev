@@ -239,9 +239,8 @@ export interface FetchMoreResponse {
   truncated: boolean
 }
 
-/** Everything an MCP client needs to reach this pgDEV instance (AI enabled). */
+/** Everything an MCP client needs to reach this pgDEV instance. */
 export interface AiConfig {
-  enabled: boolean
   url: string
   token: string
   /** Absolute path to bin/pgdev-mcp.mjs. */
@@ -307,4 +306,23 @@ export interface AiActiveResult {
   selected: number | null
   messages: AiResultMessage[]
   results: AiResultGrid[]
+}
+
+/** One tab the agent opened, as `list_tabs` reports it. */
+export interface AiTabInfo {
+  key: string
+  title: string
+  /** 'query' | 'ddl' — agent tabs are always query tabs. */
+  kind: string
+  readOnly: boolean
+  /** True when the content differs from what was staged (only you can close it). */
+  dirty: boolean
+  /** True when this is the tab the editor shows. */
+  active: boolean
+}
+
+/** The agent's own tabs (`list_tabs`). User tabs are never listed. */
+export interface AiTabList {
+  activeKey: string | null
+  tabs: AiTabInfo[]
 }

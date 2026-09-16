@@ -167,6 +167,7 @@ const staleDdl = computed(() => {
         class="tab"
         :class="{
           active: t.key === tabs.state.activeKey,
+          'agent-tab': t.agentOpened === true || t.aiMirror === true,
           dragging: dragKey === t.key,
           'drop-before': dropIndex === index,
           'drop-after': dropIndex === index + 1,

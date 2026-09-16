@@ -86,9 +86,14 @@ const ok = (name, cond, detail = '') => eq(name + (detail ? ` — ${detail}` : '
 
 // ------------------------------------------------------------------ the server
 // The real application, so the origin guard and route wiring under test are
-// the ones that ship rather than a copy of them.
+// the ones that ship rather than a copy of them. The agent token file points
+// at scratch space: the suite must never read or write the user's real one.
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 const { createApp } = await import('../server/dist/app.js')
-const app = await createApp({ serveStatic: false, ai: true })
+const aiTokenFile = join(tmpdir(), `pgdev_aitoken_${process.pid}`)
+const app = await createApp({ serveStatic: false, aiTokenFile })
 
 const ORIGIN = 'http://localhost'
 const call = async (method, url, payload) => {
@@ -777,6 +782,7 @@ console.log('\n== AI tool surface ==')
     JSON.stringify(cfg.body).slice(0, 200))
 
   const token = cfg.body.token
+  ok('the config carries no enabled flag', !('enabled' in (cfg.body ?? {})), JSON.stringify(Object.keys(cfg.body ?? {})))
   const tool = async (name, args) => {
     const res = await app.inject({
       method: 'POST',
@@ -846,6 +852,12 @@ console.log('\n== AI tool surface ==')
   ok('the active result needs a window too',
     result.body.ok === false && /No pgDEV window/.test(result.body.error), JSON.stringify(result.body))
 
+  for (const name of ['list_tabs', 'activate_tab', 'close_tab']) {
+    const missing = await tool(name, { tab: 'sql-1' })
+    ok(`${name} reports the missing window`,
+      missing.body.ok === false && /No pgDEV window/.test(missing.body.error), JSON.stringify(missing.body))
+  }
+
   const stray = await call('POST', '/api/ai/bridge/result', { id: 'missing', result: 1 })
   eq('an unknown bridge result is ignored', stray.body.ok, false)
 
@@ -867,6 +879,31 @@ console.log('\n== AI tool surface ==')
   eq('only the capped rows come back', capped.body.result.results[0].rowCount, 2)
   const restored = await call('PUT', '/api/ai/limits', defaults)
   eq('the browser can put the defaults back', restored.body, defaults)
+
+  // The token is stable: another app on the same file gets the same token —
+  // the MCP configuration survives a restart.
+  const app2 = await createApp({ serveStatic: false, aiTokenFile })
+  const token2 = (await app2.inject({ method: 'GET', url: '/api/ai/config', headers: { origin: ORIGIN } })).json().token
+  eq('a second boot reads the same token', token2, token)
+  await app2.close()
+
+  // Deleting the file rotates: the next boot mints and stores a fresh one.
+  rmSync(aiTokenFile)
+  const app3 = await createApp({ serveStatic: false, aiTokenFile })
+  const token3 = (await app3.inject({ method: 'GET', url: '/api/ai/config', headers: { origin: ORIGIN } })).json().token
+  ok('rotation mints a fresh token', token3 !== token && /^[0-9a-f]{64}$/.test(token3), JSON.stringify(token3).slice(0, 20))
+  // (app3 has no connection open, so the tools answer 200 with a not-connected
+  // error; the assertions below are about the token, not the connection.)
+  eq('and the fresh token is accepted', (await app3.inject({
+    method: 'POST', url: '/api/ai/tool/get_schema', payload: {},
+    headers: { origin: ORIGIN, authorization: `Bearer ${token3}` },
+  })).statusCode, 200)
+  eq('while the old one no longer is', (await app3.inject({
+    method: 'POST', url: '/api/ai/tool/get_schema', payload: {},
+    headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
+  })).statusCode, 401)
+  await app3.close()
+  rmSync(aiTokenFile, { force: true })
 }
 
 console.log('\n== disconnect ==')

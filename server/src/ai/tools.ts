@@ -10,7 +10,7 @@
 // user, who runs it.
 
 import type { MappedData, BatchOutcome } from '../queryexec.js'
-import type { AiActiveResult, AiLimits, AiResultGrid, SchemaData } from '../schema-types.js'
+import type { AiActiveResult, AiLimits, AiResultGrid, AiTabList, SchemaData } from '../schema-types.js'
 import { DEFAULT_AI_LIMITS } from '../schema-types.js'
 import { BridgeError, windowProblem, type Bridge } from './bridge.js'
 import { isReadOnlySql } from './readonly.js'
@@ -370,6 +370,47 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     }
   }
 
+  /**
+   * The tabs the agent opened: the page resolves keys and titles among those
+   * only, so user tabs are never listed, activated or closed.
+   */
+  async function listTabs(): Promise<AiToolResult> {
+    const problem = windowError(bridge)
+    if (problem) return fail(problem)
+    try {
+      const listed = (await bridge.request('list-tabs')) as AiTabList
+      return { ok: true, result: listed }
+    } catch (err) {
+      return fail(messageOf(err))
+    }
+  }
+
+  async function activateTab(args: Record<string, unknown>): Promise<AiToolResult> {
+    const tab = asString(args.tab)
+    if (!tab || !tab.trim()) return fail('"tab" is required: pass a tab key, or the exact title from list_tabs.')
+    const problem = windowError(bridge)
+    if (problem) return fail(problem)
+    try {
+      const activated = await bridge.request('activate-tab', { tab })
+      return { ok: true, result: activated }
+    } catch (err) {
+      return fail(messageOf(err))
+    }
+  }
+
+  async function closeTab(args: Record<string, unknown>): Promise<AiToolResult> {
+    const tab = asString(args.tab)
+    if (!tab || !tab.trim()) return fail('"tab" is required: pass a tab key, or the exact title from list_tabs.')
+    const problem = windowError(bridge)
+    if (problem) return fail(problem)
+    try {
+      const closed = await bridge.request('close-tab', { tab })
+      return { ok: true, result: closed }
+    } catch (err) {
+      return fail(messageOf(err))
+    }
+  }
+
   return {
     get_schema: getSchema,
     get_ddl: getDdl,
@@ -378,5 +419,8 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     set_active_query: setActiveQuery,
     open_query_tab: openQueryTab,
     get_active_result: getActiveResult,
+    list_tabs: listTabs,
+    activate_tab: activateTab,
+    close_tab: closeTab,
   }
 }

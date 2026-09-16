@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createApp } from '../../server/dist/app.js'
 import { setPool, removePool } from '../../server/dist/pools.js'
 import { hasOpenTransaction } from '../../server/dist/queryshape.js'
@@ -60,7 +63,11 @@ function fakePool(options = {}) {
 }
 
 async function withApp(id, fake, run) {
-  const app = await createApp({ serveStatic: false })
+  // Scratch token file: building the app must not touch the user's real one.
+  const app = await createApp({
+    serveStatic: false,
+    aiTokenFile: join(tmpdir(), `pgdev_aitoken_${process.pid}`),
+  })
   setPool(id, fake.pool)
   const inject = (sql) =>
     app.inject({
@@ -74,6 +81,7 @@ async function withApp(id, fake, run) {
   } finally {
     await removePool(id)
     await app.close()
+    rmSync(join(tmpdir(), `pgdev_aitoken_${process.pid}`), { force: true })
   }
 }
 

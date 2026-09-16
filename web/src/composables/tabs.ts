@@ -19,6 +19,9 @@ export interface EditorTab {
   /** True only for agent result-mirror tabs. Title matching is not ownership:
    * user query tabs, file tabs and DDL previews may also be titled "AI". */
   aiMirror?: boolean
+  /** True only for tabs the agent opened (staged SQL, mirror tabs). The agent
+   * may list, activate and close these — and only these. */
+  agentOpened?: boolean
   /** True only for user-created query tabs — the ones the tab session saves
    * and restores. DDL tabs, generated SQL, file tabs and pins never set it. */
   persist?: boolean
@@ -244,7 +247,7 @@ export function useTabs() {
    * and an optional connection keeps the run-here guard from App.vue active:
    * a script generated against one database must not run against another.
    */
-  function openSqlTab(title: string, content: string, connectionId = '') {
+  function openSqlTab(title: string, content: string, connectionId = '', agent = false) {
     const key = `sql-${state.counter}`
     state.tabs.push({
       key,
@@ -256,6 +259,7 @@ export function useTabs() {
       savedContent: content,
       readOnly: false,
       connectionId: connectionId || undefined,
+      agentOpened: agent || undefined,
     })
     state.counter++
     state.activeKey = key
