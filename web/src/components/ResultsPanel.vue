@@ -267,6 +267,18 @@ async function exportCsv() {
   // gets exported (the store re-validates this capture every step).
   const g = results.state.byTab[tabKey]?.grid
   if (!g) return
+  // A consumed cursor cannot be drained twice, and an interrupted drain loses
+  // cursor pages: both require a re-run instead of a silent partial file.
+  // Read once into a local so later property checks are not narrowed away.
+  const priorExport = g.exported
+  if (priorExport?.incomplete) {
+    toast.show('Export interrupted — re-run the query to export again')
+    return
+  }
+  if (priorExport) {
+    toast.show('Already exported — re-run the query to export again')
+    return
+  }
   const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
   const filename = `pgDEV-statement-${g.statementNumber}-${stamp}${g.limited ? '-partial' : ''}.csv`
 
@@ -297,10 +309,12 @@ async function exportCsv() {
         await writable.write(csvRows(page))
       }, false)
       if (!complete) {
-        // Stale drain (connection/tab/result changed): discard the partial
-        // file rather than leaving truncated data on disk.
+        // Stale drain, failed write or cancel: discard the partial file
+        // rather than leaving truncated data on disk.
         await writable.abort()
-        toast.show('Export canceled because the connection or result changed')
+        toast.show(g.exported?.incomplete
+          ? 'Export interrupted — re-run the query to export again'
+          : 'Export canceled because the connection or result changed')
         return
       }
       await writable.close()
@@ -466,6 +480,7 @@ async function exportCsv() {
         {{ result?.grid?.rowCount ?? 0 }} row(s)
         <span v-if="grid.g.truncated">· more available</span>
         <span v-else-if="grid.g.limited">· first {{ grid.g.rows.length }} of {{ grid.g.totalRowCount }} · row limit reached; remaining rows were not retained</span>
+        <span v-else-if="grid.g.exported?.incomplete">· export interrupted — re-run the query</span>
         <span v-else-if="grid.g.exported">· first {{ grid.g.rows.length }} shown · {{ grid.g.exported.rows }} row(s) exported to CSV</span>
         <button
           v-if="grid.g.truncated"

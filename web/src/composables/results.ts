@@ -14,8 +14,10 @@ export interface GridResult extends DataResult {
   statementNumber: number
   /** Set when a file-stream export drained the remaining cursor: the grid
    * keeps its first page, `rows` is the exported total, and the backend no
-   * longer has anything to page. */
-  exported?: { rows: number }
+   * longer has anything to page. `incomplete` means the drain did not finish
+   * after the cursor had advanced — retrying would silently omit rows, so the
+   * query must be re-run. */
+  exported?: { rows: number; incomplete?: boolean }
 }
 
 export interface Message {
@@ -273,16 +275,47 @@ export function createResults(api: ResultsApi) {
     if (!r || r.running || r.loadingMore) return false
     const g = grid
     if (!r.grids.includes(g)) return false
+    // A consumed cursor cannot be drained twice: a repeat would export only
+    // the retained first page as if it were the full result.
+    if (!retain && g.exported) return false
     const operation = r.operation
     r.loadingMore = true
     let exported = 0
+    let fetched = 0
+    /** The cursor advanced but the file did not receive every row: retrying
+     * would silently omit the lost pages, so retire the cursor and require a
+     * re-run. */
+    const invalidateStreamingCursor = () => {
+      g.truncated = false
+      g.exported = { rows: exported, incomplete: true }
+      r.messages.push({
+        text: `Statement ${g.statementNumber}: export interrupted — re-run the query to export again.`,
+        level: 'error',
+      })
+    }
     try {
       await sink([...g.rows])
       exported += g.rows.length
-      while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running) {
-        const res = await api.fetchMore(connectionId, tabKey)
-        if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
-        await sink(res.rows)
+      while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running && !r.cancelling) {
+        let res: FetchMoreResponse
+        try {
+          res = await api.fetchMore(connectionId, tabKey)
+        } catch (e) {
+          if (!retain && fetched > 0) invalidateStreamingCursor()
+          throw e
+        }
+        if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g) || r.cancelling) {
+          if (!retain && fetched > 0) invalidateStreamingCursor()
+          return false
+        }
+        fetched++
+        try {
+          await sink(res.rows)
+        } catch (e) {
+          // This page left the cursor but never reached the file.
+          if (!retain) invalidateStreamingCursor()
+          throw e
+        }
         exported += res.rows.length
         if (retain) {
           g.rows.push(...res.rows)
@@ -295,7 +328,14 @@ export function createResults(api: ResultsApi) {
           g.exported = { rows: exported }
         }
       }
-      if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) return false
+      if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) {
+        if (!retain && fetched > 0) invalidateStreamingCursor()
+        return false
+      }
+      if (r.cancelling) {
+        if (!retain && fetched > 0) invalidateStreamingCursor()
+        return false
+      }
       const complete = !g.truncated
       r.messages.push({
         text: complete
