@@ -177,6 +177,85 @@ try {
   ).then(() => true).catch(() => false)
   ok('object browser lists the fixture tables', listed)
 
+  console.log('\n== the topbar toggle hides and restores the navigation panel ==')
+  {
+    const toggleTitle = async () => page.evaluate(`
+      return [...document.querySelectorAll('.topbar button.icon')]
+        .find((b) => /navigation panel/.test(b.title))?.title ?? null
+    `)
+    const layout = async () => page.evaluate(`
+      const sidebar = document.querySelector('.sidebar')
+      return {
+        present: sidebar !== null,
+        shown: !!sidebar && getComputedStyle(sidebar).display !== 'none',
+        width: sidebar?.style.width ?? '',
+        mainLeft: document.querySelector('.pgdev-main')?.getBoundingClientRect().left ?? -1,
+        iconPanels: document.querySelectorAll('.icon-panel').length,
+      }
+    `)
+    eq('the topbar offers collapsing', await toggleTitle(), 'Collapse navigation panel')
+    const order = await page.evaluate(`
+      return {
+        logo: document.querySelector('.topbar .logo')?.getBoundingClientRect().right ?? -1,
+        toggle: [...document.querySelectorAll('.topbar button.icon')]
+          .find((b) => /navigation panel/.test(b.title))?.getBoundingClientRect().left ?? -1,
+      }
+    `)
+    ok('the toggle sits just after the logo', order.toggle > order.logo, JSON.stringify(order))
+    // The two splitters must meet exactly: the results handle starts where the
+    // panel handle starts, never a pixel into the panel — and ends where the
+    // editor column ends.
+    const junction = await page.evaluate(`
+      const v = document.querySelector('.drag-v')?.getBoundingClientRect()
+      const h = document.querySelector('.drag-h')?.getBoundingClientRect()
+      const panel = document.querySelector('.sidebar')?.getBoundingClientRect()
+      const main = document.querySelector('.pgdev-main')?.getBoundingClientRect()
+      return {
+        vLeft: v?.left ?? -1,
+        hLeft: h?.left ?? -1,
+        panelRight: panel?.right ?? -1,
+        hRight: h?.right ?? -1,
+        mainRight: main?.right ?? -1,
+      }
+    `)
+    ok('the results splitter starts at the panel handle',
+      Math.abs(junction.hLeft - junction.vLeft) < 0.5 && junction.hLeft >= junction.panelRight,
+      JSON.stringify(junction))
+    ok('and spans the editor column', Math.abs(junction.hRight - junction.mainRight) < 0.5, JSON.stringify(junction))
+    const before = await layout()
+    ok('the panel starts out shown', before.present && before.shown && before.mainLeft > 0, JSON.stringify(before))
+    ok('with no leftover icon strip', before.iconPanels === 0)
+
+    await page.evaluate(`
+      [...document.querySelectorAll('.topbar button.icon')]
+        .find((b) => b.title === 'Collapse navigation panel')?.click()
+    `)
+    const gone = await page.waitFor(
+      `getComputedStyle(document.querySelector('.sidebar')).display === 'none'`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('the panel disappears completely', gone)
+    const collapsed = await layout()
+    ok('leaving no strip behind the editor', collapsed.mainLeft === 0 && collapsed.iconPanels === 0, JSON.stringify(collapsed))
+    eq('and the topbar icon flips to expanding', await toggleTitle(), 'Expand navigation panel')
+
+    await page.evaluate(`
+      [...document.querySelectorAll('.topbar button.icon')]
+        .find((b) => b.title === 'Expand navigation panel')?.click()
+    `)
+    const back = await page.waitFor(
+      `getComputedStyle(document.querySelector('.sidebar')).display !== 'none'`,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    ok('the panel comes back', back)
+    eq('at its width', (await layout()).width, before.width)
+    const stillThere = await page.waitFor(
+      `[...document.querySelectorAll('.obj-name')].some((e) => e.textContent.trim() === 'items')`,
+      { timeout: 20000 },
+    ).then(() => true).catch(() => false)
+    ok('and the object browser keeps its state', stillThere)
+  }
+
   // Acts as the MCP client for the AI bridge checks: the browser suite is the
   // window the agent talks to, so it calls the token-guarded tool endpoints.
   let aiToken = ''

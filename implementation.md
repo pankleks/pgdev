@@ -53,7 +53,7 @@ The primary design goals are:
 
 ### Frontend
 
-- `web/src/App.vue` provides the application shell, global run action, file opening, resizing, and connection state integration.
+- `web/src/App.vue` provides the application shell, global run action, file opening, resizing, and connection state integration. The topbar's toggle (right after the logo) hides the navigation panel completely and brings it back: the panel is only `display:none`, never unmounted, so the object browser keeps its sections, filter and scroll, and the collapsed flag persists in settings. The sidebar also restores from the saved per-connection state on any (re)mount, not only on the next schema change. Both splitters share the `--splitter` thickness, so the results handle reaches exactly across the panel handle instead of a pixel into the panel.
 - `web/src/components/ConnectDialog.vue` handles parameter-based and connection-string connections.
 - `web/src/components/ObjectBrowser.vue` displays searchable tables, views, functions, and types and opens DDL tabs; its search matches names only (objects, columns, parameter names), never column or argument types.
 - `web/src/components/TableEditDialog.vue` edits a table's description and columns and submits the result for diffing into a new query tab.

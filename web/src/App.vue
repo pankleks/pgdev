@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Bot, Database, FileOutput, FilePlus2, FolderOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
+import { Bot, Database, FileOutput, FilePlus2, FolderOpen, PanelLeftClose, PanelLeftOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import AiDialog from './components/AiDialog.vue'
@@ -97,15 +97,23 @@ async function saveActive(saveAs = false) {
 
 const sideW = ref(336)
 const resultsH = ref(240)
+const sideCollapsed = ref(false)
 let dragKind: 'side' | 'results' | null = null
 
 // Panel sizes persist per browser: saved values land once settings load, and
 // drags are written back debounced (flushed on pagehide so a quick resize
-// before closing is not lost).
+// before closing is not lost). The collapse flag rides along.
 void settings.ready.then(() => {
   sideW.value = settings.state.panelSizes.sideW
   resultsH.value = settings.state.panelSizes.resultsH
+  sideCollapsed.value = settings.state.sideCollapsed
 })
+
+/** Hide the navigation panel entirely; the topbar toggle brings it back. */
+function toggleSide() {
+  sideCollapsed.value = !sideCollapsed.value
+  settings.setSideCollapsed(sideCollapsed.value)
+}
 
 let sizesTimer = 0
 function persistSizes() {
@@ -258,6 +266,11 @@ provide('pgdev:run', runActive)
     <header class="topbar">
       <span class="logo"><Database :size="15" /> pgDEV</span>
       <button
+        class="icon"
+        :title="sideCollapsed ? 'Expand navigation panel' : 'Collapse navigation panel'"
+        @click="toggleSide()"
+      ><component :is="sideCollapsed ? PanelLeftOpen : PanelLeftClose" :size="15" /></button>
+      <button
         v-if="conn.state.id"
         class="conn-badge"
         title="Connection details, disconnect, or switch"
@@ -329,10 +342,10 @@ provide('pgdev:run', runActive)
     </div>
 
     <div class="body">
-      <aside class="sidebar" :style="{ width: sideW + 'px' }">
+      <aside v-show="!sideCollapsed" class="sidebar" :style="{ width: sideW + 'px' }">
         <ObjectBrowser />
       </aside>
-      <div class="drag-v" @pointerdown.prevent="startDrag($event, 'side')" />
+      <div v-if="!sideCollapsed" class="drag-v" @pointerdown.prevent="startDrag($event, 'side')" />
       <main class="pgdev-main">
         <section class="editor-area">
           <EditorTabs />

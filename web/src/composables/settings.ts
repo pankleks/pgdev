@@ -19,6 +19,8 @@ interface SettingsState {
   statementTimeout: number
   /** Monaco editor font size in px. */
   editorFontSize: number
+  /** Navigation panel hidden entirely (the topbar toggle brings it back). */
+  sideCollapsed: boolean
   /** How much of a result set the AI agent may read, per result set. */
   aiLimitRows: number
   /** The same limit as a JSON byte budget, in KB. */
@@ -100,6 +102,7 @@ const state = reactive<SettingsState>({
   browserExpanded: {},
   statementTimeout: STATEMENT_TIMEOUT.fallback,
   editorFontSize: EDITOR_FONT.fallback,
+  sideCollapsed: false,
   aiLimitRows: AI_LIMIT_ROWS.fallback,
   aiLimitKb: AI_LIMIT_KB.fallback,
 })
@@ -117,6 +120,7 @@ function ensureReady(): Promise<void> {
         if (typeof saved.statementTimeout !== 'undefined') {
           state.statementTimeout = clampStatementTimeout(saved.statementTimeout)
         }
+        if (typeof saved.sideCollapsed === 'boolean') state.sideCollapsed = saved.sideCollapsed
         if (typeof saved.editorFontSize !== 'undefined') {
           state.editorFontSize = clampEditorFontSize(saved.editorFontSize)
         }
@@ -151,6 +155,7 @@ function persist() {
     browserExpanded: state.browserExpanded,
     statementTimeout: state.statementTimeout,
     editorFontSize: state.editorFontSize,
+    sideCollapsed: state.sideCollapsed,
     aiLimitRows: state.aiLimitRows,
     aiLimitKb: state.aiLimitKb,
   })) as SettingsState
@@ -176,6 +181,12 @@ export function useSettings() {
     persist()
   }
 
+  function setSideCollapsed(collapsed: boolean) {
+    locallyChanged = true
+    state.sideCollapsed = collapsed
+    persist()
+  }
+
   function setAiLimitRows(rows: number) {
     state.aiLimitRows = clampAiLimit(rows, AI_LIMIT_ROWS)
     persist()
@@ -193,6 +204,7 @@ export function useSettings() {
     state.groupObjects = true
     state.statementTimeout = STATEMENT_TIMEOUT.fallback
     state.editorFontSize = EDITOR_FONT.fallback
+    state.sideCollapsed = false
     state.aiLimitRows = AI_LIMIT_ROWS.fallback
     state.aiLimitKb = AI_LIMIT_KB.fallback
     state.panelSizes.sideW = SIZE_LIMITS.sideW.fallback
@@ -222,5 +234,5 @@ export function useSettings() {
     return (label && state.browserExpanded[label]) || null
   }
 
-  return { state, setGroupObjects, setStatementTimeout, setEditorFontSize, setAiLimitRows, setAiLimitKb, setPanelSizes, setBrowserState, browserStateFor, resetToDefaults, ready }
+  return { state, setGroupObjects, setStatementTimeout, setEditorFontSize, setSideCollapsed, setAiLimitRows, setAiLimitKb, setPanelSizes, setBrowserState, browserStateFor, resetToDefaults, ready }
 }

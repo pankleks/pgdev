@@ -613,6 +613,10 @@ watch(
     for (const key of saved.groups.functions) expandedFunctionGroups.add(key)
     for (const key of saved.groups.types) expandedTypeGroups.add(key)
   },
+  // `immediate` so a component that mounts while a connection is already
+  // loaded restores its sections too — the watcher would otherwise wait for
+  // the next schema change and leave everything collapsed.
+  { immediate: true },
 )
 
 let uiSaveTimer = 0

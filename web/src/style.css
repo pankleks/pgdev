@@ -10,6 +10,8 @@
   --accent-2: #2563a8;
   --error: #f48771;
   --ok: #89d185;
+  /* Splitter thickness shared by the panel and results handles. */
+  --splitter: 4px;
   /* Tabs the agent opened (staged SQL, mirror tabs). */
   --agent: #c586c0;
   /* Underscore-prefixed (system-ish) columns in the table editor. */
@@ -277,7 +279,7 @@ input {
 }
 
 .drag-v {
-  width: 4px;
+  width: var(--splitter);
   cursor: col-resize;
   background: var(--border);
   flex-shrink: 0;
@@ -290,9 +292,11 @@ input {
 }
 
 .drag-h {
-  height: 4px;
-  width: calc(100% + 5px);
-  margin-left: -5px;
+  height: var(--splitter);
+  /* Reach exactly across the vertical handle so the two splitters meet without
+     a seam; one pixel more used to paint over the navigation panel. */
+  width: calc(100% + var(--splitter));
+  margin-left: calc(-1 * var(--splitter));
   cursor: row-resize;
   background: var(--border);
   flex-shrink: 0;
