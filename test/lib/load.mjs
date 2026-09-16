@@ -19,6 +19,28 @@ const TREES = [
   ['web/src', join(SHIM, 'web')],
 ]
 
+/**
+ * A relative specifier retargeted at the shim copy that will hold it. Both
+ * trees are copied with the `src` level flattened away, so a cross-tree import
+ * (web → server, for the shared JSON contract) needs the same treatment as a
+ * same-tree one: resolve it against the real source and point at the copy.
+ */
+function shimSpecifier(from, to, spec) {
+  const abs = join(dirname(from), spec)
+  for (const [src, dest] of TREES) {
+    const srcRoot = join(REPO, src)
+    if (!abs.startsWith(srcRoot)) continue
+    const file = existsSync(`${abs}.ts`)
+      ? `${abs}.ts`
+      : existsSync(join(abs, 'index.ts'))
+        ? join(abs, 'index.ts')
+        : `${abs}.ts`
+    const rel = relative(dirname(to), join(dest, relative(srcRoot, file))).replace(/\\/g, '/')
+    return `${rel.startsWith('.') ? rel : `./${rel}`}`
+  }
+  return `${spec}.ts`
+}
+
 function copyTree(srcDir, destDir) {
   const walk = (dir) => {
     for (const entry of readdirSync(dir)) {
@@ -34,10 +56,7 @@ function copyTree(srcDir, destDir) {
         /(['"])((?:\.\.?\/)[^'"]+?)(?:\.js)?\1/g,
         (match, quote, spec) => {
           if (/\.(js|ts|json|css|vue)$/.test(spec)) return match
-          const abs = join(dirname(from), spec)
-          if (existsSync(`${abs}.ts`)) return `${quote}${spec}.ts${quote}`
-          if (existsSync(join(abs, 'index.ts'))) return `${quote}${spec}/index.ts${quote}`
-          return `${quote}${spec}.ts${quote}`
+          return `${quote}${shimSpecifier(from, to, spec)}${quote}`
         },
       )
       writeFileSync(to, rewritten)

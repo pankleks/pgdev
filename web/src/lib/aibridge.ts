@@ -1,10 +1,17 @@
 // Browser half of the AI bridge (pure): the app subscribes to the server's SSE
-// stream and performs the actions an agent asks for — read the active tab,
-// write SQL into it, open a tab, show agent rows. Nothing here runs SQL: the
-// agent's reads go through the server, and the editor is for the user to run.
-// Everything is injected, so the reducer is unit-testable without Vue or Monaco.
+// stream and performs the actions an agent asks for — read the active tab, its
+// last result and messages, write SQL into it, open a tab, show agent rows.
+// Nothing here runs SQL: the agent's reads go through the server, and the
+// editor is for the user to run. Everything is injected, so the reducer is
+// unit-testable without Vue or Monaco.
+
+import type { AiActiveResult, AiResultGrid, AiResultMessage } from '../types'
 
 export const AI_TAB_TITLE = 'AI'
+
+/** Fallbacks when the server did not say what the agent may read. */
+const AI_RESULT_ROW_CAP = 100
+const AI_RESULT_BYTE_CAP = 64 * 1024
 
 export interface BridgeAction {
   id: string
@@ -28,6 +35,16 @@ export interface AiTabView {
   content: string
 }
 
+/** The result state of one tab, as the reducer needs it to answer the agent. */
+export interface AiTabResultView {
+  running: boolean
+  transactionOpen: boolean
+  /** Statement number the grid shows; null while Messages is shown. */
+  selected: number | null
+  messages: AiResultMessage[]
+  grids: AiResultGrid[]
+}
+
 export interface AiBridgeDeps {
   connectionId(): string | null
   connectionLabel(): string
@@ -40,6 +57,8 @@ export interface AiBridgeDeps {
   showGrid(tabKey: string, grid: AgentGrid): void
   /** Write at the cursor (replacing a selection); false when no editor is mounted. */
   insertAtCursor(sql: string): boolean
+  /** The tab's last result state, or null when nothing has been run in it. */
+  activeResult(tabKey: string): AiTabResultView | null
 }
 
 function text(value: unknown): string {
@@ -65,6 +84,38 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
       const tab = activeTab()
       if (!tab) throw new Error('No tab is open in pgDEV.')
       return { sql: tab.content, readOnly: tab.readOnly }
+    }
+
+    case 'get-active-result': {
+      const tab = activeTab()
+      if (!tab) throw new Error('No tab is open in pgDEV.')
+      const state = deps.activeResult(tab.key)
+      // Trim before the payload crosses the bridge: the server's own cap stays
+      // authoritative, this only keeps the answer small. `maxBytes` is a safety
+      // bound as well, so one huge cell cannot blow the HTTP body limit.
+      const maxRows = typeof args.maxRows === 'number' ? args.maxRows : AI_RESULT_ROW_CAP
+      const maxBytes = typeof args.maxBytes === 'number' ? args.maxBytes : AI_RESULT_BYTE_CAP
+      const results = (state?.grids ?? []).map((grid) => {
+        const rows: unknown[][] = []
+        let bytes = 0
+        for (const row of grid.rows) {
+          if (rows.length >= maxRows) break
+          const size = JSON.stringify(row)?.length ?? 0
+          if (rows.length && bytes + size > maxBytes) break
+          bytes += size
+          rows.push(row)
+        }
+        return { ...grid, rows, truncated: grid.truncated || rows.length < grid.rows.length }
+      })
+      return {
+        tab: { key: tab.key, title: tab.title, readOnly: tab.readOnly },
+        ran: state !== null,
+        running: state?.running ?? false,
+        transactionOpen: state?.transactionOpen ?? false,
+        selected: state?.selected ?? null,
+        messages: state?.messages ?? [],
+        results,
+      } satisfies AiActiveResult
     }
 
     case 'set-active-query': {

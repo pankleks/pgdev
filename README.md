@@ -42,14 +42,16 @@ client (opencode, for example, reads it from `opencode.json`).
 The agent sees the connection you have open in pgDEV and nothing else — it
 cannot list, open or choose connections, and its database tools fail with
 "not connected" when you are not connected. It reads with `query`, which only
-ever runs `SELECT`-style statements. Ask it to write a script — a new function,
-a migration, a data fix — and it authors the SQL and stages it in a tab for you
-to review; it can also start from the current definition it gets via `get_ddl`.
-Nothing the agent stages is ever executed: **you** press Run, so the decision is
-always yours. The rows an agent reads are mirrored into an `AI` tab so you can
-see them. Keep one pgDEV window open — the agent acts on exactly one window and
-refuses when several are listening. Close pgDEV to revoke access; the token dies
-with the process.
+ever runs `SELECT`-style statements, and it can read what the active tab last
+produced: the rows in the grid and the Messages text, so it can check what you
+ran. Ask it to write a script — a new function, a migration, a data fix — and it
+authors the SQL and stages it in a tab for you to review; it can also start from
+the current definition it gets via `get_ddl`. Nothing the agent stages is ever
+executed: **you** press Run, so the decision is always yours. How many rows and
+bytes of each result set it may read is a preference in Settings → AI agent.
+Keep one pgDEV window open — the agent acts on exactly one window and refuses
+when several are listening. Close pgDEV to revoke access; the token dies with
+the process.
 
 ## This is WIP
 

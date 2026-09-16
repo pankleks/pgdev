@@ -10,18 +10,13 @@
 // user, who runs it.
 
 import type { MappedData, BatchOutcome } from '../queryexec.js'
-import type { SchemaData } from '../schema-types.js'
+import type { AiActiveResult, AiLimits, AiResultGrid, SchemaData } from '../schema-types.js'
+import { DEFAULT_AI_LIMITS } from '../schema-types.js'
 import { BridgeError, windowProblem, type Bridge } from './bridge.js'
 import { isReadOnlySql } from './readonly.js'
 
-export interface AiLimits {
-  /** Rows returned to the agent per result. */
-  maxRows: number
-  /** Bytes of row JSON returned to the agent per result. */
-  maxBytes: number
-}
-
-export const DEFAULT_AI_LIMITS: AiLimits = { maxRows: 100, maxBytes: 64 * 1024 }
+export type { AiLimits } from '../schema-types.js'
+export { DEFAULT_AI_LIMITS } from '../schema-types.js'
 
 export const AI_TAB_TITLE = 'AI'
 
@@ -60,6 +55,8 @@ interface ActiveQuery {
 }
 
 const MAX_RELATIONS = 200
+/** Only the tail of a tab's message list travels to the agent. */
+const MAX_MESSAGES = 100
 const DDL_TYPES = ['table', 'view', 'function', 'index', 'constraint', 'trigger', 'type']
 const NOT_CONNECTED =
   'pgDEV is not connected to a database. Open a connection in pgDEV, then ask again.'
@@ -102,7 +99,11 @@ function capRows(
 
 export function createAiTools(deps: AiDeps): Record<string, AiTool> {
   const bridge = deps.bridge
-  const limits = deps.limits ?? DEFAULT_AI_LIMITS
+
+  /** Read at call time: the browser can change the limits while the server runs. */
+  function limits(): AiLimits {
+    return deps.limits ?? DEFAULT_AI_LIMITS
+  }
 
   async function context(): Promise<BrowserContext | null> {
     if (!bridge.connected()) return null
@@ -151,7 +152,7 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
 
     let outcome: BatchOutcome
     try {
-      outcome = await deps.runReadOnly(connection.id, sql, limits.maxRows)
+      outcome = await deps.runReadOnly(connection.id, sql, limits().maxRows)
     } catch (err) {
       return fail(messageOf(err))
     }
@@ -164,7 +165,7 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     if (!data.length) return fail('The statement returned no rows (only commands ran).')
 
     const results = data.map((item, index) => {
-      const capped = capRows(item.rows, limits.maxRows, limits.maxBytes)
+      const capped = capRows(item.rows, limits().maxRows, limits().maxBytes)
       return {
         statement: index + 1,
         columns: item.columns,
@@ -321,6 +322,50 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     }
   }
 
+  /**
+   * What the active tab last produced on screen: every result set with the
+   * rows the grid holds (capped like `query`) plus the Messages text, so the
+   * agent can see the outcome of what the user ran. Read-only UI state — no
+   * database access happens here.
+   */
+  async function getActiveResult(): Promise<AiToolResult> {
+    const problem = windowError(bridge)
+    if (problem) return fail(problem)
+    let snapshot: AiActiveResult
+    try {
+      snapshot = (await bridge.request('get-active-result', { ...limits() })) as AiActiveResult
+    } catch (err) {
+      return fail(messageOf(err))
+    }
+    const caps = limits()
+    const results: AiResultGrid[] = (snapshot.results ?? []).map((grid) => {
+      const capped = capRows(grid.rows, caps.maxRows, caps.maxBytes)
+      return {
+        statement: grid.statement,
+        columns: grid.columns,
+        columnTypes: grid.columnTypes,
+        rows: capped.rows,
+        rowCount: grid.rowCount,
+        truncated: capped.truncated || grid.truncated === true,
+        limited: grid.limited === true,
+        totalRowCount: grid.totalRowCount,
+        exported: grid.exported,
+      }
+    })
+    return {
+      ok: true,
+      result: {
+        tab: snapshot.tab,
+        ran: snapshot.ran !== false,
+        running: snapshot.running === true,
+        transactionOpen: snapshot.transactionOpen === true,
+        selected: snapshot.selected ?? null,
+        messages: (snapshot.messages ?? []).slice(-MAX_MESSAGES),
+        results,
+      },
+    }
+  }
+
   return {
     get_schema: getSchema,
     get_ddl: getDdl,
@@ -328,5 +373,6 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
     get_active_query: getActiveQuery,
     set_active_query: setActiveQuery,
     open_query_tab: openQueryTab,
+    get_active_result: getActiveResult,
   }
 }

@@ -547,6 +547,37 @@ try {
 
   console.log('\n== AI bridge ==')
   {
+    /** Poll the tool until the active result holds `want` rows (settings pushes
+     * and the run itself are asynchronous). */
+    const readActiveResult = async (want) => {
+      let out = null
+      for (let i = 0; i < 30; i++) {
+        out = await aiTool('get_active_result')
+        if (out.body.result?.results?.[0]?.rows?.length === want) return out
+        await new Promise((r) => setTimeout(r, 150))
+      }
+      return out
+    }
+
+    /** Drive Settings → AI agent → Row limit, exactly as a user would. */
+    const setAiRowLimit = async (value) => {
+      await page.evaluate(`
+        const open = [...document.querySelectorAll('button')].find((b) => b.title === 'Settings')
+        if (open && !document.querySelector('.settings-modal')) open.click()
+      `)
+      await page.waitFor(`!!document.querySelector('.settings-modal')`, { timeout: 10000 })
+      await page.evaluate(`
+        const section = [...document.querySelectorAll('.settings-section')]
+          .find((s) => s.querySelector('h3')?.textContent.trim() === 'AI agent')
+        const input = section.querySelector('.stepper-input')
+        const proto = Object.getPrototypeOf(input)
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ${JSON.stringify(String(value))})
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      `)
+      await page.evaluate(`document.querySelector('.settings-modal button.icon')?.click()`)
+      await page.waitFor(`!document.querySelector('.settings-modal')`, { timeout: 10000 }).catch(() => {})
+    }
+
     // The window is the page under test: the tools above reached it over the
     // SSE bridge, which is only up when the page subscribed on load.
     await page.evaluate(`window.__pgdev.setValue('SELECT 1 AS ai_probe')`)
@@ -603,6 +634,39 @@ try {
     const schema = await aiTool('get_schema', { table: 'items' })
     eq('get_schema reads the connection open in the window',
       schema.body.result?.tables?.map((t) => t.name), ['items'])
+
+    // The agent can read what the active tab produced: the mirrored rows and
+    // the Messages text.
+    const mirrored = await aiTool('get_active_result')
+    eq('the agent reads the mirrored rows', mirrored.body.result?.results?.[0]?.rows, [[42]])
+    eq('and knows the tab it came from', mirrored.body.result?.tab?.title, 'AI')
+    eq('and that the tab has run', mirrored.body.result?.ran, true)
+    ok('with the tab message',
+      /Agent query: 1 row\(s\)/.test(mirrored.body.result?.messages?.[0]?.text ?? ''),
+      JSON.stringify(mirrored.body.result?.messages))
+
+    // Run a real query in the tab and watch the agent's row limit apply.
+    await page.evaluate(`window.__pgdev.setValue('SELECT g AS n FROM generate_series(1, 5) g ORDER BY g')`)
+    await page.evaluate(`
+      const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run')
+      btn?.click()
+    `)
+    const fiveRows = await page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === '5')`,
+      { timeout: 15000 },
+    ).then(() => true).catch(() => false)
+    ok('the user query produced five rows', fiveRows)
+    const fullResult = await readActiveResult(5)
+    eq('the agent reads the rows the user sees', fullResult.body.result?.results?.[0]?.rows?.length, 5)
+    ok('and the statement message',
+      /\d+ row\(s\)/.test(fullResult.body.result?.messages?.find((m) => /row\(s\)/.test(m.text))?.text ?? ''),
+      JSON.stringify(fullResult.body.result?.messages))
+
+    await setAiRowLimit(2)
+    const limited = await readActiveResult(2)
+    eq('the row limit from Settings applies to the agent', limited.body.result?.results?.[0]?.rows?.length, 2)
+    eq('and the cut is reported', limited.body.result?.results?.[0]?.truncated, true)
+    await setAiRowLimit(100)
   }
 
   console.log('\n== opened sections survive a reload ==')
@@ -642,6 +706,13 @@ try {
       { timeout: 20000 },
     ).then(() => true).catch(() => false)
     ok('server error text appears in the results panel', shown)
+
+    // The agent gets the same failure, as a message, from the tool.
+    const failed = await aiTool('get_active_result')
+    ok('the agent sees the failed statement',
+      failed.body.result?.messages?.some((m) => m.level === 'error' && /definitely_not_a_table/.test(m.text)),
+      JSON.stringify(failed.body.result?.messages))
+    eq('and no rows for it', failed.body.result?.results, [])
   }
 
   console.log('\n== row editor ==')

@@ -75,7 +75,8 @@ const server = new McpServer(
       'EXPLAIN. To create, alter or drop anything, or to change data, author the SQL yourself — start ' +
       'from `get_ddl` when the object already exists — and stage it with `set_active_query` (into the ' +
       'tab the user is looking at) or `open_query_tab` (a new tab). pgDEV never executes staged SQL: ' +
-      'the user reviews it and runs it.',
+      'the user reviews it and runs it. `get_active_result` shows what the active tab last produced ' +
+      '(its result sets and Messages text), so you can check the outcome of a script the user ran.',
   },
 )
 
@@ -136,6 +137,19 @@ server.registerTool(
     inputSchema: {},
   },
   handler('get_active_query'),
+)
+
+server.registerTool(
+  'get_active_result',
+  {
+    title: 'Read the active tab result',
+    description:
+      'What the active tab last produced on screen: every result set with its columns and rows (the ' +
+      'agent row limit applies) plus the Messages text, including errors. Read-only — it runs nothing ' +
+      'and does not touch the database.',
+    inputSchema: {},
+  },
+  handler('get_active_result'),
 )
 
 server.registerTool(

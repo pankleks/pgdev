@@ -1,5 +1,6 @@
 import type {
   AiConfig,
+  AiLimits,
   ConnectionConfig,
   FetchMoreResponse,
   QueryResponse,
@@ -107,6 +108,15 @@ export const api = {
   /** The AI/MCP configuration; `enabled` is false when the server has AI off. */
   aiConfig(): Promise<AiConfig> {
     return fetch('/api/ai/config').then((r) => unwrap<AiConfig>(r))
+  },
+
+  /** Tell the server how much of a result set the agent may read. */
+  aiLimits(limits: AiLimits): Promise<AiLimits> {
+    return fetch('/api/ai/limits', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(limits),
+    }).then((r) => unwrap<AiLimits>(r))
   },
 
   /** Hand a bridge action's outcome back to the waiting tool call. */

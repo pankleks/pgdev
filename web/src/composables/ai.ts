@@ -4,6 +4,7 @@ import { insertAtCursor } from '../lib/formatbridge'
 import { AI_TAB_TITLE, applyBridgeAction, type AiBridgeDeps, type BridgeAction } from '../lib/aibridge'
 import { useConnection } from './connection'
 import { useResults } from './results'
+import { useSettings } from './settings'
 import { useTabs } from './tabs'
 
 export { AI_TAB_TITLE, applyBridgeAction }
@@ -32,6 +33,27 @@ export function useAi() {
       updateContent: (key, content) => tabs.updateContent(key, content),
       showGrid: (tabKey, grid) => results.showGrid(tabKey, grid),
       insertAtCursor: (sql) => insertAtCursor(sql),
+      activeResult: (tabKey) => {
+        const r = results.state.byTab[tabKey]
+        if (!r) return null
+        return {
+          running: r.running || r.loadingMore,
+          transactionOpen: r.transactionOpen,
+          selected: r.grid?.statementNumber ?? null,
+          messages: r.messages.map((m) => ({ level: m.level, text: m.text })),
+          grids: r.grids.map((g) => ({
+            statement: g.statementNumber,
+            columns: g.columns,
+            columnTypes: g.columnTypes,
+            rows: g.rows,
+            rowCount: g.rowCount,
+            truncated: g.truncated,
+            limited: g.limited === true,
+            totalRowCount: g.totalRowCount,
+            exported: g.exported?.rows,
+          })),
+        }
+      },
     }
   }
 
@@ -57,6 +79,7 @@ export function useAi() {
     const config = await api.aiConfig().catch(() => null)
     if (!config?.enabled) return
     state.enabled = true
+    void pushLimits()
     source = new EventSource('/api/ai/bridge')
     source.onopen = () => {
       state.connected = true
@@ -69,5 +92,17 @@ export function useAi() {
     }
   }
 
-  return { state, start }
+  /** Push the user's row/byte preference; the server default stands until then. */
+  async function pushLimits(): Promise<void> {
+    const settings = useSettings()
+    await settings.ready.catch(() => undefined)
+    await api
+      .aiLimits({
+        maxRows: settings.state.aiLimitRows,
+        maxBytes: settings.state.aiLimitKb * 1024,
+      })
+      .catch(() => undefined)
+  }
+
+  return { state, start, pushLimits }
 }

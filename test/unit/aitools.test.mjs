@@ -228,10 +228,95 @@ test('two listening windows refuse editor tools and skip the result mirror', asy
   unsubscribe()
 })
 
+test('get_active_result forwards the limits and caps each result set', async () => {
+  const { tools, bridge, events, unsubscribe } = setup()
+  const pending = tools.get_active_result({})
+  const event = await answer(bridge, events, {
+    tab: { key: 'query-1', title: 'Query 1', readOnly: false },
+    ran: true,
+    running: false,
+    transactionOpen: true,
+    selected: 1,
+    messages: [
+      { level: 'info', text: '2 statement(s) in 4 ms' },
+      { level: 'error', text: 'division by zero' },
+    ],
+    results: [
+      {
+        statement: 1,
+        columns: ['id'],
+        columnTypes: ['integer'],
+        rows: [[1], [2], [3]],
+        rowCount: 3,
+        truncated: false,
+        limited: false,
+      },
+    ],
+  })
+  assert.equal(event.action, 'get-active-result')
+  // The agent's own limit travels with the action so the page can trim early.
+  assert.deepEqual(event.args, { maxRows: 100, maxBytes: 64 * 1024 })
+
+  const result = await pending
+  assert.equal(result.ok, true)
+  assert.equal(result.result.transactionOpen, true)
+  assert.equal(result.result.ran, true)
+  assert.equal(result.result.messages.at(-1).level, 'error')
+  assert.deepEqual(result.result.results[0].rows, [[1], [2], [3]])
+  assert.equal(result.result.results[0].truncated, false)
+  unsubscribe()
+})
+
+test('get_active_result applies the configured limits it was given', async () => {
+  const limits = { maxRows: 2, maxBytes: 1024 }
+  const { tools, bridge, events, unsubscribe } = setup({ limits })
+  const pending = tools.get_active_result({})
+  const event = await answer(bridge, events, {
+    tab: { key: 'query-1', title: 'Query 1', readOnly: false },
+    ran: true,
+    running: false,
+    transactionOpen: false,
+    selected: 1,
+    messages: [],
+    results: [
+      {
+        statement: 1,
+        columns: ['id'],
+        columnTypes: ['integer'],
+        rows: [[1], [2], [3]],
+        rowCount: 3,
+        truncated: false,
+        limited: false,
+      },
+    ],
+  })
+  assert.deepEqual(event.args, limits)
+  const result = await pending
+  assert.deepEqual(result.result.results[0].rows, [[1], [2]])
+  assert.equal(result.result.results[0].truncated, true)
+  unsubscribe()
+})
+
+test('get_active_result needs exactly one window', async () => {
+  const { tools } = setup({ bridge: createBridge(20) })
+  const missing = await tools.get_active_result({})
+  assert.equal(missing.ok, false)
+  assert.match(missing.error, /No pgDEV window/)
+
+  const { tools: two, bridge, unsubscribe } = setup()
+  const second = bridge.subscribe(() => undefined)
+  const refused = await two.get_active_result({})
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /2 pgDEV windows/)
+  second()
+  unsubscribe()
+})
+
 test('the agent can never run the editor, and never picks a connection', async () => {
   const { tools, calls } = setup()
   assert.deepEqual(Object.keys(tools).sort(), [
     'get_active_query',
+    'get_active_result',
     'get_ddl',
     'get_schema',
     'open_query_tab',

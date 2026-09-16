@@ -3,7 +3,11 @@
 // `from '../types'` imports working; types only — nothing here survives the
 // vite build.
 export type {
+  AiActiveResult,
   AiConfig,
+  AiLimits,
+  AiResultGrid,
+  AiResultMessage,
   ColumnInfo,
   CommandResult,
   ConnectionConfig,
@@ -30,3 +34,6 @@ export type {
   TypeInfo,
   ViewInfo,
 } from '../../server/src/schema-types'
+
+// Values shared with the server (defaults and ranges the Settings dialog needs).
+export { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS } from '../../server/src/schema-types'

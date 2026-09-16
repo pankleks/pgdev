@@ -7,7 +7,7 @@ const { applyBridgeAction, AI_TAB_TITLE } = await load('web/lib/aibridge.ts')
 
 // The browser's half of the AI bridge, pure over injected stores.
 
-function setup() {
+function setup(overrides = {}) {
   const tabs = [
     { key: 'query-1', title: 'Query 1', readOnly: false, content: 'SELECT 1' },
     { key: 'ddl-1', title: 'items', readOnly: true, content: 'CREATE TABLE items ();' },
@@ -20,6 +20,7 @@ function setup() {
     grids: [],
     activated: [],
     inserted: [],
+    results: {},
   }
   let counter = 1
   const deps = {
@@ -47,8 +48,23 @@ function setup() {
       state.inserted.push(sql)
       return true
     },
+    activeResult: (key) => state.results[key] ?? null,
+    ...overrides,
   }
   return { deps, state, tabs }
+}
+
+function grid(overrides = {}) {
+  return {
+    statement: 1,
+    columns: ['id'],
+    columnTypes: ['integer'],
+    rows: [[1], [2]],
+    rowCount: 2,
+    truncated: false,
+    limited: false,
+    ...overrides,
+  }
 }
 
 test('get-context reports the active connection and tabs', async () => {
@@ -110,6 +126,78 @@ test('authored DDL is staged in the active tab, never run', async () => {
   assert.deepEqual(applied, { sql: ddl })
   assert.equal(state.written.at(-1).content, ddl)
   assert.deepEqual(state.grids, [])
+})
+
+test('get-active-result reports the tab and nothing ran yet', async () => {
+  const { deps } = setup()
+  const result = await applyBridgeAction(deps, { id: '1', action: 'get-active-result' })
+  assert.equal(result.tab.key, 'query-1')
+  assert.equal(result.tab.title, 'Query 1')
+  assert.equal(result.ran, false)
+  assert.equal(result.running, false)
+  assert.equal(result.transactionOpen, false)
+  assert.equal(result.selected, null)
+  assert.deepEqual(result.messages, [])
+  assert.deepEqual(result.results, [])
+})
+
+test('get-active-result returns every result set with its messages', async () => {
+  const { deps, state } = setup()
+  state.results['query-1'] = {
+    running: false,
+    transactionOpen: true,
+    selected: 2,
+    messages: [
+      { level: 'info', text: '2 statement(s) in 4 ms' },
+      { level: 'info', text: 'Statement 1: 2 row(s)' },
+      { level: 'error', text: 'Statement 2: division by zero' },
+    ],
+    grids: [grid(), grid({ statement: 2, columns: ['x'], rows: [[3]], rowCount: 1 })],
+  }
+  const result = await applyBridgeAction(deps, { id: '1', action: 'get-active-result' })
+  assert.equal(result.ran, true)
+  assert.equal(result.transactionOpen, true)
+  assert.equal(result.selected, 2)
+  assert.deepEqual(result.messages.at(-1), { level: 'error', text: 'Statement 2: division by zero' })
+  assert.deepEqual(result.results.map((r) => r.rows), [[[1], [2]], [[3]]])
+  assert.ok(result.results.every((r) => r.truncated === false))
+})
+
+test('get-active-result trims to the cap the server asked for', async () => {
+  const { deps, state } = setup()
+  state.results['query-1'] = {
+    running: true,
+    transactionOpen: false,
+    selected: 1,
+    messages: [],
+    grids: [grid({ rows: [[1], [2], [3], [4]], rowCount: 4 })],
+  }
+  const limited = await applyBridgeAction(deps, {
+    id: '1',
+    action: 'get-active-result',
+    args: { maxRows: 2, maxBytes: 1024 },
+  })
+  assert.deepEqual(limited.results[0].rows, [[1], [2]])
+  assert.equal(limited.results[0].truncated, true)
+  assert.equal(limited.running, true)
+
+  // A byte budget stops the payload from growing without bound.
+  const tight = await applyBridgeAction(deps, {
+    id: '2',
+    action: 'get-active-result',
+    args: { maxRows: 100, maxBytes: 5 },
+  })
+  assert.deepEqual(tight.results[0].rows, [[1]])
+  assert.equal(tight.results[0].truncated, true)
+})
+
+test('get-active-result needs a tab', async () => {
+  const { deps, state } = setup()
+  state.activeKey = 'gone'
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '1', action: 'get-active-result' }),
+    /No tab is open/,
+  )
 })
 
 test('open-query-tab creates a tab and returns its key', async () => {

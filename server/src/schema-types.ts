@@ -248,4 +248,63 @@ export interface AiConfig {
   command: string
   /** Ready-to-paste client configuration JSON. */
   config: string
+  /** Limits currently applied to every result set the agent reads. */
+  limits: AiLimits
+}
+
+/** How much of a result set the agent may see (Settings → AI agent). */
+export interface AiLimits {
+  /** Rows per result set. */
+  maxRows: number
+  /** Bytes of row JSON per result set. */
+  maxBytes: number
+}
+
+/** Accepted range for the configurable AI limits; shared by the Settings
+ * dialog, the endpoints that validate them, and the MCP surface. */
+export const AI_LIMIT_RANGES = {
+  maxRows: { min: 1, max: 10000 },
+  maxBytes: { min: 1024, max: 4 * 1024 * 1024 },
+} as const
+
+/** What the agent sees when nothing has been configured. */
+export const DEFAULT_AI_LIMITS: AiLimits = { maxRows: 100, maxBytes: 64 * 1024 }
+
+/** One line of a result panel's Messages tab. */
+export interface AiResultMessage {
+  level: 'info' | 'error'
+  text: string
+}
+
+/** One result set of the active tab, as it currently sits in the grid. */
+export interface AiResultGrid {
+  /** 1-based position in the batch. */
+  statement: number
+  columns: string[]
+  columnTypes: string[]
+  rows: unknown[][]
+  rowCount: number
+  /** The agent's limit (or the grid's own) cut rows off. */
+  truncated: boolean
+  /** Rows were discarded at the server row limit; no cursor can fetch them. */
+  limited: boolean
+  /** Rows the statement would have returned, when the row limit was reached. */
+  totalRowCount?: number
+  /** Rows an export streamed to a file, when that consumed the cursor. */
+  exported?: number
+}
+
+/** What the active tab last produced on screen (`get_active_result`). */
+export interface AiActiveResult {
+  tab: { key: string; title: string; readOnly: boolean }
+  /** False when nothing has been run in the tab yet. */
+  ran: boolean
+  /** A statement (or page load) is in flight right now. */
+  running: boolean
+  /** A user-managed transaction is open for the tab. */
+  transactionOpen: boolean
+  /** Statement number the grid shows; null while Messages is shown. */
+  selected: number | null
+  messages: AiResultMessage[]
+  results: AiResultGrid[]
 }

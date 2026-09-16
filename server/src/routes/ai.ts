@@ -16,10 +16,12 @@ import { runBatch } from '../queryexec.js'
 import { createBridge } from '../ai/bridge.js'
 import { createAiTools, type DdlTarget } from '../ai/tools.js'
 import { wrapReadOnly } from '../ai/readonly.js'
+import { AI_LIMIT_RANGES, DEFAULT_AI_LIMITS, type AiLimits } from '../schema-types.js'
 
 // AI surface for external agents (MCP clients, via bin/pgdev-mcp.mjs):
 //   POST /api/ai/tool/:name      tool call, bearer-token only (the shim has no Origin)
-//   GET  /api/ai/config          browser-facing: url, token and a ready MCP config
+//   GET  /api/ai/config          browser-facing: url, token, limits and a ready MCP config
+//   PUT  /api/ai/limits          browser-facing: how much of a result set the agent sees
 //   GET  /api/ai/bridge          SSE stream the browser subscribes to
 //   POST /api/ai/bridge/result   the browser's answer to a bridge action
 //
@@ -69,6 +71,9 @@ async function dispatchDdl(connectionId: string, target: DdlTarget): Promise<str
 
 export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
   const bridge = createBridge()
+  // Live limits: the browser pushes the user's Settings choice and every tool
+  // reads this object at call time. Server default until it does.
+  const limits: AiLimits = { ...DEFAULT_AI_LIMITS }
   const tools = createAiTools({
     connectionIds,
     getSchema: (id: string) => fetchSchemaData(getCatalogPool(id)),
@@ -78,6 +83,7 @@ export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
     runReadOnly: (id: string, sql: string, maxRows: number) =>
       runBatch(id, AI_TAB_KEY, wrapReadOnly(sql), maxRows),
     bridge,
+    limits,
   })
 
   app.post('/api/ai/tool/:name', async (req, reply) => {
@@ -111,7 +117,39 @@ export async function aiRoutes(app: FastifyInstance, options: AiRouteOptions) {
       token: options.token,
       command,
       config: JSON.stringify(config, null, 2),
+      limits: { ...limits },
     }
+  })
+
+  // The browser owns this preference (Settings → AI agent) and pushes it on
+  // load and on every change; the origin guard is what protects the endpoint.
+  app.put('/api/ai/limits', async (req, reply) => {
+    const body = (req.body ?? {}) as { maxRows?: unknown; maxBytes?: unknown }
+    const rows = body.maxRows
+    const bytes = body.maxBytes
+    if (
+      typeof rows !== 'number' ||
+      !Number.isInteger(rows) ||
+      rows < AI_LIMIT_RANGES.maxRows.min ||
+      rows > AI_LIMIT_RANGES.maxRows.max
+    ) {
+      return reply.code(400).send({
+        error: `maxRows must be an integer from ${AI_LIMIT_RANGES.maxRows.min} to ${AI_LIMIT_RANGES.maxRows.max}`,
+      })
+    }
+    if (
+      typeof bytes !== 'number' ||
+      !Number.isInteger(bytes) ||
+      bytes < AI_LIMIT_RANGES.maxBytes.min ||
+      bytes > AI_LIMIT_RANGES.maxBytes.max
+    ) {
+      return reply.code(400).send({
+        error: `maxBytes must be an integer from ${AI_LIMIT_RANGES.maxBytes.min} to ${AI_LIMIT_RANGES.maxBytes.max}`,
+      })
+    }
+    limits.maxRows = rows
+    limits.maxBytes = bytes
+    return { ...limits }
   })
 
   app.get('/api/ai/bridge', (req, reply: FastifyReply) => {

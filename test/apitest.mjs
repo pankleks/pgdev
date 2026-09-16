@@ -842,8 +842,31 @@ console.log('\n== AI tool surface ==')
   ok('editor tools report the missing window',
     editor.body.ok === false && /No pgDEV window/.test(editor.body.error), JSON.stringify(editor.body))
 
+  const result = await tool('get_active_result')
+  ok('the active result needs a window too',
+    result.body.ok === false && /No pgDEV window/.test(result.body.error), JSON.stringify(result.body))
+
   const stray = await call('POST', '/api/ai/bridge/result', { id: 'missing', result: 1 })
   eq('an unknown bridge result is ignored', stray.body.ok, false)
+
+  // The browser owns the limits; the endpoint validates and applies them.
+  const defaults = (await call('GET', '/api/ai/config')).body.limits
+  eq('config reports the default limits', defaults, { maxRows: 100, maxBytes: 65536 })
+
+  const badRows = await call('PUT', '/api/ai/limits', { maxRows: 0, maxBytes: 65536 })
+  eq('a row limit outside the range is rejected', badRows.status, 400)
+  const badBytes = await call('PUT', '/api/ai/limits', { maxRows: 100, maxBytes: 12 })
+  eq('a byte limit outside the range is rejected', badBytes.status, 400)
+
+  const set = await call('PUT', '/api/ai/limits', { maxRows: 2, maxBytes: 65536 })
+  eq('valid limits are accepted', set.body, { maxRows: 2, maxBytes: 65536 })
+  eq('config reports them back', (await call('GET', '/api/ai/config')).body.limits, { maxRows: 2, maxBytes: 65536 })
+  const capped = await tool('query', { sql: 'SELECT g FROM generate_series(1, 5) g' })
+  eq('the row limit applies to the next query', capped.body.result.results[0].rows, [[1], [2]])
+  eq('and is reported as truncated', capped.body.result.results[0].truncated, true)
+  eq('only the capped rows come back', capped.body.result.results[0].rowCount, 2)
+  const restored = await call('PUT', '/api/ai/limits', defaults)
+  eq('the browser can put the defaults back', restored.body, defaults)
 }
 
 console.log('\n== disconnect ==')

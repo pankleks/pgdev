@@ -48,7 +48,7 @@ The primary design goals are:
 - `server/src/ai/readonly.ts` classifies an agent statement as a plain read and wraps the batch so PostgreSQL runs it in a read-only transaction.
 - `server/src/ai/bridge.ts` is the server half of the browser bridge: request/response over the SSE stream, with `no-window`, timeout, and disconnect errors.
 - `server/src/ai/tools.ts` implements the agent tools (schema, DDL, read-only query, editor actions) with row and byte caps, on the connection pgDEV has open.
-- `server/src/routes/ai.ts` serves `/api/ai/*`: token-guarded tool calls, the browser configuration payload, and the browser SSE stream.
+- `server/src/routes/ai.ts` serves `/api/ai/*`: token-guarded tool calls, the browser configuration payload, the live agent result limits, and the browser SSE stream.
 - `bin/pgdev-mcp.mjs` is the stdio MCP shim: it publishes those tools to an MCP client and forwards calls with the bearer token.
 
 ### Frontend
@@ -66,7 +66,7 @@ The primary design goals are:
 - `web/src/composables/schema.ts` manages schema loading and stale-request protection.
 - `web/src/composables/tabs.ts` stores editor tabs, pinned-file state, active-tab state, and the tab session machinery.
 - `web/src/composables/results.ts` stores per-tab query state and protects asynchronous operations with operation tokens.
-- `web/src/composables/settings.ts` persists user preferences.
+- `web/src/composables/settings.ts` persists user preferences, including how much of a result set an AI agent may read.
 - `web/src/composables/toast.ts` shows transient status messages.
 - `web/src/lib/sqlformat.ts` wraps `sql-formatter` while preserving non-routine dollar-quoted bodies.
 - `web/src/lib/gridio.ts` implements clipboard, delimited text, and safe CSV export.
@@ -81,7 +81,7 @@ The primary design goals are:
 - `web/src/lib/formatbridge.ts` connects the toolbar format action to the mounted editor.
 - `web/src/lib/preparemap.ts` scans `$N` parameters and builds the PREPARE/EXECUTE template (no type detection — PostgreSQL infers parameter types from the query).
 - `web/src/lib/aibridge.ts` is the pure reducer for AI bridge actions: read or write the active tab, open tabs, run a tab, mirror agent rows.
-- `web/src/composables/ai.ts` subscribes to the AI bridge stream and dispatches those actions through the tab, result, and connection stores.
+- `web/src/composables/ai.ts` subscribes to the AI bridge stream, dispatches those actions through the tab, result, and connection stores, and pushes the agent's result limits to the server.
 - `web/src/components/AiDialog.vue` reports the AI access state and shows the ready-to-paste MCP client configuration.
 
 ## Connection Management
@@ -296,7 +296,10 @@ The agent tools are:
 - `get_schema`, `get_ddl` — the catalog reads the object browser already uses; `get_ddl` also gives the agent the current definition to start a change from. A schema read is capped at 200 relations.
 - `query` — the only tool that executes anything, and it only reads: the statement is classified first (`server/src/ai/readonly.ts` accepts `SELECT`, `WITH`, `VALUES`, `TABLE`, `SHOW` and `EXPLAIN`, and rejects locking clauses) and then runs inside a read-only transaction, so PostgreSQL is the real guarantee and the classifier only exists to give a clearer message. Writes and DDL never reach the database through it — the agent is told to author them instead.
 - `get_active_query`, `set_active_query` (`replace`, `append` or `insert`), `open_query_tab` — the editor, and the path writes and DDL take. The agent reads the active tab and stages the SQL it authored — a new function, an `ALTER`, a data fix — in that tab or in a new one; nothing executes it, so the user reviews it in pgDEV and presses Run. `set_active_query` refuses a read-only preview tab (a materialized view's generated DDL, say) and points at `open_query_tab`.
+- `get_active_result` — what the active tab last produced on screen: every result set with its columns and rows, plus the Messages text (errors included) and the tab's flags (`ran`, `running`, `transactionOpen`, `selected`). Read-only UI state; it touches no database.
 - The MCP resource `pgdev://active-tab` serves the same active-tab view.
+
+How much of a result set the agent may read is a preference: Settings → **AI agent** sets the row limit (default 100) and the byte budget (default 64 KB) per result set, the browser pushes them to `PUT /api/ai/limits` on load and on every change, and the tool layer reads the live values, so a change applies to the next tool call. Rows are capped, but the total and the truncation are reported.
 
 The stdio shim advertises that contract where the agent actually reads it: the MCP server `instructions` and every tool description say that reads go through `query`, that writes and DDL are authored and staged for the user to run, and that staged SQL is never executed by pgDEV. The contract is a framing one — nothing in the server blocks DDL from being *written*, only from being executed.
 
@@ -352,7 +355,7 @@ Generated DDL was subsequently round-tripped against a live PostgreSQL 16.14 ser
 
 The HTTP API is also exercised end to end against a live server — connect, `/schema`, `/ddl` for every object type, query execution, cursor paging, errors, cancellation, the 30s statement timeout, autocommit statements, and disconnect — with all fixtures created in a database the test owns and drops afterwards.
 
-With AI enabled, the same run covers the agent surface: a tool call without or with the wrong token is rejected, a read-only `query` returns its rows on the open connection without a browser window, a write is refused by the classifier, a data-modifying CTE — which classifies as a read — is refused by the read-only transaction, filtered schema and DDL reads, the explicit no-window error, and a fresh server with nothing connected reporting that it is not connected. The browser suite then repeats it against a live page: the agent reads and replaces the active tab, stages a `CREATE VIEW` in a new tab that nothing runs, reads the schema of the connection the window has open, finds no tool that runs the editor or lists connections, and sees its query result in the `AI` tab.
+With AI enabled, the same run covers the agent surface: a tool call without or with the wrong token is rejected, a read-only `query` returns its rows on the open connection without a browser window, a write is refused by the classifier, a data-modifying CTE — which classifies as a read — is refused by the read-only transaction, filtered schema and DDL reads, the explicit no-window error, a fresh server with nothing connected reporting that it is not connected, and the limits endpoint validating its range and applying a changed row limit to the next `query`. The browser suite then repeats it against a live page: the agent reads and replaces the active tab, stages a `CREATE VIEW` in a new tab that nothing runs, reads the schema of the connection the window has open, finds no tool that runs the editor or lists connections, sees its query result in the `AI` tab, reads the rows and messages of what the user ran (including a failed statement's error), and honours a row limit changed in Settings.
 
 Those suites live in `test/` and run with `PGDEV_TEST_URL=postgres://… npm test`; see `test/README.md`. They create and drop their own `pgdev_*` databases and never modify objects in the database they connect to.
 
