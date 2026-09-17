@@ -126,3 +126,14 @@ test('routine bodies are tightened while plain dollar literals survive', () => {
   assert.match(out, /employee_has_any_role\(\$1\)/)
   assert.equal(formatSql('SELECT $$literal foo( $$;'), 'SELECT $$literal foo( $$;')
 })
+
+test('a GUC spelling inside a literal never flips the scanning mode', () => {
+  // The formatter tracks standard_conforming_strings per statement; a string
+  // containing the setting text must not flip the mode for later statements,
+  // or a following backslash literal is scanned as escaped and merges text.
+  const q = "SELECT 'standard_conforming_strings=off'; SELECT 'c:\\;';"
+  assert.equal(
+    formatSql(q),
+    "SELECT\n\t'standard_conforming_strings=off';\n\n\nSELECT\n\t'c:\\;';",
+  )
+})

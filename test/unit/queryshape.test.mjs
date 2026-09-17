@@ -103,6 +103,17 @@ test('requiresAutocommit survives comments between the keywords', () => {
   assert.equal(requiresAutocommit('CREATE /* a /* b */ */ INDEX CONCURRENTLY i ON t (a)'), true)
 })
 
+test('requiresAutocommit covers REINDEX parenthesized options', () => {
+  // REINDEX's option list sits before the object keyword, so the leading word
+  // run alone cannot see CONCURRENTLY.
+  assert.equal(requiresAutocommit('REINDEX (VERBOSE) INDEX CONCURRENTLY i'), true)
+  assert.equal(requiresAutocommit('REINDEX (CONCURRENTLY) idx'), true)
+  assert.equal(requiresAutocommit('REINDEX (TABLESPACE x) idx'), false)
+  assert.equal(requiresAutocommit('REINDEX INDEX "concurrently"'), false,
+    'a quoted object name is data, not the CONCURRENTLY clause')
+  assert.equal(requiresAutocommit('REINDEX TABLE t'), false)
+})
+
 test('requiresAutocommit never reads keywords out of literals', () => {
   // A string containing CONCURRENTLY used to flip the batch to autocommit.
   assert.equal(requiresAutocommit("CREATE INDEX i ON t WHERE note = 'CONCURRENTLY'"), false)

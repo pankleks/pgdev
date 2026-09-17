@@ -77,6 +77,24 @@ test('a setting name inside a literal is data, not a SET', () => {
   )
 })
 
+test('leading comments do not exhaust the SET tracking window', () => {
+  // Comments never matter for the SET pattern: a long comment run used to
+  // consume the whole token budget, so a real SET behind it was missed and
+  // later statements split incorrectly.
+  const note = '/* note */ '.repeat(10)
+  const sql = `${note}SET standard_conforming_strings = off; SELECT 'a\\';b';`
+  assert.deepEqual(
+    splitStatements(sql),
+    [`${note}SET standard_conforming_strings = off`, "SELECT 'a\\';b'"],
+  )
+  // The same for line comments stacked before the SET.
+  const dashed = '-- note\n'.repeat(12) + 'SET standard_conforming_strings = off; SELECT 2;'
+  assert.deepEqual(
+    splitStatements(dashed),
+    ['-- note\n'.repeat(12) + 'SET standard_conforming_strings = off', 'SELECT 2'],
+  )
+})
+
 test('an identifier ending in e does not turn its string into an E-string', () => {
   // SCS=on: `type='a\'` closes at that quote, so the batch splits.
   // Misreading the `e` of `type` as an E-prefix would swallow the rest.

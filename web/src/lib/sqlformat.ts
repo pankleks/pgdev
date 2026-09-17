@@ -1,5 +1,6 @@
 import { format, formatDialect, postgresql } from 'sql-formatter'
 import type { DialectOptions } from 'sql-formatter'
+import { applyStandardConformingSetting } from '../../../server/src/sqlsplit'
 
 const OPTS = {
   tabWidth: 4,
@@ -228,7 +229,7 @@ function stripComments(sql: string): string {
 function findDollarSegments(sql: string): DollarSegment[] {
   const segments: DollarSegment[] = []
   let statementStart = 0
-  let standardConformingStrings = true
+  const state = { standardConformingStrings: true }
   let i = 0
   while (i < sql.length) {
     if (sql[i] === '-' && sql[i + 1] === '-') {
@@ -253,7 +254,7 @@ function findDollarSegments(sql: string): DollarSegment[] {
       continue
     }
     if (sql[i] === "'") {
-      const escapeBackslashes = !standardConformingStrings || /e/i.test(sql[i - 1] ?? '')
+      const escapeBackslashes = !state.standardConformingStrings || /e/i.test(sql[i - 1] ?? '')
       i++
       while (i < sql.length) {
         if (sql[i] === "'") {
@@ -300,8 +301,10 @@ function findDollarSegments(sql: string): DollarSegment[] {
     }
     if (sql[i] === ';') {
       const statement = sql.slice(statementStart, i)
-      const setting = /\bstandard_conforming_strings\s*(?:=|TO)\s*['"]?(on|off)\b/i.exec(statement)
-      if (setting) standardConformingStrings = setting[1].toLowerCase() === 'on'
+      // Shared with the splitter: bare-word detection, so a spelling of the
+      // GUC name inside a literal can never flip the scanning mode.
+      const setting = applyStandardConformingSetting(statement)
+      if (setting) state.standardConformingStrings = setting === 'on'
       statementStart = i + 1
     }
     i++

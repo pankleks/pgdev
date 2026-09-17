@@ -85,7 +85,20 @@ export function requiresAutocommit(stmt: string): boolean {
   const words = leadingKeywords(stmt, 8).map((w) => w.toLowerCase())
   const first = words[0] ?? ''
   if (first === 'vacuum' || first === 'cluster' || first === 'checkpoint') return true
-  if (first === 'reindex') return words.includes('concurrently')
+  if (first === 'reindex') {
+    // REINDEX's parenthesized options (`REINDEX (VERBOSE) INDEX …`, and even
+    // `REINDEX (CONCURRENTLY) …`) sit before the object keyword, so the whole
+    // statement's bare words must be scanned — strings, comments and quoted
+    // identifiers stay opaque through the shared scanner.
+    let seen = false
+    scanSqlLexemes(stmt, (lex) => {
+      if (lex.kind === 'ident' && !lex.quoted && lex.name.toLowerCase() === 'concurrently') {
+        seen = true
+        return false
+      }
+    })
+    return seen
+  }
   if (first === 'refresh') {
     return words[1] === 'materialized' && words[2] === 'view' && words.includes('concurrently')
   }
