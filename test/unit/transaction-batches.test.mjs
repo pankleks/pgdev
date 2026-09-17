@@ -202,6 +202,42 @@ test('closing a busy transaction tab rolls it back instead of pinning the client
   })
 })
 
+test('closing a tab while its first batch runs abandons instead of retaining', async () => {
+  const fake = fakePool({ hold: 'pg_sleep' })
+  await withApp('close-during-open-test', fake, async (inject, app) => {
+    // The batch that would FIRST create the transaction session is still in
+    // flight when the tab closes.
+    const running = inject('BEGIN; UPDATE t SET x = 1; SELECT pg_sleep(60)')
+    for (let waited = 0; !fake.state.held.length && waited < 1000; waited++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    assert.equal(fake.state.held.length, 1, 'the statement is in flight')
+
+    const close = await app.inject({
+      method: 'POST',
+      url: `/api/connections/close-during-open-test/query/close`,
+      headers: { origin: 'http://localhost' },
+      payload: { tabKey: '' },
+    })
+    assert.equal(close.statusCode, 200, JSON.stringify(close.json()))
+
+    // The statement completes before the cancel takes effect: the batch must
+    // not retain a transaction for a tab that no longer exists.
+    fake.state.held[0].emit('end', { fields: [], rows: [], command: 'OK', rowCount: 1 })
+    const outcome = await running
+    assert.equal(outcome.statusCode, 200, JSON.stringify(outcome.json()))
+    assert.equal(outcome.json().transactionOpen, false)
+    assert.equal(fake.state.releases, 1, 'the abandoned batch releases its client')
+    assert.ok(fake.executed.includes('ROLLBACK'), JSON.stringify(fake.executed))
+
+    // A later run on the same tab key retains normally again.
+    fake.state.held.length = 0
+    const next = await inject('BEGIN; UPDATE t SET x = 1')
+    assert.equal(next.json().transactionOpen, true)
+    assert.equal(fake.state.releases, 1, 'the fresh run keeps its client')
+  })
+})
+
 test('API still accepts complete explicit transactions and ordinary batches', async () => {
   const fake = fakePool()
   await withApp('complete-transaction-test', fake, async (inject) => {

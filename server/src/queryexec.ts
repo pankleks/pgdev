@@ -26,6 +26,12 @@ import {
   assertTransaction,
 } from './sessions.js'
 
+// Per-tab operation generations: every runBatch run bumps the tab's counter,
+// so a close that lands mid-operation can invalidate exactly that
+// operation's session-retention decision (see closeTabSession).
+const operationGeneration = new Map<string, number>()
+const closedGeneration = new Map<string, number>()
+
 // Batch execution engine, extracted from the Fastify route so HTTP concerns
 // (status codes, reply shapes) stay in routes/query.ts and client ownership
 // lives in exactly one place: from checkout to release, the client is owned
@@ -384,6 +390,8 @@ export async function runBatch(
   if (!statements.length) return { kind: 'error', error: { kind: 'empty' } }
   const pool = getPool(connId)
   const runKey = sessionKey(connId, tabKey)
+  const generation = (operationGeneration.get(runKey) ?? 0) + 1
+  operationGeneration.set(runKey, generation)
   assertTransaction(runKey, transactionId)
   if (getRunning(runKey)) return { kind: 'error', error: { kind: 'running' } }
 
@@ -446,11 +454,16 @@ export async function runBatch(
     // their rows are mirrored to a tab whose key cannot reach this session.
     const useCursors = pageable && !autocommit && !manual && statements.every(canUseCursor)
     const { mapped, openCursor, pendingRow } = await executeStatements(client, statements, cap, useCursors, txn)
+    // A close that landed while this batch ran abandons the tab: nothing may
+    // be kept, and the (possibly empty) transaction is rolled back instead of
+    // committed. Consumed so a later run on the same tab retains normally.
+    const abandoned = closedGeneration.get(runKey) === generation
+    if (abandoned) closedGeneration.delete(runKey)
 
-    if (openCursor) {
+    if (openCursor && !abandoned) {
       setSession(runKey, connId, client, openCursor, pendingRow)
       sessionKept = true
-    } else if (manual && txn.inTxn) {
+    } else if (!abandoned && manual && txn.inTxn) {
       // A forgotten transaction must not pin this client forever: bound its
       // idle life server-side the same way paged sessions are bounded.
       await client.query(`SET LOCAL idle_in_transaction_session_timeout = '5min'`)
@@ -458,15 +471,23 @@ export async function runBatch(
       sessionKept = true
     } else {
       if (txn.inTxn) {
-        try {
-          await client.query('COMMIT')
-        } catch (err) {
+        if (abandoned) {
           try {
             await client.query('ROLLBACK')
           } catch {
-            // Transaction already gone.
+            // Connection already gone; release() will drop it.
           }
-          throw err
+        } else {
+          try {
+            await client.query('COMMIT')
+          } catch (err) {
+            try {
+              await client.query('ROLLBACK')
+            } catch {
+              // Transaction already gone.
+            }
+            throw err
+          }
         }
       }
       client.release()
@@ -475,7 +496,7 @@ export async function runBatch(
       kind: 'ok',
       results: mapped,
       durationMs: Math.round(performance.now() - start),
-      transactionOpen: !openCursor && manual && txn.inTxn,
+      transactionOpen: !openCursor && manual && txn.inTxn && !abandoned,
     }
   } catch (err) {
     await teardownSession(runKey, 'rollback')
@@ -573,15 +594,16 @@ export function cancelConnection(connId: string): void {
 /**
  * Close a tab session: an idle one is released right away (rollback). While an
  * operation is running the release would race the FETCH/query using the
- * client, so the operation is canceled first — and the session is always
- * flagged for teardown, so the unwind finishes into a release instead of
- * keeping a canceled transaction (or cursor) pinned for the idle timeout on a
- * tab that no longer exists.
+ * client, so the operation is canceled first — and the closing is recorded by
+ * operation generation, so a close landing during the very batch that would
+ * first create the session makes that batch abandon instead of retaining a
+ * transaction (or cursor) for a tab that no longer exists.
  */
 export async function closeTabSession(connId: string, tabKey: string): Promise<void> {
   getPool(connId)
   const key = sessionKey(connId, tabKey)
   const running = getRunning(key)
   if (running) cancelClientQuery(running)
+  closedGeneration.set(key, operationGeneration.get(key) ?? 0)
   await teardownSession(key, 'rollback')
 }
