@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { readTextFileHandle, type FileHandle } from '../lib/files'
 import { loadTabSession, savePinnedFiles, saveTabSession, storageReady, type StoredPinnedFile } from '../lib/storage'
-import { restoreSession, serializeSession } from '../lib/tabsession'
+import { isSessionTab, isTabDirty, restoreSession, serializeSession } from '../lib/tabsession'
 import { useToast } from './toast'
 
 export interface EditorTab {
@@ -16,14 +16,15 @@ export interface EditorTab {
   pinnedId?: string
   /** Connection a DDL tab was generated from (absent for query/file tabs). */
   connectionId?: string
-  /** True only for agent result-mirror tabs. Title matching is not ownership:
-   * user query tabs, file tabs and DDL previews may also be titled "AI". */
+  /** The single AI log tab: read-only, connection-free, append-only. Title
+   * matching is not ownership — user tabs and DDL previews may also be titled
+   * "AI". */
   aiMirror?: boolean
   /** True only for tabs the agent opened (staged SQL, mirror tabs). The agent
    * may list, activate and close these — and only these. */
   agentOpened?: boolean
-  /** True only for user-created query tabs — the ones the tab session saves
-   * and restores. DDL tabs, generated SQL, file tabs and pins never set it. */
+  /** True only for user-created query tabs, which the tab session always
+   * saves. Other tabs still join the session once they are dirty. */
   persist?: boolean
 }
 
@@ -77,10 +78,10 @@ function newPinId(): string {
 }
 
 // --- tab session -----------------------------------------------------------
-// User-created query tabs are snapshotted every SESSION_SAVE_INTERVAL_MS and
-// on exit, and restored once at startup. A cheap signature comparison skips
-// the write while nothing changed; connection state is deliberately not part
-// of any of this.
+// User-created query tabs, plus any other tab with unsaved changes, are
+// snapshotted every SESSION_SAVE_INTERVAL_MS and on exit, and restored once at
+// startup. A cheap signature comparison skips the write while nothing changed;
+// connection state is deliberately not part of any of this.
 
 export const SESSION_SAVE_INTERVAL_MS = 10_000
 
@@ -91,8 +92,8 @@ function sessionSignature(): string {
   return JSON.stringify({
     active: state.activeKey,
     tabs: state.tabs
-      .filter((tab) => tab.persist === true)
-      .map((tab) => [tab.key, tab.title, tab.content]),
+      .filter(isSessionTab)
+      .map((tab) => [tab.key, tab.title, tab.content, tab.kind, tab.savedContent]),
   })
 }
 
@@ -266,26 +267,35 @@ export function useTabs() {
   }
 
   /**
-   * Agent result-mirror tab: the only tab `show-result` may reuse. Owned by
-   * explicit flag (plus `kind` and `connectionId`), never by title — a user
-   * query tab or editable DDL preview may also be titled "AI".
+   * The single AI log tab: a read-only, append-only record of every agent
+   * query's SQL, reused (never duplicated) and deliberately not bound to a
+   * connection. Created on first use; the user may close it and the next
+   * agent result recreates it. Owned by the explicit `aiMirror` flag, never by
+   * title.
    */
-  function openAiMirrorTab(content: string, connectionId = '') {
-    const key = `sql-${state.counter}`
+  function showAiLog(entry: string): string {
+    const existing = state.tabs.find((t) => t.aiMirror === true)
+    if (existing) {
+      existing.content = existing.content.trim()
+        ? `${existing.content.replace(/\s+$/, '')}\n\n${entry}`
+        : entry
+      state.activeKey = existing.key
+      return existing.key
+    }
+    const key = 'ai-log'
     state.tabs.push({
       key,
       kind: 'query',
       source: 'untitled',
       title: 'AI',
       fileName: null,
-      content,
-      savedContent: content,
-      readOnly: false,
-      connectionId: connectionId || undefined,
+      content: entry,
+      savedContent: null,
+      readOnly: true,
       aiMirror: true,
     })
-    state.counter++
     state.activeKey = key
+    return key
   }
 
   function close(key: string) {
@@ -364,13 +374,8 @@ export function useTabs() {
     return fileHandles.get(key)
   }
 
-  function normalizedContent(content: string): string {
-    return content.replace(/\r\n?/g, '\n')
-  }
-
   function isDirty(tab: EditorTab): boolean {
-    if (tab.savedContent === null) return tab.kind === 'ddl' ? false : tab.content.length > 0
-    return normalizedContent(tab.content) !== normalizedContent(tab.savedContent)
+    return isTabDirty(tab)
   }
 
   function displayTitle(tab: EditorTab): string {
@@ -447,7 +452,7 @@ export function useTabs() {
     openDdl,
     openFile,
     openSqlTab,
-    openAiMirrorTab,
+    showAiLog,
     close,
     closeAll,
     closeOthers,

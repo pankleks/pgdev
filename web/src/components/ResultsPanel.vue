@@ -19,6 +19,12 @@ const result = computed(() => results.state.byTab[tabs.state.activeKey] ?? null)
 const activeGrid = computed(() =>
   result.value && !result.value.showMessages ? result.value.grid : null,
 )
+const activeTab = computed(
+  () => tabs.state.tabs.find((t) => t.key === tabs.state.activeKey) ?? null,
+)
+/** Row editing is only for editable grids in an editable tab: the read-only AI
+ * log never offers it, whatever metadata its mirrored grid might carry. */
+const rowEditable = computed(() => !!activeGrid.value?.editable && activeTab.value?.readOnly !== true)
 
 function showMessagesView() {
   if (result.value) result.value.showMessages = true
@@ -67,7 +73,7 @@ const innerWidth = computed(() => {
   const g = activeGrid.value
   if (!g) return 0
   const columns = g.columns.reduce((sum, _c, i) => sum + colWidth(i), 0)
-  return columns + (g.editable ? ACTION_W : 0)
+  return columns + (rowEditable.value ? ACTION_W : 0)
 })
 
 function startResize(i: number, e: MouseEvent) {
@@ -166,7 +172,7 @@ const rowEdit = ref<RowEditTarget | null>(null)
  * key could not name a row in the WHERE clause. */
 function rowKeyComplete(r: unknown[]): boolean {
   const g = activeGrid.value
-  if (!g?.editable) return false
+  if (!rowEditable.value || !g?.editable) return false
   for (const pk of g.editable.pk) {
     const j = g.columns.indexOf(pk)
     if (j < 0 || r[j] === null || r[j] === undefined) return false
@@ -176,7 +182,7 @@ function rowKeyComplete(r: unknown[]): boolean {
 
 function openRowEdit(r: unknown[]) {
   const g = activeGrid.value
-  if (!g?.editable || !conn.state.id) return
+  if (!rowEditable.value || !g?.editable || !conn.state.id) return
   rowEdit.value = {
     grid: g,
     row: r,
@@ -422,7 +428,7 @@ async function exportCsv() {
         <div class="grid-inner" :style="{ width: innerWidth + 'px' }">
           <div class="grid-head">
             <div
-              v-if="grid.g.editable"
+              v-if="rowEditable"
               class="grid-cell head actions"
               :style="{ width: ACTION_W + 'px' }"
               title="Edit a row in a dialog (needs the full primary key in the result)"
@@ -444,7 +450,7 @@ async function exportCsv() {
             class="grid-row"
             :style="{ top: HEADER_H + (grid.start + i) * ROW_H + 'px' }"
           >
-            <div v-if="grid.g.editable" class="grid-cell actions" :style="{ width: ACTION_W + 'px' }">
+            <div v-if="rowEditable" class="grid-cell actions" :style="{ width: ACTION_W + 'px' }">
               <button
                 class="icon rowedit-open"
                 :title="rowKeyComplete(r) ? 'Edit row' : 'Row key is not available'"

@@ -46,7 +46,8 @@ export interface AiTabView {
   content: string
   /** Database this tab is bound to, when the tab has connection affinity. */
   connectionId?: string
-  /** Explicit mirror-tab ownership. Title matching alone is not ownership. */
+  /** Ownership of the single AI log tab (read-only, connection-free).
+   * Title matching alone is not ownership. */
   aiMirror?: boolean
   /** True only for tabs the agent opened (staged SQL, mirror tabs). The agent
    * may list, activate and close these — and only these. */
@@ -72,7 +73,8 @@ export interface AiBridgeDeps {
   activeKey(): string
   activateTab(key: string): void
   openSqlTab(title: string, content: string, connectionId: string): void
-  openAiMirrorTab(content: string, connectionId: string): void
+  /** Append `sql` to the single AI log tab (creating it) and return its key. */
+  showAiLog(sql: string): string
   updateContent(key: string, content: string): void
   /** Close a tab with the same cleanup the UI performs (drop its result state,
    * close its backend session). The reducer refuses dirty and foreign tabs
@@ -247,36 +249,11 @@ export async function applyBridgeAction(deps: AiBridgeDeps, action: BridgeAction
 
     case 'show-result': {
       const grid = args as unknown as AgentGrid
-      if (!grid.connectionId) throw new Error('The agent result has no source connection.')
-      // Reuse only an idle, editable, explicitly owned mirror tab bound to
-      // the result's source connection. Title alone is not ownership: user
-      // query tabs and DDL previews may also be titled "AI".
-      const owned = deps.tabs().filter((t) => {
-        if (t.aiMirror !== true || t.kind !== 'query' || t.connectionId !== grid.connectionId || t.readOnly)
-          return false
-        const result = deps.activeResult(t.key)
-        return !result?.running && !result?.transactionOpen
-      })
-      // Deterministic: prefer the active tab when it qualifies, else the
-      // most-recently opened owned idle tab.
-      const activeKey = deps.activeKey()
-      const existing = owned.find((t) => t.key === activeKey) ?? owned.at(-1)
-      let key: string
-      if (existing) {
-        key = existing.key
-        deps.activateTab(key)
-        deps.updateContent(key, grid.sql)
-      } else {
-        deps.openAiMirrorTab(grid.sql, grid.connectionId)
-        key = deps.activeKey()
-      }
-      // showGrid itself refuses busy tabs (TOCTOU race): fall back to a fresh
-      // mirror tab rather than invalidating in-flight work.
-      if (!deps.showGrid(key, grid)) {
-        deps.openAiMirrorTab(grid.sql, grid.connectionId)
-        key = deps.activeKey()
-        if (!deps.showGrid(key, grid)) throw new Error('The AI mirror tab is busy.')
-      }
+      // One AI log tab holds every agent result: the SQL is appended to its
+      // read-only log and the latest rows mirror into the results panel. Not
+      // bound to a connection, so reconnects never strand or duplicate it.
+      const key = deps.showAiLog(grid.sql)
+      if (!deps.showGrid(key, grid)) throw new Error('The AI log tab is busy.')
       return { key }
     }
 

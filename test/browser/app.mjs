@@ -433,6 +433,24 @@ try {
     eq('double-clicking the empty strip adds a query tab', after, before + 1)
   }
 
+  console.log('\n== agent tabs are visually distinct ==')
+  {
+    const colors = await page.evaluate(`
+      return (() => {
+        const tab = document.querySelector('.tabstrip .tab')
+        const title = tab?.querySelector('.tab-title')
+        if (!tab || !title) return null
+        const user = getComputedStyle(title).color
+        tab.classList.add('agent-tab')
+        const agent = getComputedStyle(title).color
+        tab.classList.remove('agent-tab')
+        return { user, agent, agentVar: getComputedStyle(document.documentElement).getPropertyValue('--agent').trim() }
+      })()
+    `)
+    ok('an agent-tab title is painted with a different color',
+      !!colors && colors.agent !== colors.user, JSON.stringify(colors))
+  }
+
   console.log('\n== IntelliSense lists objects without exact duplicates ==')
   {
     await page.evaluate(`window.__pgdev.setValue('SELECT ')`)
@@ -972,7 +990,32 @@ try {
       /Agent query: 1 row\(s\)/.test(mirrored.body.result?.messages?.[0]?.text ?? ''),
       JSON.stringify(mirrored.body.result?.messages))
 
-    // Run a real query in the tab and watch the agent's row limit apply.
+    // A second agent query appends to the same read-only log: never a duplicate
+    // "AI" tab, no row-edit affordance, and Run stays disabled.
+    const read2 = await aiTool('query', { sql: 'SELECT 7 AS second' })
+    eq('a second agent query is mirrored too', read2.body.result?.results?.[0]?.rows, [[7]])
+    const aiCount = await page.evaluate(
+      `return [...document.querySelectorAll('.tabstrip .tab-title')].filter((t) => t.textContent.trim().replace(/ \\*$/, '') === 'AI').length`,
+    )
+    eq('the AI log is never duplicated', aiCount, 1)
+    const logText = await page.evaluate(`return window.__pgdev.getValue()`)
+    ok('the AI log accumulates every query',
+      logText.includes('SELECT 42 AS answer') && logText.includes('SELECT 7 AS second'),
+      JSON.stringify(logText))
+    ok('the AI log is read-only', await page.evaluate(`return window.__pgdev.getReadOnly()`))
+    eq('the mirrored result has no row-edit buttons',
+      await page.evaluate(`return document.querySelectorAll('.rowedit-open').length`), 0)
+    ok('Run is disabled in the AI log', await page.evaluate(
+      `return [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run')?.disabled === true`,
+    ))
+
+    // Run a real query in an ordinary tab (the AI log is read-only) and watch
+    // the agent's row limit apply.
+    await page.evaluate(`
+      const tab = [...document.querySelectorAll('.tabstrip .tab')]
+        .find((t) => (t.querySelector('.tab-title')?.textContent ?? '').trim().startsWith('ai_view'))
+      tab?.click()
+    `)
     await page.evaluate(`window.__pgdev.setValue('SELECT g AS n FROM generate_series(1, 5) g ORDER BY g')`)
     await page.evaluate(`
       const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Run')

@@ -315,8 +315,8 @@ export function createAiTools(deps: AiDeps): Record<string, AiTool> {
   async function openQueryTab(args: Record<string, unknown>): Promise<AiToolResult> {
     const sql = asString(args.sql)
     if (!sql || !sql.trim()) return fail('"sql" is required.')
-    // "AI" is reserved for result-mirror tabs; staged agent SQL gets a
-    // neutral title so it never joins the mirror pool.
+    // "AI" is reserved for the agent log tab; staged agent SQL gets a neutral
+    // title and stays a regular tab.
     const title = asString(args.title)?.trim() || 'Agent SQL'
     const problem = windowError(bridge)
     if (problem) return fail(problem)

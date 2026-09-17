@@ -374,6 +374,8 @@ test('showGrid on an idle tab renders and bumps the operation', async () => {
   const r = results.state.byTab.tab
   assert.equal(r.grids.length, 1)
   assert.deepEqual(r.grid.columns, ['id'])
+  // A mirrored grid carries no `editable` metadata: no row-edit affordance.
+  assert.equal(r.grids[0].editable, undefined)
   assert.ok(r.messages.some((m) => m.text.includes('Agent query')))
 })
 

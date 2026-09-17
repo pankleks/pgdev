@@ -199,8 +199,8 @@ export function savePinnedFiles(pins: StoredPinnedFile[]): Promise<boolean> {
   })
 }
 
-/** Persist the global tab session (user-created query tabs). A failed write
- * rejects so the caller can retry on its next interval tick. */
+/** Persist the global tab session (query tabs and any dirty tab). A failed
+ * write rejects so the caller can retry on its next interval tick. */
 export function saveTabSession(session: TabSession): Promise<void> {
   return queueWrite(async () => {
     const db = await database()

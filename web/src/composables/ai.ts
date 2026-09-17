@@ -35,7 +35,7 @@ export function useAi() {
       activeKey: () => tabs.state.activeKey,
       activateTab: (key) => tabs.activate(key),
       openSqlTab: (title, content, connectionId) => tabs.openSqlTab(title, content, connectionId, true),
-      openAiMirrorTab: (content, connectionId) => tabs.openAiMirrorTab(content, connectionId),
+      showAiLog: (sql) => tabs.showAiLog(sql),
       updateContent: (key, content) => tabs.updateContent(key, content),
       closeTab: (key) => {
         // The same cleanup as closing the tab in the UI (drop the result state

@@ -4,6 +4,7 @@ import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
 const { useTabs } = await load('web/composables/tabs.ts')
+const { serializeSession } = await load('web/lib/tabsession.ts')
 const tabs = useTabs()
 await tabs.pinsReady
 
@@ -36,17 +37,46 @@ test('moveTabToIndex reorders forward, backward and in place', () => {
   assert.deepEqual(keys(), [a, c, b])
 })
 
-test('only user-created query tabs are marked for session persistence', () => {
+test('only user-created query tabs are marked always-persisted', () => {
   tabs.newQuery()
   const created = tabs.state.tabs[tabs.state.tabs.length - 1]
-  assert.equal(created.persist, true, 'New query tabs join the session')
+  assert.equal(created.persist, true, 'New query tabs always join the session')
 
   tabs.openDdl('table', 'public', 'persist_probe', 'CREATE TABLE probe ()', '', true, '', 'conn-id')
-  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'DDL tabs do not')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'DDL tabs are not always-persisted')
 
   tabs.openSqlTab('Edit probe', 'ALTER TABLE probe ADD COLUMN c int', 'conn-id')
-  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'generated SQL does not')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'generated SQL is not')
 
   tabs.openFile('probe.sql', 'select 1')
-  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'file tabs do not')
+  assert.equal(tabs.state.tabs[tabs.state.tabs.length - 1].persist, undefined, 'file tabs are not')
+})
+
+test('showAiLog is a single read-only tab that accumulates entries', () => {
+  const key = tabs.showAiLog('SELECT 1')
+  assert.equal(key, 'ai-log')
+  const tab = tabs.state.tabs.find((t) => t.key === key)
+  assert.equal(tab.readOnly, true, 'the AI log is read-only')
+  assert.equal(tab.aiMirror, true)
+  assert.equal(tab.connectionId, undefined, 'the AI log is not connection bound')
+  assert.equal(tabs.isDirty(tab), false, 'the AI log can never be dirty')
+  assert.equal(tabs.state.activeKey, key)
+
+  const again = tabs.showAiLog('SELECT 2')
+  assert.equal(again, key)
+  assert.equal(tabs.state.tabs.filter((t) => t.aiMirror === true).length, 1, 'never duplicated')
+  assert.equal(tab.content, 'SELECT 1\n\nSELECT 2')
+})
+
+test('a dirty non-query tab joins the session', () => {
+  tabs.openDdl('table', 'public', 'dirty_probe', 'CREATE TABLE probe ()', '', true, '', 'conn-id')
+  const ddl = tabs.state.tabs[tabs.state.tabs.length - 1]
+  assert.ok(!serializeSession(tabs.state.tabs, ddl.key).tabs.some((t) => t.key === ddl.key),
+    'a clean DDL tab stays out')
+
+  tabs.updateContent(ddl.key, 'CREATE TABLE probe (id int)')
+  const stored = serializeSession(tabs.state.tabs, ddl.key).tabs.find((t) => t.key === ddl.key)
+  assert.ok(stored, 'the edited DDL tab joins the session')
+  assert.equal(stored.kind, 'ddl')
+  assert.equal(stored.savedContent, 'CREATE TABLE probe ()')
 })

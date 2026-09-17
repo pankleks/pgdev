@@ -183,7 +183,7 @@ server.registerTool(
       'data change) for the user to review and run. Nothing is executed.',
     inputSchema: {
       sql: z.string().describe('The SQL to put in the new tab'),
-      title: z.string().optional().describe('Tab title (defaults to Agent SQL; AI is reserved for agent result mirrors)'),
+      title: z.string().optional().describe('Tab title (defaults to Agent SQL; AI is reserved for the agent log tab)'),
     },
   },
   handler('open_query_tab'),
