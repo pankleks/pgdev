@@ -472,7 +472,10 @@ try {
       String(callFn?.sortText ?? '').startsWith('0') && !callCol?.sortText,
       JSON.stringify([callFn, callCol]))
     ok('function description carries the parameter list', /\(p integer\)/.test(String(callFn?.description)))
+    // `label` exists in items and v_items: the merged entry names both.
     ok('column description carries type and relation', /text · /.test(String(callCol?.description)))
+    eq('duplicate columns merge into one informative row',
+      String(callCol?.description), 'text · items, v_items')
   }
 
   console.log('\n== IntelliSense offers built-in functions while typing ==')

@@ -276,31 +276,42 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // The same column name commonly exists in several relations (`id` in
       // both employees and departments). Monaco would list one row per
       // occurrence, so keep the first and name the other relations in the
-      // detail line instead of repeating the entry.
+      // detail line instead of repeating the entry. Occurrences accumulate
+      // into per-column sets, and each merged description is formatted once
+      // afterwards — re-splitting a growing description per occurrence used
+      // to make common column names quadratic.
+      const columnSources = new Map<string, { type: string; relations: string[] }>()
       for (const relation of visibleRelations) {
         const relationName = relation.schema === 'public' ? relation.name : `${relation.schema}.${relation.name}`
         for (const c of relation.columns) {
           if (!matchesPrefix(c.name)) continue
-          const description = `${c.type} · ${relationName}`
-          const winner = emit({
-            label: { label: c.name, description },
-            kind: K.Field,
-            detail: description,
-            insertText: quoteIdent(c.name),
-            range,
-          })
-          // A duplicate column also found elsewhere: record the other relation
-          // in the detail line so the single entry stays informative. The
-          // winner comes from `emit` (the map's surviving entry), so no array
-          // search is needed here.
-          if (winner.kind !== K.Field) continue
-          const label = typeof winner.label === 'string' ? { label: winner.label } : winner.label
-          const from = String(label.description ?? '').replace(/^.*? · /, '')
-          if (!from.split(', ').includes(relationName)) {
-            const merged = `${c.type} · ${from}, ${relationName}`
-            winner.detail = merged
-            winner.label = { label: label.label, description: merged }
+          const hit = columnSources.get(c.name)
+          if (!hit) {
+            columnSources.set(c.name, { type: c.type, relations: [relationName] })
+            emit({
+              label: { label: c.name, detail: `${c.type} · ${relationName}` },
+              kind: K.Field,
+              detail: `${c.type} · ${relationName}`,
+              insertText: quoteIdent(c.name),
+              range,
+            })
+          } else {
+            hit.relations.push(relationName)
           }
+        }
+      }
+      // Format each merged description once, after the accumulation pass: the
+      // survivor comes from `emit` (the map's surviving entry), so an entry a
+      // same-named table took over is left alone.
+      for (const [key, hit] of columnSources) {
+        if (hit.relations.length <= 1) continue
+        const survivor = emitted.get(key)?.item
+        if (!survivor || survivor.kind !== K.Field) continue
+        const description = `${hit.type} · ${hit.relations.join(', ')}`
+        survivor.detail = description
+        survivor.label = {
+          label: typeof survivor.label === 'string' ? survivor.label : survivor.label.label,
+          description,
         }
       }
 
