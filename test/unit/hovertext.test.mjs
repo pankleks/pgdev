@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { escapeMarkdown, formatColumnHover, formatFunctionHover } = await load('web/lib/hovertext.ts')
+const { escapeMarkdown, formatColumnHover, formatFunctionHover, functionSignatureDoc } =
+  await load('web/lib/hovertext.ts')
 
 const fn = (over = {}) => ({
   schema: 'public',
@@ -39,6 +40,13 @@ test('built-ins use identity arguments and their comment', () => {
   assert.match(markdown, /\*\*jsonb_build_object\*\*\(VARIADIC "any"\) → jsonb/)
   assert.match(markdown, /_function · pg_catalog_/)
   assert.match(markdown, /Builds a JSON object\./)
+})
+
+test('signature documentation omits the signature and escapes the comment', () => {
+  // The widget draws the signature itself; repeating it here duplicated the
+  // top line, and a plain-string `**` leaked through as literal asterisks.
+  assert.equal(functionSignatureDoc(fn({ comment: 'Echoes *it*.' })), '_function · public_\n\nEchoes \\*it\\*.')
+  assert.equal(functionSignatureDoc(fn()), '_function · public_')
 })
 
 test('procedures have no result arrow', () => {

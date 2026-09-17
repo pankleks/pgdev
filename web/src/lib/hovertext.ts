@@ -2,6 +2,7 @@
 // the formatting can be unit-tested; the Monaco providers stay thin.
 
 import type { FunctionInfo } from '../types'
+import { argumentText } from './functionargs'
 
 export interface HoverColumn {
   name: string
@@ -26,12 +27,6 @@ function escapeName(text: string): string {
   return text.replace(/([\\`*[\]])/g, '\\$1')
 }
 
-/** Arguments for the signature: named/defaults when harvested, identity args
- * otherwise. */
-function argumentText(f: FunctionInfo): string {
-  return f.arguments && f.arguments.length ? f.arguments : f.args
-}
-
 /** `(args) → returns` — the part after the function name (unescaped). */
 export function functionSignatureDetail(f: FunctionInfo): string {
   const result = f.kind === 'procedure' || !f.returns ? '' : ` → ${f.returns}`
@@ -48,6 +43,16 @@ function overloadBlock(f: FunctionInfo): string {
   const meta = `${f.kind} · ${f.schema}`
   const body = f.comment ? `\n\n${escapeMarkdown(f.comment)}` : ''
   return `${head}\n_${meta}_${body}`
+}
+
+/**
+ * Documentation for signature help: kind/schema and catalog comment only. The
+ * widget already draws the signature and the active parameter, so repeating it
+ * here would just duplicate the top line.
+ */
+export function functionSignatureDoc(f: FunctionInfo): string {
+  const body = f.comment ? `\n\n${escapeMarkdown(f.comment)}` : ''
+  return `_${f.kind} · ${f.schema}_${body}`
 }
 
 /** Markdown for one or more overloads of a function/procedure. */

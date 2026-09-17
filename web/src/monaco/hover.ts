@@ -1,7 +1,8 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
-import type { FunctionInfo, SchemaData, TableInfo, ViewInfo } from '../types'
+import type { TableInfo, ViewInfo } from '../types'
 import { formatColumnHover, formatFunctionHover, type HoverColumn } from '../lib/hovertext'
+import { findFunctions } from '../lib/sqlobjects'
 import { callSite, identifierAt } from './sqlcontext'
 import { findRelation, normIdent, parseAliases, resolveQualifier, type RelRef } from './sqlrefs'
 
@@ -57,21 +58,6 @@ function columnHover(
   return null
 }
 
-function functionHover(data: SchemaData, chain: string[], name: string): FunctionInfo[] {
-  const qualifier = chain.slice(0, -1)
-  const schema = qualifier.length ? normIdent(qualifier[qualifier.length - 1] as string) : ''
-  // `public` first, then other schemas, catalog order within each.
-  const user = (data.functions ?? [])
-    .filter((f) => f.name === name && (!schema || f.schema === schema))
-    .sort((a, b) => {
-      const byPublic = (a.schema === 'public' ? 0 : 1) - (b.schema === 'public' ? 0 : 1)
-      return byPublic || a.schema.localeCompare(b.schema) || a.oid.localeCompare(b.oid)
-    })
-  const builtins =
-    !schema || schema === 'pg_catalog' ? (data.builtins ?? []).filter((f) => f.name === name) : []
-  return [...user, ...builtins]
-}
-
 export function registerSqlHover(monaco: typeof Monaco): void {
   if (registered) return
   registered = true
@@ -90,7 +76,7 @@ export function registerSqlHover(monaco: typeof Monaco): void {
       const relations: Relation[] = [...data.tables, ...data.views]
       const aliases = parseAliases(text)
       const isCall = callSite(text, ident.end)
-      const functions = functionHover(data, ident.chain, name)
+      const functions = findFunctions(data, ident.chain, name)
       const column = columnHover(relations, aliases, ident.chain, name)
 
       const markdown =

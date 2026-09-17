@@ -154,6 +154,8 @@ export async function openPage(port) {
   return {
     evaluate,
     waitFor,
+    // Raw CDP escape hatch (input events, for example).
+    send,
     consoleErrors,
     close: async () => { ws.close() },
   }

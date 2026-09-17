@@ -3,6 +3,7 @@ import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import monaco from '../monaco'
 import { registerSqlCompletion, completionSuggestions } from '../monaco/completions'
 import { registerSqlHover, hoverContents } from '../monaco/hover'
+import { registerSqlSignature, signatureHelp as signatureHelpAt } from '../monaco/signature'
 import { useTabs, type EditorTab } from '../composables/tabs'
 import { useResults } from '../composables/results'
 import { useSettings } from '../composables/settings'
@@ -53,6 +54,7 @@ onMounted(() => {
   )
   registerSqlCompletion(monaco)
   registerSqlHover(monaco)
+  registerSqlSignature(monaco)
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
     run?.()
   })
@@ -118,6 +120,15 @@ onMounted(() => {
         const offset = model.getValue().lastIndexOf(needle)
         if (offset < 0) return null
         return hoverContents(model, model.getPositionAt(offset + Math.floor(needle.length / 2)) as never)
+      },
+      // The cursor sits at the end of the needle, so a probe like `f(a,`
+      // lands after the comma for active-parameter checks.
+      signatureHelp: (needle: string) => {
+        const model = editor?.getModel()
+        if (!model || !needle) return null
+        const offset = model.getValue().lastIndexOf(needle)
+        if (offset < 0) return null
+        return signatureHelpAt(model, model.getPositionAt(offset + needle.length) as never)
       },
       markers: () => monaco.editor.getModelMarkers({}),
     }

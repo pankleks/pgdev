@@ -3,6 +3,7 @@ import { useSchema } from '../composables/schema'
 import type { FunctionInfo, SchemaData, TableInfo, TypeInfo, ViewInfo } from '../types'
 import { functionSignatureDetail } from '../lib/hovertext'
 import { callSite } from './sqlcontext'
+import { bodySymbols } from './plpgsql'
 import {
   matchDotChain,
   findRelation,
@@ -11,6 +12,7 @@ import {
   quoteIdent,
   splitChain,
   resolveQualifier,
+  unquoteIdent,
 } from './sqlrefs'
 
 const KEYWORDS =
@@ -89,6 +91,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         [K.Keyword]: 1,
         [K.Field]: 2,
         [K.Class]: 3,
+        [K.Variable]: 4,
       }
       const emitted = new Map<string, { item: Monaco.languages.CompletionItem; index: number }>()
       const emit = (
@@ -146,6 +149,25 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         model.getOffsetAt({ lineNumber: position.lineNumber, column: word.endColumn }),
       )
       const callSort = atCall ? '0' : undefined
+
+      // Inside a dollar-quoted routine body the function's parameters and its
+      // DECLARE variables are the most local names; offer them first.
+      const symbols = bodySymbols(model.getValue(), model.getOffsetAt(position))
+      for (const sym of symbols) {
+        const ident = unquoteIdent(sym.name)
+        if (!matchesPrefix(ident)) continue
+        const detail = sym.kind === 'param'
+          ? `${sym.mode} parameter${sym.type ? ` · ${sym.type}` : ''}`
+          : `variable${sym.type ? ` · ${sym.type}` : ''}`
+        emit({
+          label: ident,
+          kind: K.Variable,
+          detail,
+          insertText: quoteIdent(ident),
+          range,
+          sortText: '0',
+        })
+      }
 
       // One emitter per catalog object kind, shared between the generic list
       // and the schema-qualifier list. `inSchema` suppresses re-qualification

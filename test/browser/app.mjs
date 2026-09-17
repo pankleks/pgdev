@@ -69,6 +69,21 @@ await pool.query(`
   CREATE FUNCTION app.thing_count() RETURNS integer LANGUAGE sql AS $$ SELECT count(*)::int FROM app.thing $$;
   CREATE FUNCTION app.item_count(p integer) RETURNS integer LANGUAGE sql AS $$ SELECT p $$;
   CREATE FUNCTION app.item_count(p_label text) RETURNS integer LANGUAGE sql AS $$ SELECT length(p_label) $$;
+  -- Drives the signature-help and PL/pgSQL body-completion checks: modes with
+  -- named parameters and a DECLARE block.
+  CREATE FUNCTION calc_stats(
+    IN p_value integer,
+    OUT p_total integer,
+    INOUT p_note text
+  ) LANGUAGE plpgsql AS $$
+  DECLARE
+    local_sum integer := 0;
+    local_note text;
+  BEGIN
+    p_total := p_value + local_sum;
+    p_note := local_note;
+  END
+  $$;
   INSERT INTO items (label, qty, active, due_at, payload, tags, flags, matrix) VALUES
     ('a', 1.50, true, '2024-01-15 10:30:00.123456', '{"b":2,"a":1}', '{red,green}', '{TRUE,FALSE}', '{{1,2},{3,4}}'),
     ('b', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
@@ -531,6 +546,140 @@ try {
       /\(p integer\)/.test(qualified?.markdown ?? '') &&
       qualified.markdown.includes('_function · app_'),
       JSON.stringify(qualified))
+  }
+
+  console.log('\n== IntelliSense signature help ==')
+  {
+    const signature = async (sql, needle) => {
+      await page.evaluate(`window.__pgdev.setValue(${JSON.stringify(sql)})`)
+      return page.evaluate(`return window.__pgdev.signatureHelp(${JSON.stringify(needle)})`)
+    }
+
+    const call = await signature('select calc_stats(', 'calc_stats(')
+    ok('signature help appears at a call site', !!call && call.signatures.length === 1, JSON.stringify(call))
+    eq('all parameters are listed', call?.signatures?.[0]?.parameters.length, 3)
+    // PostgreSQL omits the default IN mode from pg_get_function_arguments.
+    eq('the signature spells out the modes',
+      call?.signatures?.[0]?.label,
+      'calc_stats(p_value integer, OUT p_total integer, INOUT p_note text)')
+    eq('the first parameter starts active', call?.activeParameter, 0)
+    const doc = call?.signatures?.[0]?.documentation
+    const docText = typeof doc === 'string' ? doc : doc?.value ?? ''
+    ok('the documentation carries kind and schema',
+      /_function · public_/.test(docText) && !docText.includes('**'), JSON.stringify(doc))
+
+    const second = await signature('select calc_stats(1, ', 'calc_stats(1, ')
+    eq('a comma advances the active parameter', second?.activeParameter, 1)
+    const third = await signature('select calc_stats(1, 2, ', 'calc_stats(1, 2, ')
+    eq('the active parameter follows further commas', third?.activeParameter, 2)
+
+    await page.evaluate(`window.__pgdev.setValue('select 1')`)
+    const none = await page.evaluate(`return window.__pgdev.signatureHelp('select 1')`)
+    ok('no signature help outside a call', none === null, JSON.stringify(none))
+
+    // The helper above calls the logic directly; this drives the real editor so
+    // the Monaco contribution, trigger character and widget are exercised too.
+    await page.evaluate(`
+      const ed = window.__pgdev.editor
+      ed.setValue('select calc_stats')
+      ed.focus()
+      ed.setPosition(ed.getModel().getPositionAt(ed.getModel().getValueLength()))
+      ed.trigger('pgdev-test', 'type', { text: '(' })
+    `)
+    ok('the parameter-hints contribution is loaded',
+      await page.evaluate(
+        `return window.__pgdev.editor.getSupportedActions().some((a) => a.id === 'editor.action.triggerParameterHints')`,
+      ))
+
+    // The helper above calls the logic directly; drive the real editor so the
+    // Monaco contribution, the `(` trigger character and the widget are all
+    // exercised. Real input events are needed: a synthetic `type` command does
+    // not raise onDidType, which is what auto-triggers the hints.
+    await page.evaluate(`
+      const ed = window.__pgdev.editor
+      ed.setValue('select calc_stats')
+      ed.focus()
+      ed.setPosition(ed.getModel().getPositionAt(ed.getModel().getValueLength()))
+    `)
+    await page.send('Input.insertText', { text: '(' })
+    const popup = await page.waitFor(`
+      (() => {
+        const w = document.querySelector('.parameter-hints-widget')
+        if (!w || !w.classList.contains('visible')) return null
+        return {
+          signature: (w.querySelector('.signature')?.textContent || '').slice(0, 80),
+          docs: (w.querySelector('.docs')?.textContent || '').slice(0, 80),
+        }
+      })()
+    `, { timeout: 8000 }).catch(() => null)
+    ok('the parameter-hints popup renders while typing a call',
+      !!popup && /p_value/.test(popup.signature), JSON.stringify(popup))
+    // The docs are markdown; the widget must render them, not show the source.
+    ok('the popup documentation renders as markdown without repeating the signature',
+      !!popup && /function · public/.test(popup.docs) && !popup.docs.includes('*'), JSON.stringify(popup?.docs))
+
+    // A call typed inside a routine's DDL body is inside a dollar-quoted
+    // string: the lexer sees the whole body as one token, so the provider must
+    // look inside it instead of stopping at the `$$` boundary.
+    const ddlBody = [
+      'CREATE OR REPLACE FUNCTION public.wrapper() RETURNS integer LANGUAGE plpgsql AS $$',
+      'BEGIN',
+      '  RETURN calc_stats',
+      'END',
+      '$$;',
+    ].join('\n')
+    await page.evaluate(`
+      const ed = window.__pgdev.editor
+      ed.setValue(${JSON.stringify(ddlBody)})
+      ed.focus()
+      const model = ed.getModel()
+      const at = model.getValue().indexOf('calc_stats') + 'calc_stats'.length
+      ed.setPosition(model.getPositionAt(at))
+    `)
+    await page.send('Input.insertText', { text: '(' })
+    const bodyPopup = await page.waitFor(`
+      (() => {
+        const w = document.querySelector('.parameter-hints-widget')
+        if (!w || !w.classList.contains('visible')) return null
+        return { signature: (w.querySelector('.signature')?.textContent || '').slice(0, 60) }
+      })()
+    `, { timeout: 8000 }).catch(() => null)
+    ok('the parameter-hints popup renders inside a DDL body too',
+      !!bodyPopup && /p_value/.test(bodyPopup.signature), JSON.stringify(bodyPopup))
+
+    const helperBody = await page.evaluate(`return window.__pgdev.signatureHelp('calc_stats(')`)
+    ok('signature help resolves a call inside a DDL body',
+      !!helperBody && /p_value/.test(helperBody.signatures?.[0]?.label ?? ''), JSON.stringify(helperBody))
+  }
+
+  console.log('\n== IntelliSense inside a PL/pgSQL body ==')
+  {
+    const body = [
+      'CREATE FUNCTION calc_stats(',
+      '  IN p_value integer,',
+      '  OUT p_total integer,',
+      '  INOUT p_note text',
+      ') LANGUAGE plpgsql AS $$',
+      'DECLARE',
+      '  local_sum integer := 0;',
+      'BEGIN',
+      '  RETURN;',
+      'END',
+      '$$;',
+    ].join('\n')
+    await page.evaluate(`window.__pgdev.setValue(${JSON.stringify(body)})`)
+    // The cursor sits after BEGIN's indentation, so the typed word is empty
+    // and every body symbol is offered.
+    const items = await page.evaluate(`return window.__pgdev.suggestions('BEGIN\\n  ')`)
+    const labels = items.map((i) => i.label)
+    ok('IN/OUT/INOUT parameters are suggested inside the body',
+      ['p_value', 'p_total', 'p_note'].every((n) => labels.includes(n)), JSON.stringify(labels.slice(0, 12)))
+    ok('DECLARE variables are suggested inside the body', labels.includes('local_sum'), JSON.stringify(labels.slice(0, 12)))
+    const outParam = items.find((i) => i.label === 'p_total')
+    ok('an OUT parameter is described as such', /out parameter/.test(String(outParam?.detail)), JSON.stringify(outParam))
+    const declared = items.find((i) => i.label === 'local_sum')
+    ok('a DECLARE variable shows its type', /variable · integer/.test(String(declared?.detail)), JSON.stringify(declared))
+    ok('body symbols insert as plain identifiers', outParam?.insertText === 'p_total', String(outParam?.insertText))
   }
 
   console.log('\n== IntelliSense offers schema contents after a schema qualifier ==')
