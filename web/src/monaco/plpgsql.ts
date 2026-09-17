@@ -3,7 +3,7 @@
 // from the CREATE FUNCTION/PROCEDURE header and the names declared in the
 // body's DECLARE block. Pure (uses the shared lexer) so it is unit-testable.
 
-import { scanSqlLexemes } from '../../../server/src/sqllex'
+import { allLexemes, allTokens, type SqlToken } from '../lib/sqlcache'
 import { parseFunctionArgs, type ArgMode, type FunctionArg } from '../lib/functionargs'
 
 export interface RoutineBody {
@@ -32,30 +32,10 @@ export interface BodySymbol {
   type: string
 }
 
-interface LexToken {
-  kind: 'ident' | 'punct'
-  start: number
-  end: number
-  raw: string
-  name: string
-  quoted: boolean
-}
+type LexToken = SqlToken
 
-function lexTokens(text: string): LexToken[] {
-  const tokens: LexToken[] = []
-  scanSqlLexemes(text, (lex) => {
-    if (lex.kind === 'ident' || lex.kind === 'punct') {
-      tokens.push({
-        kind: lex.kind,
-        start: lex.start,
-        end: lex.end,
-        raw: lex.raw,
-        name: lex.name,
-        quoted: lex.quoted,
-      })
-    }
-  })
-  return tokens
+function lexTokens(text: string): readonly LexToken[] {
+  return allTokens(text)
 }
 
 /** The statement text ending at `before`'s end, excluding earlier ones. */
@@ -82,16 +62,16 @@ function opensRoutineBody(statement: string): boolean {
  */
 export function enclosingRoutineBody(text: string, offset: number): RoutineBody | null {
   let found: RoutineBody | null = null
-  scanSqlLexemes(text, (lex) => {
-    if (lex.start >= offset) return false
-    if (lex.kind !== 'dollar') return true
+  for (const lex of allLexemes(text)) {
+    if (lex.start >= offset) break
+    if (lex.kind !== 'dollar') continue
     const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
     const tagLen = tag ? tag[0].length : 2
     const closed = lex.raw.length > tagLen * 2 && lex.raw.endsWith(tag ? tag[0] : '$$')
     // A closed body excludes its end; an unclosed one reaches EOF.
-    if (!(lex.start < offset && offset < (closed ? lex.end : lex.end + 1))) return true
+    if (!(lex.start < offset && offset < (closed ? lex.end : lex.end + 1))) continue
     const before = text.slice(0, lex.start)
-    if (!opensRoutineBody(lastStatement(before))) return true
+    if (!opensRoutineBody(lastStatement(before))) continue
     found = {
       before,
       inner: closed ? lex.raw.slice(tagLen, lex.raw.length - tagLen) : lex.raw.slice(tagLen),
@@ -99,8 +79,8 @@ export function enclosingRoutineBody(text: string, offset: number): RoutineBody 
       open: lex.start,
       close: lex.end,
     }
-    return false
-  })
+    break
+  }
   return found
 }
 

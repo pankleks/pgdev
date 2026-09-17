@@ -1,11 +1,11 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
-import type { TableInfo, ViewInfo } from '../types'
 import { formatColumnHover, formatFunctionHover, type HoverColumn } from '../lib/hovertext'
+import { catalogFor, resolveRelation, visibleRelations, type Relation } from '../lib/catalog'
 import { findFunctions } from '../lib/sqlobjects'
 import { callSite, identifierAt } from './sqlcontext'
 import { routineSource } from './plpgsql'
-import { findRelation, normIdent, relationLabel, resolveQualifier } from './sqlrefs'
+import { normIdent, relationLabel } from './sqlrefs'
 import { resolveQueryScope, type QueryScope, type ScopeRelation } from './sqlscope'
 
 // SQL hover: the identifier under the cursor is resolved against the loaded
@@ -15,25 +15,14 @@ import { resolveQueryScope, type QueryScope, type ScopeRelation } from './sqlsco
 // in DDL). All overloads of a name are listed with their signature, kind,
 // schema and catalog comment.
 
-type Relation = TableInfo | ViewInfo | ScopeRelation
-
 let registered = false
 
 /** Dev/test handle, mirroring the completion provider's. */
 let devProvider: Monaco.languages.HoverProvider | null = null
 
-function visibleRelations(relations: Relation[], scope: QueryScope): Relation[] {
-  if (!scope.hasRelations) return relations
-  const seen = new Set<Relation>()
-  for (const ref of scope.aliases.values()) {
-    const relation = findRelation(relations, ref)
-    if (relation) seen.add(relation)
-  }
-  return [...seen]
-}
-
 function columnHover(
-  relations: Relation[],
+  catalog: ReturnType<typeof catalogFor>,
+  synthetic: readonly ScopeRelation[],
   scope: QueryScope,
   chain: string[],
   name: string,
@@ -41,11 +30,11 @@ function columnHover(
   const qualifier = chain.slice(0, -1)
   let relation: Relation | undefined
   if (qualifier.length) {
-    relation = resolveQualifier(relations, qualifier, scope.aliases)
+    relation = resolveRelation(catalog, synthetic, qualifier, scope.aliases)
     // A qualifier that names no relation (a schema, say) cannot be a column.
     if (!relation) return null
   }
-  const candidates = relation ? [relation] : visibleRelations(relations, scope)
+  const candidates = relation ? [relation] : visibleRelations(catalog, synthetic, scope)
   for (const rel of candidates) {
     const column = rel.columns.find((c) => c.name === name)
     if (!column) continue
@@ -80,11 +69,10 @@ export function registerSqlHover(monaco: typeof Monaco): void {
       if (!name) return null
 
       const scope = resolveQueryScope(text, cursor)
-      // CTE and derived-table columns are not in the catalog; append them.
-      const relations: Relation[] = [...data.tables, ...data.views, ...scope.relations]
+      const catalog = catalogFor(data)
       const isCall = callSite(source.text, ident.end)
       const functions = findFunctions(data, ident.chain, name)
-      const column = columnHover(relations, scope, ident.chain, name)
+      const column = columnHover(catalog, scope.relations, scope, ident.chain, name)
 
       const markdown =
         isCall && functions.length

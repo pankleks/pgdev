@@ -2,10 +2,10 @@
 // under a cursor offset, its dotted chain, and whether it is followed by `(`.
 // The scanner skips strings, comments and dollar-quoted bodies (a cursor
 // inside one has no identifier), while quoted identifiers become tokens so
-// names like "My Col" resolve. The lexing itself lives in sqllex.ts, shared
-// with the server's statement splitter and query router.
+// names like "My Col" resolve. Lexing is shared through sqlcache.ts, so the
+// token list is built once per document version.
 
-import { scanSqlLexemes } from '../../../server/src/sqllex'
+import { allLexemes, allTokens, type SqlToken } from '../lib/sqlcache'
 
 export interface IdentifierAt {
   /** Identifier text without surrounding quotes. */
@@ -21,28 +21,12 @@ export interface IdentifierAt {
   quoted: boolean
 }
 
-interface Token {
-  kind: 'ident' | 'punct'
-  start: number
-  end: number
-  name: string
-  quoted: boolean
-}
-
 /** Tokens of `text`; whitespace, strings, comments and dollar bodies skip. */
-function tokenize(text: string): Token[] {
-  const tokens: Token[] = []
-  scanSqlLexemes(text, (lex) => {
-    if (lex.kind === 'ident') {
-      tokens.push({ kind: 'ident', start: lex.start, end: lex.end, name: lex.name, quoted: lex.quoted })
-    } else if (lex.kind === 'punct') {
-      tokens.push({ kind: 'punct', start: lex.start, end: lex.end, name: lex.raw, quoted: false })
-    }
-  })
-  return tokens
+function tokenize(text: string): readonly SqlToken[] {
+  return allTokens(text)
 }
 
-function rawOf(text: string, token: Token): string {
+function rawOf(text: string, token: SqlToken): string {
   return token.quoted ? text.slice(token.start, token.end) : token.name
 }
 
@@ -51,7 +35,7 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
   const tokens = tokenize(text)
   let index = -1
   for (let k = 0; k < tokens.length; k++) {
-    const token = tokens[k] as Token
+    const token = tokens[k] as SqlToken
     if (token.kind === 'ident' && token.start <= offset && offset <= token.end) {
       index = k
       break
@@ -59,7 +43,7 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
   }
   if (index < 0) return null
 
-  const token = tokens[index] as Token
+  const token = tokens[index] as SqlToken
   const chain = [rawOf(text, token)]
 
   let k = index - 1
@@ -69,7 +53,7 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
     tokens[k]?.name === '.' &&
     tokens[k - 1]?.kind === 'ident'
   ) {
-    chain.unshift(rawOf(text, tokens[k - 1] as Token))
+    chain.unshift(rawOf(text, tokens[k - 1] as SqlToken))
     k -= 2
   }
   let m = index + 1
@@ -79,7 +63,7 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
     tokens[m]?.name === '.' &&
     tokens[m + 1]?.kind === 'ident'
   ) {
-    chain.push(rawOf(text, tokens[m + 1] as Token))
+    chain.push(rawOf(text, tokens[m + 1] as SqlToken))
     m += 2
   }
 
@@ -95,15 +79,13 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
 
 /** The dollar-quoted token whose interior contains `offset`, or null. */
 function dollarTokenAt(text: string, offset: number): { raw: string; start: number } | null {
-  let found: { raw: string; start: number } | null = null
-  scanSqlLexemes(text, (lex) => {
-    if (lex.start >= offset) return false
+  for (const lex of allLexemes(text)) {
+    if (lex.start >= offset) break
     if (lex.kind === 'dollar' && lex.start < offset && offset < lex.end) {
-      found = { raw: lex.raw, start: lex.start }
-      return false
+      return { raw: lex.raw, start: lex.start }
     }
-  })
-  return found
+  }
+  return null
 }
 
 /**

@@ -1,7 +1,9 @@
 // Lookups shared by the hover and signature-help providers so overloads are
-// ordered identically in both. Pure (no monaco / vue imports).
+// ordered identically in both. Pure (no monaco / vue imports). The function
+// grouping and ordering live in the catalog index, built once per load.
 
 import type { FunctionInfo, SchemaData } from '../types'
+import { catalogFor } from './catalog'
 import { normIdent } from '../monaco/sqlrefs'
 
 /**
@@ -12,13 +14,9 @@ import { normIdent } from '../monaco/sqlrefs'
 export function findFunctions(data: SchemaData, chain: string[], name: string): FunctionInfo[] {
   const qualifier = chain.slice(0, -1)
   const schema = qualifier.length ? normIdent(qualifier[qualifier.length - 1] as string) : ''
-  const user = (data.functions ?? [])
-    .filter((f) => f.name === name && (!schema || f.schema === schema))
-    .sort((a, b) => {
-      const byPublic = (a.schema === 'public' ? 0 : 1) - (b.schema === 'public' ? 0 : 1)
-      return byPublic || a.schema.localeCompare(b.schema) || a.oid.localeCompare(b.oid)
-    })
+  const catalog = catalogFor(data)
+  const user = (catalog.functionsByName.get(name) ?? []).filter((f) => !schema || f.schema === schema)
   const builtins =
-    !schema || schema === 'pg_catalog' ? (data.builtins ?? []).filter((f) => f.name === name) : []
+    !schema || schema === 'pg_catalog' ? (catalog.builtinsByName.get(name) ?? []) : []
   return [...user, ...builtins]
 }

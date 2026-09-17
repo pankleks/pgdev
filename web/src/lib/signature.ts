@@ -3,8 +3,8 @@
 // lexer and plain helpers) so it can be unit-tested without Monaco; the
 // provider in monaco/signature.ts stays thin.
 
-import { scanSqlLexemes } from '../../../server/src/sqllex'
 import type { FunctionInfo, SchemaData } from '../types'
+import { allLexemes } from './sqlcache'
 import { argumentText, parseFunctionArgs } from './functionargs'
 import { functionSignatureDoc } from './hovertext'
 import { findFunctions } from './sqlobjects'
@@ -47,36 +47,33 @@ interface Token {
 // the call being typed.
 function tokensUpTo(text: string, offset: number): Token[] {
   const tokens: Token[] = []
-  scanSqlLexemes(text, (lex) => {
-    if (lex.start >= offset) return false
+  for (const lex of allLexemes(text)) {
+    if (lex.start >= offset) break
     if (lex.kind === 'ident' || lex.kind === 'punct') {
       tokens.push({ kind: lex.kind, start: lex.start, end: lex.end, raw: lex.raw })
-      return
+      continue
     }
-    // Keep scanning past opaque lexemes that end before the cursor; an opaque
-    // lexeme spanning it means the cursor is inside a string/comment/body.
-    return lex.end <= offset
-  })
+    // An opaque lexeme (string, comment, dollar body) spanning the cursor means
+    // nothing after it can be part of the call being typed.
+    if (lex.end > offset) break
+  }
   return tokens
 }
 
 /** The dollar-quoted body containing `offset`, rebased onto its inner text. */
 function dollarInner(text: string, offset: number): { text: string; offset: number } | null {
-  let found: { text: string; offset: number } | null = null
-  scanSqlLexemes(text, (lex) => {
-    if (lex.start >= offset) return false
-    if (lex.kind !== 'dollar') return true
+  for (const lex of allLexemes(text)) {
+    if (lex.start >= offset) break
+    if (lex.kind !== 'dollar') continue
     const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
     const tagLen = tag ? tag[0].length : 2
     const closed = lex.raw.length > tagLen * 2 && lex.raw.endsWith(tag ? tag[0] : '$$')
     // An unclosed body ends at EOF, so a call typed at the end is still inside.
     if (lex.start < offset && offset < (closed ? lex.end : lex.end + 1)) {
-      found = { text: lex.raw.slice(tagLen), offset: offset - lex.start - tagLen }
-      return false
+      return { text: lex.raw.slice(tagLen), offset: offset - lex.start - tagLen }
     }
-    return true
-  })
-  return found
+  }
+  return null
 }
 
 /**

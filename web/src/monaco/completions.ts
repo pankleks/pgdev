@@ -2,22 +2,20 @@ import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
 import type { FunctionInfo, SchemaData, SequenceInfo, TableInfo, TypeInfo, ViewInfo } from '../types'
 import { functionSignatureDetail } from '../lib/hovertext'
+import { catalogFor, resolveRelation, visibleRelations } from '../lib/catalog'
 import { callSite, identifierRangeAt } from './sqlcontext'
 import { bodySymbols } from './plpgsql'
 import { resolveQueryScope } from './sqlscope'
 import {
   matchDotChain,
-  findRelation,
   findSchema,
   quoteIdent,
   escapeSnippet,
   splitChain,
-  resolveQualifier,
   unquoteIdent,
   normIdent,
   relationLabel,
 } from './sqlrefs'
-import type { ScopeRelation } from './sqlscope'
 
 const KEYWORDS =
   'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK CALL FUNCTION PROCEDURE RETURNS LANGUAGE REPLACE ON CONFLICT DO NOTHING EXCLUDED RECURSIVE LATERAL TABLESAMPLE ROLLUP CUBE GROUPING SETS ORDINALITY OVERRIDING GENERATED ALWAYS IDENTITY INCLUDE RANGE HASH ATTACH DETACH REFRESH CONCURRENTLY VALIDATE RENAME OWNER SCHEMA DATABASE EXTENSION SERIALIZABLE DEFERRABLE DEFERRED IMMEDIATE SAVEPOINT RELEASE ABORT VACUUM REINDEX CLUSTER COPY STDIN LOCK SHARE NOWAIT SKIP LOCKED'
@@ -31,6 +29,9 @@ const BUILTIN_TYPES =
   'bigint bigserial bit boolean box bytea char character cidr circle date decimal double precision inet integer interval json jsonb line lseg macaddr macaddr8 money numeric oid path pg_lsn point polygon real serial smallint smallserial text time timetz timestamp timestamptz tsquery tsvector uuid varbit varchar xml'.split(
     ' ',
   )
+
+/** Fallback catalog before a connection loads; synthetic refs still resolve. */
+const EMPTY_SCHEMA: SchemaData = { tables: [], views: [], types: [], functions: [], sequences: [], builtins: [] }
 
 function qualified(schema: string, name: string): string {
   return schema === 'public' ? quoteIdent(name) : `${quoteIdent(schema)}.${quoteIdent(name)}`
@@ -47,18 +48,9 @@ function functionDetail(f: FunctionInfo): string {
   return `(${f.args})${returns}${suffix}${schema}`
 }
 
-// The provider runs on every keystroke; the relations array only changes when
-// a new schema load replaces the data object, so derive it once per load.
-// Synthetic CTE/derived relations join it per request.
-type Relation = TableInfo | ViewInfo | ScopeRelation
-let relationsCache: { data: SchemaData; relations: Relation[] } | null = null
-
-function relationsFor(data: SchemaData): Relation[] {
-  if (relationsCache?.data !== data) {
-    relationsCache = { data, relations: [...data.tables, ...data.views] }
-  }
-  return relationsCache.relations
-}
+// Schema lookups come from the shared catalog index (lib/catalog.ts), rebuilt
+// only when a new schema load replaces the data object. Synthetic CTE/derived
+// relations from the current query join it per request.
 
 let registered = false
 
@@ -154,9 +146,8 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       }
       const scope = resolveQueryScope(text, offset)
       const { aliases } = scope
-      const catalog = data ? relationsFor(data) : []
-      // CTE and derived-table columns are not in the catalog; append them.
-      const relations: Relation[] = scope.relations.length ? [...catalog, ...scope.relations] : catalog
+      const synthetic = scope.relations
+      const catalog = catalogFor(data ?? EMPTY_SCHEMA)
       // A word directly followed by `(` is being called: rank functions above
       // same-named columns there, and describe both inline so the identical
       // labels stay distinguishable.
@@ -283,7 +274,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       const chain = matchDotChain(lineBefore)
       if (chain) {
         const parts = splitChain(chain)
-        const match = resolveQualifier(relations, parts, aliases)
+        const match = resolveRelation(catalog, synthetic, parts, aliases)
 
         if (match) {
           const relationName = relationLabel(match)
@@ -304,22 +295,14 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         // Not a relation: a single trailing part may name a schema (`app.`).
         // A schema has no columns, so offer everything it holds instead.
         if (parts.length === 1 && data && !aliases.has(normIdent(parts[0]!))) {
-          const schemas = [
-            ...new Set([
-              ...data.tables.map((o) => o.schema),
-              ...data.views.map((o) => o.schema),
-              ...data.types.map((o) => o.schema),
-              ...data.functions.map((o) => o.schema),
-              ...data.sequences.map((o) => o.schema),
-            ]),
-          ]
-          const schema = findSchema(schemas, parts[0])
-          if (schema) {
-            for (const t of data.tables) if (t.schema === schema) itemForTable(t, true)
-            for (const v of data.views) if (v.schema === schema) itemForView(v, true)
-            for (const t of data.types) if (t.schema === schema) itemForType(t, true)
-            for (const s of data.sequences) if (s.schema === schema) itemForSequence(s, true)
-            for (const f of data.functions) if (f.schema === schema) itemForFunction(f, true)
+          const schema = findSchema(catalog.schemas, parts[0])
+          const objects = schema ? catalog.bySchema.get(schema) : undefined
+          if (objects) {
+            for (const t of objects.tables) itemForTable(t, true)
+            for (const v of objects.views) itemForView(v, true)
+            for (const t of objects.types) itemForType(t, true)
+            for (const s of objects.sequences) itemForSequence(s, true)
+            for (const f of objects.functions) itemForFunction(f, true)
           }
         }
         return { suggestions }
@@ -348,12 +331,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
 
       // Offer unqualified fields from relations in the current query. When
       // no relation is known yet, fall back to the loaded schema.
-      const visibleRelations = scope.hasRelations
-        ? [...new Set([...aliases.values()].flatMap((ref) => {
-            const relation = findRelation(relations, ref)
-            return relation ? [relation] : []
-          }))]
-        : relations
+      const visible = visibleRelations(catalog, synthetic, scope)
       // The same column name commonly exists in several relations (`id` in
       // both employees and departments). Monaco would list one row per
       // occurrence, so keep the first and name the other relations in the
@@ -362,7 +340,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // afterwards — re-splitting a growing description per occurrence used
       // to make common column names quadratic.
       const columnSources = new Map<string, { type: string; relations: string[] }>()
-      for (const relation of visibleRelations) {
+      for (const relation of visible) {
         const relationName = relationLabel(relation)
         for (const c of relation.columns) {
           if (!matchesPrefix(c.name)) continue
