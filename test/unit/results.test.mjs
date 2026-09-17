@@ -211,6 +211,59 @@ test('cancel stops a streaming drain and retires a partially consumed cursor', a
   assert.equal(g.truncated, false)
 })
 
+test('a lost response on the first fetch retires the cursor instead of silently omitting rows', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, results: [data('a', [[1]], { truncated: true })] })
+  await results.run('tab', 'db', 'q')
+  const r = results.state.byTab.tab
+  const g = r.grid
+  let calls = 0
+  api.fetchMore = async () => {
+    calls++
+    // The server consumed the first additional page, but its response was lost.
+    if (calls === 1) throw new Error('network dropped')
+    return { rows: [[3]], rowCount: 1, truncated: false }
+  }
+  const pages = []
+  assert.equal(await results.exportAll('tab', 'db', g, (rows) => { pages.push(...rows) }, false), false)
+  assert.deepEqual(pages, [[1]], 'only rows confirmed by the sink are kept')
+  assert.deepEqual(g.exported, { rows: 1, incomplete: true })
+  assert.equal(g.truncated, false, 'the cursor position is unknown, so paging stops')
+  assert.ok(r.messages.some((m) => m.text.includes('re-run the query')))
+  // A retry must not silently omit the uncertain page as a success.
+  const retryPages = []
+  assert.equal(await results.exportAll('tab', 'db', g, (rows) => { retryPages.push(...rows) }, false), false)
+  assert.deepEqual(retryPages, [], 'a consumed cursor is never drained twice')
+  assert.equal(calls, 1, 'no further cursor pages are consumed after the failure')
+})
+
+test('cancel during the first fetch retires the cursor', async () => {
+  const { api, results } = setup()
+  api.query = async () => ({ durationMs: 1, results: [data('a', [[1]], { truncated: true })] })
+  api.cancel = async () => ({ ok: false })
+  await results.run('tab', 'db', 'q')
+  const r = results.state.byTab.tab
+  const g = r.grid
+  let resolvePage, started
+  const up = new Promise((resolve) => { started = resolve })
+  api.fetchMore = () => { started(); return new Promise((resolve) => { resolvePage = resolve }) }
+  const pages = []
+  const exporting = results.exportAll('tab', 'db', g, (rows) => { pages.push(...rows) }, false)
+  await up
+  await results.cancel('tab', 'db')
+  // The page arrives after the cancel: the server may have consumed it, and
+  // it never reached the sink, so the cursor must be retired.
+  resolvePage({ rows: [[2]], rowCount: 1, truncated: false })
+  assert.equal(await exporting, false)
+  assert.deepEqual(pages, [[1]])
+  assert.deepEqual(g.exported, { rows: 1, incomplete: true })
+  assert.equal(g.truncated, false)
+  assert.ok(r.messages.some((m) => m.text.includes('re-run the query')))
+  const retryPages = []
+  assert.equal(await results.exportAll('tab', 'db', g, (rows) => { retryPages.push(...rows) }, false), false)
+  assert.deepEqual(retryPages, [], 'a retired cursor is never drained again')
+})
+
 test('a streaming export aborts when the result is dropped mid-drain', async () => {
   const { api, results } = setup()
   api.query = async () => ({ durationMs: 1, results: [data('a', [[1]], { truncated: true })] })

@@ -281,7 +281,11 @@ export function createResults(api: ResultsApi) {
     const operation = r.operation
     r.loadingMore = true
     let exported = 0
-    let fetched = 0
+    /** Pages whose FETCH was dispatched. The server-side cursor advances when
+     * the FETCH is processed, not when the response arrives — so once a fetch
+     * is dispatched, the outcome is uncertain until every returned row has
+     * reached the sink, even if the response itself is lost or discarded. */
+    let dispatched = 0
     /** The cursor advanced but the file did not receive every row: retrying
      * would silently omit the lost pages, so retire the cursor and require a
      * re-run. */
@@ -298,17 +302,19 @@ export function createResults(api: ResultsApi) {
       exported += g.rows.length
       while (isCurrent(tabKey, r, operation) && r.grids.includes(g) && g.truncated && !r.running && !r.cancelling) {
         let res: FetchMoreResponse
+        dispatched++
         try {
           res = await api.fetchMore(connectionId, tabKey)
         } catch (e) {
-          if (!retain && fetched > 0) invalidateStreamingCursor()
+          // The page may or may not have been consumed; the outcome is
+          // uncertain, so the cursor cannot be trusted either way.
+          if (!retain) invalidateStreamingCursor()
           throw e
         }
         if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g) || r.cancelling) {
-          if (!retain && fetched > 0) invalidateStreamingCursor()
+          if (!retain) invalidateStreamingCursor()
           return false
         }
-        fetched++
         try {
           await sink(res.rows)
         } catch (e) {
@@ -329,11 +335,11 @@ export function createResults(api: ResultsApi) {
         }
       }
       if (!isCurrent(tabKey, r, operation) || !r.grids.includes(g)) {
-        if (!retain && fetched > 0) invalidateStreamingCursor()
+        if (!retain && dispatched > 0) invalidateStreamingCursor()
         return false
       }
       if (r.cancelling) {
-        if (!retain && fetched > 0) invalidateStreamingCursor()
+        if (!retain && dispatched > 0) invalidateStreamingCursor()
         return false
       }
       const complete = !g.truncated
