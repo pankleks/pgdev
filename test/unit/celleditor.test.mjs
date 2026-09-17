@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
@@ -157,6 +158,52 @@ test('edited timestamptz keeps its instant via the browser offset', () => {
     '2024-01-15T10:30:00+02:00',
   )
   assert.equal(fromEditorValue('not a date', 'timestamp with time zone'), 'not a date')
+})
+
+// The DST-overlap behavior depends on the process timezone, so the pinned
+// cases run in a child with TZ fixed at Europe/Warsaw (its autumn transition
+// repeats a local hour: 03:00+02 == 02:00+01 on 2024-10-27).
+const tzProbe = `
+  import { registerHooks } from 'node:module';
+  registerHooks({ resolve(s, c, n) {
+    if (c.parentURL?.includes('/src/') && s.startsWith('.')) {
+      return { url: new URL(s.endsWith('.js') ? s.slice(0, -3) + '.ts' : s.endsWith('.ts') ? s : s + '.ts', c.parentURL).href, shortCircuit: true };
+    }
+    return n(s, c);
+  } });
+  const { toEditorValue, fromEditorValue } = await import('file:///${process.cwd().split(String.fromCharCode(92)).join('/')}/web/src/lib/celleditor.ts');
+  const instant = (raw) => new Date(raw.replace(' ', 'T').replace(/[+-][0-9][0-9]$/, (m) => m + ':00')).getTime();
+  const out = [];
+  for (const raw of [
+    '2024-10-27 01:30:00+00',   // wall 02:30, ambiguous (+01/+02)
+    '2025-10-26 01:30:00+00',   // wall 02:30, ambiguous (+01/+02)
+    '2024-10-27 00:30:00+00',   // wall 01:30, before the transition
+    '2024-03-31 02:30:00+00',   // spring-forward gap: displays 04:30
+    '2024-01-15 10:30:00+00',   // ordinary winter time
+  ]) {
+    const control = toEditorValue(raw, 'timestamp with time zone');
+    const sent = fromEditorValue(control, 'timestamp with time zone', raw);
+    out.push({ raw, control, sent, original: instant(raw), reparsed: new Date(sent).getTime() });
+  }
+  console.log(JSON.stringify(out));
+`
+
+test('edited timestamptz keeps its instant through a DST overlap (pinned TZ)', () => {
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', tzProbe], {
+    env: { ...process.env, TZ: 'Europe/Warsaw' },
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const rows = JSON.parse(result.stdout)
+  for (const { raw, control, sent, original, reparsed } of rows) {
+    assert.match(control, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, `${raw} -> ${control}`)
+    assert.match(sent, /[+-]\d{2}:\d{2}$/, `${raw} -> ${sent}`)
+    assert.equal(reparsed, original, `${raw} -> ${control} -> ${sent}`)
+  }
+  // The overlap case must resolve to the side the user was actually viewing
+  // (the second pass, +01) rather than the engine's first-occurrence choice.
+  const overlap = rows[0]
+  assert.equal(overlap.sent, '2024-10-27T02:30:00+01:00', overlap.sent)
 })
 
 test('edited JSON is syntax-checked without rewriting it', () => {

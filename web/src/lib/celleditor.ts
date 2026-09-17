@@ -162,23 +162,63 @@ function formatOffset(d: Date): string {
 }
 
 /**
+ * The offsets the browser zone uses around `wall` (the control's wall time
+ * without an offset). Near a DST transition two distinct offsets can both
+ * yield valid instants — the repeated autumn hour is genuinely ambiguous —
+ * while an ordinary date degenerates to the zone's single current offset.
+ */
+function candidateOffsets(wallMs: number): number[] {
+  return [...new Set([
+    -new Date(wallMs - 12 * 3600_000).getTimezoneOffset(),
+    -new Date(wallMs + 12 * 3600_000).getTimezoneOffset(),
+  ])]
+}
+
+/** Attach offset `o` to the wall time `text`. */
+function withOffset(text: string, totalMinutes: number): string {
+  const sign = totalMinutes >= 0 ? '+' : '-'
+  const abs = Math.abs(totalMinutes)
+  return `${text}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+}
+
+/**
  * Control value → the parameter sent to PostgreSQL. Plain timestamps, times
  * and dates pass through: PostgreSQL accepts the native control text as-is.
  * Timestamptz is the exception: the `datetime-local` control cannot carry an
  * offset, while `toEditorValue` shows the instant in the browser's wall clock.
  * Sending that wall time back bare would reinterpret it in the database
  * session's timezone and shift the stored instant, so reattach the browser's
- * offset for the edited wall time. Values already carrying an offset (or `Z`)
- * and unparsable text pass through for PostgreSQL to validate.
+ * offset for the edited wall time. When `originalRaw` (the row's raw
+ * PostgreSQL text) is supplied and the wall time sits in a repeated hour
+ * (autumn DST overlap), pick the occurrence closest to the original instant —
+ * an untouched wall time then round-trips to exactly the original instant.
+ * Values already carrying an offset (or `Z`) and unparsable text pass through
+ * for PostgreSQL to validate.
  */
-export function fromEditorValue(control: string, type?: string): string {
+export function fromEditorValue(control: string, type?: string, originalRaw?: string): string {
   if (!type || !isTimestamptz(type)) return control
   const text = control.trim()
   if (!text || /([Zz]|[+-]\d{2}:?\d{2})$/.test(text)) return control
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) return control
   const parsed = new Date(text)
   if (Number.isNaN(parsed.getTime())) return control
-  return `${text}${formatOffset(parsed)}`
+  const wallMs = parsed.getTime()
+  const candidates = candidateOffsets(wallMs)
+  if (candidates.length === 1 || originalRaw == null) {
+    return `${text}${formatOffset(parsed)}`
+  }
+  const originalInstant = new Date(offsetNormalized(originalRaw.trim())).getTime()
+  if (Number.isNaN(originalInstant)) return `${text}${formatOffset(parsed)}`
+  let best = candidates[0] as number
+  let bestDelta = Math.abs(new Date(withOffset(text, best)).getTime() - originalInstant)
+  for (const candidate of candidates.slice(1)) {
+    const delta = Math.abs(new Date(withOffset(text, candidate)).getTime() - originalInstant)
+    if (delta < bestDelta) {
+      best = candidate
+      bestDelta = delta
+    }
+  }
+  return withOffset(text, best)
 }
 
 /**

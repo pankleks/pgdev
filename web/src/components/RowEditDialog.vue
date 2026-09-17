@@ -168,7 +168,7 @@ async function save() {
   for (const f of keyFields.value) key[f.name] = f.original
   const set: Record<string, unknown | null> = {}
   for (const f of dirty.value) {
-    set[f.name] = f.null ? null : f.kind === 'boolean' ? f.bool : fromEditorValue(f.text, f.type)
+    set[f.name] = f.null ? null : f.kind === 'boolean' ? f.bool : fromEditorValue(f.text, f.type, f.original != null ? String(f.original) : undefined)
   }
 
   saving.value = true
