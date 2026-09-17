@@ -56,8 +56,7 @@ function close() {
     <div class="modal settings-modal">
       <div class="settings-head">
         <div>
-          <h2>Settings</h2>
-          <p class="settings-sub">Configure editor and query behavior.</p>
+          <h2>Settings</h2>          
         </div>
         <button class="icon" title="Close" @click="close"><X :size="17" /></button>
       </div>

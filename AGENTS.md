@@ -9,6 +9,7 @@
 - `git status` / `git diff` / `git log` inspection is fine at any time.
 - never analyze files in `node_modules`, `dist` folder
 - analyze `test` folder only in case task calls explicitly for testing
+- search web if needed (libs docs, db docs, solutions)
 
 ## Project facts
 
