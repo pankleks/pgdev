@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { RotateCcw, X } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { Copy, RotateCcw, X } from 'lucide-vue-next'
+import { api } from '../api'
 import { useAi } from '../composables/ai'
 import { useSettings } from '../composables/settings'
+import { useToast } from '../composables/toast'
+import { copyText } from '../lib/gridio'
 import Stepper from './Stepper.vue'
 import Toggle from './Toggle.vue'
 
 const emit = defineEmits<{ close: [] }>()
 const settings = useSettings()
 const ai = useAi()
+const toast = useToast()
+const copyingConfig = ref(false)
 
 const groupObjects = computed({
   get: () => settings.state.groupObjects,
@@ -44,6 +49,21 @@ const aiLimitKb = computed({
 function reset() {
   settings.resetToDefaults()
   void ai.pushLimits()
+}
+
+/** Put the copy-paste-ready MCP client config on the clipboard. */
+async function copyMcpConfig() {
+  if (copyingConfig.value) return
+  copyingConfig.value = true
+  try {
+    const config = await api.aiConfig()
+    const ok = await copyText(config.config)
+    toast.show(ok ? 'MCP config copied.' : 'Copy to clipboard failed')
+  } catch {
+    toast.show('Could not load the MCP config')
+  } finally {
+    copyingConfig.value = false
+  }
 }
 
 function close() {
@@ -98,6 +118,15 @@ function close() {
             <small>Byte budget of the rows an MCP agent may read per result set.</small>
           </div>
           <Stepper v-model="aiLimitKb" :min="1" :max="4096" unit="KB" />
+        </div>
+        <div class="setting-row">
+          <div class="setting-text">
+            <strong>MCP config</strong>
+            <small>Copy the JSON config for an MCP client (opencode, Claude Desktop, …). The agent can read the schema, run read-only queries, and stage writes in a tab for you to run.</small>
+          </div>
+          <button class="btn-sm primary" :disabled="copyingConfig" @click="copyMcpConfig">
+            <Copy :size="13" /> COPY
+          </button>
         </div>
       </section>
 

@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { Bot, Database, FileOutput, FilePlus2, FolderOpen, PanelLeftClose, PanelLeftOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
+import { Database, FileOutput, FilePlus2, FolderOpen, PanelLeftClose, PanelLeftOpen, Save, Settings, SlidersHorizontal, Wand2, X } from 'lucide-vue-next'
 import ConnectDialog from './components/ConnectDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
-import AiDialog from './components/AiDialog.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ResultsPanel from './components/ResultsPanel.vue'
@@ -24,7 +23,6 @@ const settings = useSettings()
 const toast = useToast()
 const ai = useAi()
 const settingsOpen = ref(false)
-const aiOpen = ref(false)
 const paramBar = ref(false)
 const paramValuesText = ref('')
 const paramInput = ref<HTMLInputElement | null>(null)
@@ -306,7 +304,6 @@ provide('pgdev:run', runActive)
         aria-label="Save active tab as a new SQL file"
         @click="saveActive(true)"
       ><FileOutput :size="15" /></button>
-      <button class="icon" title="AI agent access (MCP)" @click="aiOpen = true"><Bot :size="15" /></button>
       <button class="icon" title="Settings" @click="settingsOpen = true"><Settings :size="15" /></button>
       <a
         v-if="version"
@@ -359,7 +356,6 @@ provide('pgdev:run', runActive)
 
     <ConnectDialog v-if="conn.state.dialog" />
     <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
-    <AiDialog v-if="aiOpen" @close="aiOpen = false" />
     <div v-if="toast.state.visible" class="toast">{{ toast.state.text }}</div>
   </div>
 </template>
