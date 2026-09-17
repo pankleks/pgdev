@@ -323,6 +323,43 @@ await roundTrip({
 })
 await pool.query(`DROP TABLE opt_serial CASCADE`)
 
+// A sequence whose name carries a single quote: the regenerated default
+// travels as a string literal, so the quote must be doubled there.
+await pool.query(`CREATE SEQUENCE "odd'seq" AS integer`)
+await pool.query(`CREATE TABLE probe_quoted (id integer NOT NULL DEFAULT nextval('"odd''seq"'::regclass))`)
+await pool.query(`ALTER SEQUENCE "odd'seq" OWNED BY probe_quoted.id`)
+await roundTrip({
+  pool, eq, ok, params: ["odd'seq"], create: [], drop: `DROP TABLE probe_quoted CASCADE`,
+  label: 'a quoted sequence name round-trips with its quote',
+  fingerprint: seqFp,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('probe_quoted'), 'public', 'probe_quoted'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('probe_quoted'), 'public', 'probe_quoted')
+  ok('the quoted name doubles its quote inside the default',
+    /DEFAULT nextval\('"public"\."odd''seq"'::regclass\)/.test(text),
+    text.split('\n').find((l) => /DEFAULT nextval/.test(l))?.trim())
+}
+
+// An integer column owning a bigint sequence (default options): the serial
+// shorthand would recreate an integer sequence, losing the altered type.
+await pool.query(`CREATE SEQUENCE probe_bigint_seq AS bigint`)
+await pool.query(`CREATE TABLE probe_typemix (id integer NOT NULL DEFAULT nextval('probe_bigint_seq'::regclass))`)
+await pool.query(`ALTER SEQUENCE probe_bigint_seq OWNED BY probe_typemix.id`)
+await roundTrip({
+  pool, eq, ok, params: ['probe_bigint_seq'], create: [], drop: `DROP TABLE probe_typemix CASCADE`,
+  label: 'a type-mismatched owned sequence keeps its type',
+  fingerprint: seqFp,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('probe_typemix'), 'public', 'probe_typemix'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('probe_typemix'), 'public', 'probe_typemix')
+  ok('the type-mismatched sequence takes the explicit path',
+    /CREATE SEQUENCE "public"\."probe_bigint_seq" AS bigint;/.test(text) && !/ serial/.test(text),
+    text.split('\n').filter((l) => /CREATE SEQUENCE| serial/.test(l)).map((l) => l.trim()).join(' | '))
+}
+await pool.query(`DROP TABLE probe_quoted CASCADE`)
+
 console.log('\n== composite and enum types ==')
 await roundTrip({
   pool, eq, ok, params: ['addr'], create: `CREATE TYPE addr AS (street text, city text, zip integer)`,

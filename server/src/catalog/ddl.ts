@@ -63,6 +63,14 @@ export function sequenceOptions(props: SequenceProps, sequenceName: string | nul
   return parts
 }
 
+/** A schema-qualified regclass reference as a SQL string literal — identifier
+ * quoting via `ident()`, then single quotes doubled — for embedding in
+ * `nextval('…'::regclass)` defaults, where identifier quoting alone would let
+ * a single quote in the name terminate the literal. */
+function regclassLiteral(schema: string, name: string): string {
+  return `'${`${ident(schema)}.${ident(name)}`.replace(/'/g, "''")}'`
+}
+
 function notFound(): never {
   const err = new Error('Object not found')
   ;(err as Error & { statusCode: number }).statusCode = 404
@@ -323,8 +331,11 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       const serial = owned && !r.identity && !r.generated ? serialType(r.type) : null
       const defaultName = `${rel.name}_${r.name}_seq`
       const renamed = owned !== null && (owned.name !== defaultName || owned.schema !== rel.schema)
+      // The serial shorthand recreates a sequence of the column's own type:
+      // nondefault options, a renamed sequence, or a sequence whose type was
+      // altered afterwards must take the explicit path instead.
       const explicitSerial = serial !== null &&
-        (owned ? sequenceOptions(owned, null).length > 0 || renamed : false)
+        (owned ? sequenceOptions(owned, null).length > 0 || renamed || owned.type !== r.type : false)
       const sequenceNameClause =
         owned && r.identity && renamed ? `SEQUENCE NAME ${ident(owned.schema)}.${ident(owned.name)}` : null
       if (explicitSerial && owned) {
@@ -337,13 +348,15 @@ export async function tableDdl(pool: Pool, oid: string, schema: string, name: st
       }
       // The explicit path stores `nextval('<seq>'::regclass)` as typed at
       // creation; re-qualify it so the rebuilt default binds the sequence the
-      // script itself just created, whatever search_path says.
+      // script itself just created, whatever search_path says. The regclass
+      // name travels as a string literal, so single quotes in it must be
+      // doubled, not identifier-quoted.
       const defaultExpr =
         explicitSerial && owned && r.default_value != null
           ? String(r.default_value).replace(
               /^nextval\('(.*)'(?:::regclass)?\)$/i,
               // A callback: `$` in the quoted name must not read as a capture.
-              () => `nextval('${ident(owned.schema)}.${ident(owned.name)}'::regclass)`)
+              () => `nextval(${regclassLiteral(owned.schema, owned.name)}::regclass)`)
           : r.default_value
       const fdwOptions = r.fdw_options ? ` OPTIONS (${r.fdw_options})` : ''
       const parts = [`${ident(r.name)} ${explicitSerial ? r.type : serial ?? r.type}${fdwOptions}${r.collation ?? ''}`]
