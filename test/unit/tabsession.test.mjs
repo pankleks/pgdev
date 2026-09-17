@@ -58,16 +58,19 @@ test('serializeSession keeps persisted query tabs and dirty others, in order', (
       tab('file-clean', { source: 'file', fileName: 'a.sql', savedContent: 'select 2', content: 'select 2' }),
       tab('sql-clean', { savedContent: 'alter table t add column c int', content: 'alter table t add column c int' }),
       tab('sql-dirty', { savedContent: '', content: 'alter table t add column c int' }),
+      tab('sql-agent', { agentOpened: true, savedContent: '', content: 'alter table t drop column c int' }),
       tab('query-5', { persist: true, title: 'Query 5', content: 'select 2' }),
     ],
     'sql-dirty',
   )
-  assert.deepEqual(session.tabs.map((t) => t.key), ['query-1', 'ddl-dirty', 'sql-dirty', 'query-5'])
+  assert.deepEqual(session.tabs.map((t) => t.key), ['query-1', 'ddl-dirty', 'sql-dirty', 'sql-agent', 'query-5'])
   assert.equal(session.activeIndex, 2)
   assert.equal(session.tabs[1].kind, 'ddl')
   assert.equal(session.tabs[1].savedContent, 'create table t ()')
   assert.equal(session.tabs[1].persist, false)
   assert.equal(session.tabs[0].persist, true)
+  assert.equal(session.tabs[3].agentOpened, true, 'agent-opened tabs keep their flag')
+  assert.equal(session.tabs[0].agentOpened, false)
 })
 
 test('serializeSession falls back to the first tab when the active one is not saved', () => {
@@ -77,26 +80,31 @@ test('serializeSession falls back to the first tab when the active one is not sa
   assert.deepEqual(serializeSession([cleanDdl], 'ddl-x'), { tabs: [], activeIndex: 0 })
 })
 
-test('restoreSession preserves kind and the dirty baseline', () => {
+test('restoreSession preserves kind, the dirty baseline and the agent flag', () => {
   let n = 7
   const restored = restoreSession(
     {
       tabs: [
-        { key: 'query-1', title: 'Query 1', content: 'select 1', kind: 'query', savedContent: null, readOnly: false, persist: true },
-        { key: 'ddl-x', title: 't', content: 'create t (id int)', kind: 'ddl', savedContent: 'create t ()', readOnly: false, persist: false },
+        { key: 'query-1', title: 'Query 1', content: 'select 1', kind: 'query', savedContent: null, readOnly: false, persist: true, agentOpened: false },
+        { key: 'ddl-x', title: 't', content: 'create t (id int)', kind: 'ddl', savedContent: 'create t ()', readOnly: false, persist: false, agentOpened: false },
+        { key: 'sql-agent', title: 'Agent SQL', content: 'select 2', kind: 'query', savedContent: 'select 1', readOnly: false, persist: false, agentOpened: true },
       ],
-      activeIndex: 1,
+      activeIndex: 2,
     },
     () => `query-${n++}`,
   )
-  assert.deepEqual(restored.map((t) => t.key), ['query-7', 'query-8'])
-  assert.deepEqual(restored.map((t) => t.kind), ['query', 'ddl'])
+  assert.deepEqual(restored.map((t) => t.key), ['query-7', 'query-8', 'query-9'])
+  assert.deepEqual(restored.map((t) => t.kind), ['query', 'ddl', 'query'])
   // A restored always-saved query tab is unsaved; a dirty tab keeps its
   // baseline so it stays dirty and revertible.
   assert.equal(restored[0].savedContent, null)
   assert.equal(restored[0].persist, true)
   assert.equal(restored[1].savedContent, 'create t ()')
   assert.equal(restored[1].persist, undefined)
+  // A tab the agent opened comes back tinted and still agent-owned.
+  assert.equal(restored[0].agentOpened, undefined)
+  assert.equal(restored[2].agentOpened, true)
+  assert.equal(restored[2].savedContent, 'select 1')
   for (const t of restored) {
     assert.equal(t.source, 'untitled')
     assert.equal(t.fileName, null)
@@ -111,7 +119,7 @@ test('sanitizeSession fills defaults for records that predate the new fields', (
     activeIndex: 0,
   })
   assert.deepEqual(session, {
-    tabs: [{ key: 'a', title: 'A', content: 'x', kind: 'query', savedContent: null, readOnly: false, persist: true }],
+    tabs: [{ key: 'a', title: 'A', content: 'x', kind: 'query', savedContent: null, readOnly: false, persist: true, agentOpened: false }],
     activeIndex: 0,
   })
 })

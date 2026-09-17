@@ -17,6 +17,8 @@ export interface StoredTab {
   readOnly: boolean
   /** True for user-created query tabs, which are always saved. */
   persist: boolean
+  /** True for tabs the agent opened, so the tint survives a restart. */
+  agentOpened: boolean
 }
 
 export interface TabSession {
@@ -56,6 +58,7 @@ export function serializeSession(tabs: readonly EditorTab[], activeKey: string):
       savedContent: tab.savedContent,
       readOnly: tab.readOnly,
       persist: tab.persist === true,
+      agentOpened: tab.agentOpened === true,
     })),
     activeIndex: activeIndex === -1 ? 0 : activeIndex,
   }
@@ -78,6 +81,7 @@ export function restoreSession(session: TabSession, takeKey: () => string): Edit
     savedContent: stored.persist ? null : stored.savedContent,
     readOnly: stored.readOnly,
     persist: stored.persist ? true : undefined,
+    agentOpened: stored.agentOpened ? true : undefined,
   }))
 }
 
@@ -103,6 +107,7 @@ export function sanitizeSession(value: unknown): TabSession | null {
       // Legacy records predate non-query tabs and were all always-saved query
       // tabs, so a missing flag means true.
       persist: tab.persist !== false,
+      agentOpened: tab.agentOpened === true,
     })
   }
   const index = record.activeIndex
