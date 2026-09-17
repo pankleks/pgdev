@@ -50,7 +50,7 @@ test('parseAliases handles AS and ignores keywords', () => {
   assert.equal(a.has('where'), false)
 })
 
-test('parseAliases bounds its work on very large inputs', () => {
+test('parseAliases skips long comments without truncating SQL context', () => {
   const filler = 'x'.repeat(9000)
   const a = parseAliases(`-- ${filler}\nSELECT * FROM employees e`)
   assert.deepEqual(a.get('e'), { schema: '', name: 'employees' })
@@ -80,10 +80,12 @@ test('qualified lookup is exact and never falls back to public', () => {
   assert.equal(resolveQualifier(relations, ['missing', 'employees'], new Map()), undefined)
 })
 
-test('aliases and bare qualifiers retain the schema of their FROM relation', () => {
+test('aliases retain their schema and hide the original relation name', () => {
   const aliases = parseAliases('SELECT * FROM audit.employees e WHERE e.')
   assert.equal(resolveQualifier(relations, ['e'], aliases), relations[0])
-  assert.equal(resolveQualifier(relations, ['employees'], aliases), relations[0])
+  assert.equal(resolveQualifier(relations, ['employees'], aliases), undefined)
+  const bare = parseAliases('SELECT * FROM audit.employees WHERE employees.')
+  assert.equal(resolveQualifier(relations, ['employees'], bare), relations[0])
   const missing = parseAliases('SELECT * FROM missing.employees e WHERE e.')
   assert.equal(resolveQualifier(relations, ['e'], missing), undefined)
   assert.equal(resolveQualifier(relations, ['employees'], missing), undefined)
@@ -95,7 +97,7 @@ test('quoted schemas, relations and aliases preserve case', () => {
   assert.equal(resolveQualifier(relations, ['"Audit"', '"Employees"'], aliases), relations[2])
   assert.equal(resolveQualifier(relations, ['AUDIT', 'EMPLOYEES'], new Map()), relations[0])
   assert.equal(resolveQualifier(relations, ['"Audit"', 'employees'], new Map()), undefined)
-  assert.equal(resolveQualifier(relations, ['e'], aliases), relations[3])
+  assert.equal(resolveQualifier(relations, ['e'], aliases), undefined)
 })
 
 test('quoted identifiers with escaped quotes resolve without splitting the name', () => {

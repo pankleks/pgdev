@@ -2,6 +2,8 @@
 // Dependency-free (no monaco / vue imports) so the parsing logic can be
 // unit-tested in plain Node.
 
+import { resolveQueryScope } from './sqlscope'
+
 export interface RelRef {
   schema: string
   name: string
@@ -48,7 +50,11 @@ export function resolveQualifier<T extends { schema: string; name: string }>(
   }
   // A known alias owns its qualifier even when its target is missing. Falling
   // back to a same-named table would offer columns from an unrelated relation.
-  return findRelation(relations, aliases.get(name) ?? { schema: '', name })
+  const ref = aliases.get(name)
+  if (ref) return findRelation(relations, ref)
+  // Once a query declares sources, a bare table outside that namespace is not
+  // a usable qualifier. Keep catalog discovery for a statement with no FROM.
+  return aliases.size ? undefined : findRelation(relations, { schema: '', name })
 }
 
 /** Quote an identifier for insert text only when required. */
@@ -87,40 +93,7 @@ export function matchDotChain(lineBefore: string): string | null {
   return m ? m[1] : null
 }
 
-// Keywords that may follow a table reference — never treat them as aliases.
-const NON_ALIAS = new Set(
-  'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR NATURAL USING TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK'
-    .split(' ')
-    .map((w) => w.toUpperCase()),
-)
-
-const FROM_JOIN_RE =
-  /(?:FROM|JOIN)\s+((?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*))?)(?:\s+(?:AS\s+)?((?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)))?/gi
-
-/**
- * Map normalized alias (or bare table name used as self-reference) to the
- * referenced relation. `SELECT … FROM sch.tbl t JOIN foo …` yields
- * `t → sch.tbl`, `tbl → sch.tbl`, `foo → foo`.
- */
-export function parseAliases(sql: string): Map<string, RelRef> {
-  const aliases = new Map<string, RelRef>()
-  // Bound the work on very large documents.
-  const text = sql.length > 8000 ? sql.slice(sql.length - 8000) : sql
-  FROM_JOIN_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = FROM_JOIN_RE.exec(text)) !== null) {
-    const targetParts = splitChain(m[1]).map(normIdent)
-    if (!targetParts.length) continue
-    const target: RelRef =
-      targetParts.length > 1
-        ? { schema: targetParts[targetParts.length - 2], name: targetParts[targetParts.length - 1] }
-        : { schema: '', name: targetParts[0] }
-    // A bare qualifier can refer to a schema-qualified FROM relation too.
-    aliases.set(target.name, target)
-    const rawAlias = m[2]
-    if (rawAlias && (rawAlias.startsWith('"') || !NON_ALIAS.has(rawAlias.toUpperCase()))) {
-      aliases.set(normIdent(rawAlias), target)
-    }
-  }
-  return aliases
+/** Relation bindings at the cursor; defaults to the end for standalone callers. */
+export function parseAliases(sql: string, offset = sql.length): Map<string, RelRef> {
+  return resolveQueryScope(sql, offset).aliases
 }

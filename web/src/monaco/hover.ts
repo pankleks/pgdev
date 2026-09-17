@@ -4,7 +4,8 @@ import type { TableInfo, ViewInfo } from '../types'
 import { formatColumnHover, formatFunctionHover, type HoverColumn } from '../lib/hovertext'
 import { findFunctions } from '../lib/sqlobjects'
 import { callSite, identifierAt } from './sqlcontext'
-import { findRelation, normIdent, parseAliases, resolveQualifier, type RelRef } from './sqlrefs'
+import { findRelation, normIdent, resolveQualifier } from './sqlrefs'
+import { resolveQueryScope, type QueryScope } from './sqlscope'
 
 // SQL hover: the identifier under the cursor is resolved against the loaded
 // schema. At a call site (`name(`) the function/procedure is what the user is
@@ -20,10 +21,10 @@ let registered = false
 /** Dev/test handle, mirroring the completion provider's. */
 let devProvider: Monaco.languages.HoverProvider | null = null
 
-function visibleRelations(relations: Relation[], aliases: Map<string, RelRef>): Relation[] {
-  if (!aliases.size) return relations
+function visibleRelations(relations: Relation[], scope: QueryScope): Relation[] {
+  if (!scope.hasRelations) return relations
   const seen = new Set<Relation>()
-  for (const ref of aliases.values()) {
+  for (const ref of scope.aliases.values()) {
     const relation = findRelation(relations, ref)
     if (relation) seen.add(relation)
   }
@@ -32,18 +33,18 @@ function visibleRelations(relations: Relation[], aliases: Map<string, RelRef>): 
 
 function columnHover(
   relations: Relation[],
-  aliases: Map<string, RelRef>,
+  scope: QueryScope,
   chain: string[],
   name: string,
 ): HoverColumn | null {
   const qualifier = chain.slice(0, -1)
   let relation: Relation | undefined
   if (qualifier.length) {
-    relation = resolveQualifier(relations, qualifier, aliases)
+    relation = resolveQualifier(relations, qualifier, scope.aliases)
     // A qualifier that names no relation (a schema, say) cannot be a column.
     if (!relation) return null
   }
-  const candidates = relation ? [relation] : visibleRelations(relations, aliases)
+  const candidates = relation ? [relation] : visibleRelations(relations, scope)
   for (const rel of candidates) {
     const column = rel.columns.find((c) => c.name === name)
     if (!column) continue
@@ -74,10 +75,10 @@ export function registerSqlHover(monaco: typeof Monaco): void {
       if (!name) return null
 
       const relations: Relation[] = [...data.tables, ...data.views]
-      const aliases = parseAliases(text)
+      const scope = resolveQueryScope(text, model.getOffsetAt(position))
       const isCall = callSite(text, ident.end)
       const functions = findFunctions(data, ident.chain, name)
-      const column = columnHover(relations, aliases, ident.chain, name)
+      const column = columnHover(relations, scope, ident.chain, name)
 
       const markdown =
         isCall && functions.length

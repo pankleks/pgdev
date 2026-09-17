@@ -4,15 +4,16 @@ import type { FunctionInfo, SchemaData, TableInfo, TypeInfo, ViewInfo } from '..
 import { functionSignatureDetail } from '../lib/hovertext'
 import { callSite } from './sqlcontext'
 import { bodySymbols } from './plpgsql'
+import { resolveQueryScope } from './sqlscope'
 import {
   matchDotChain,
   findRelation,
   findSchema,
-  parseAliases,
   quoteIdent,
   splitChain,
   resolveQualifier,
   unquoteIdent,
+  normIdent,
 } from './sqlrefs'
 
 const KEYWORDS =
@@ -134,25 +135,22 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         return true
       }
       const relations = data ? relationsFor(data) : []
-      const sqlBefore = model.getValueInRange({
-        startLineNumber: 1,
-        startColumn: 1,
-        endLineNumber: position.lineNumber,
-        endColumn: position.column,
-      })
-      const aliases = parseAliases(sqlBefore)
+      const text = model.getValue()
+      const offset = model.getOffsetAt(position)
+      const scope = resolveQueryScope(text, offset)
+      const { aliases } = scope
       // A word directly followed by `(` is being called: rank functions above
       // same-named columns there, and describe both inline so the identical
       // labels stay distinguishable.
       const atCall = callSite(
-        model.getValue(),
+        text,
         model.getOffsetAt({ lineNumber: position.lineNumber, column: word.endColumn }),
       )
       const callSort = atCall ? '0' : undefined
 
       // Inside a dollar-quoted routine body the function's parameters and its
       // DECLARE variables are the most local names; offer them first.
-      const symbols = bodySymbols(model.getValue(), model.getOffsetAt(position))
+      const symbols = bodySymbols(text, offset)
       for (const sym of symbols) {
         const ident = unquoteIdent(sym.name)
         if (!matchesPrefix(ident)) continue
@@ -262,7 +260,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
 
         // Not a relation: a single trailing part may name a schema (`app.`).
         // A schema has no columns, so offer everything it holds instead.
-        if (parts.length === 1 && data) {
+        if (parts.length === 1 && data && !aliases.has(normIdent(parts[0]!))) {
           const schemas = [
             ...new Set([
               ...data.tables.map((o) => o.schema),
@@ -289,7 +287,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
 
       // Offer unqualified fields from relations in the current query. When
       // no relation is known yet, fall back to the loaded schema.
-      const visibleRelations = aliases.size
+      const visibleRelations = scope.hasRelations
         ? [...new Set([...aliases.values()].flatMap((ref) => {
             const relation = findRelation(relations, ref)
             return relation ? [relation] : []
