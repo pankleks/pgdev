@@ -22,6 +22,10 @@ const run = inject<(sql?: string) => void>('pgdev:run')
 
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
 const models = new Map<string, monaco.editor.ITextModel>()
+// Per-tab cursor/selection/scroll, captured when a tab stops being active and
+// restored when it becomes active again. In-memory only: it survives tab
+// switching, not page reloads.
+const viewStates = new Map<string, monaco.editor.ICodeEditorViewState>()
 
 onMounted(() => {
   if (!el.value) return
@@ -191,16 +195,34 @@ function modelFor(tab: EditorTab): monaco.editor.ITextModel {
 
 function applyTab(tab: EditorTab) {
   if (!editor) return
+  // Keep the outgoing tab's cursor/scroll before swapping the model —
+  // `setModel` resets view state, so tab switches would otherwise always
+  // land at the top of the file.
+  const outgoing = editor.getModel()
+  if (outgoing) {
+    const key = [...models.entries()].find(([, m]) => m === outgoing)?.[0]
+    const state = editor.saveViewState()
+    if (key && state) viewStates.set(key, state)
+  }
   const model = modelFor(tab)
   // Push refreshed DDL (or any external update) into the existing model.
   if (model.getValue() !== tab.content) model.setValue(tab.content)
   editor.setModel(model)
+  const saved = viewStates.get(tab.key)
+  if (saved) editor.restoreViewState(saved)
   editor.updateOptions({ readOnly: tab.readOnly })
 }
 
 function syncExternalContent(tab: EditorTab) {
   const model = models.get(tab.key)
-  if (model && model.getValue() !== tab.content) model.setValue(tab.content)
+  if (!model || model.getValue() === tab.content) return
+  model.setValue(tab.content)
+  // An external overwrite of the active tab (DDL refresh, AI staged SQL)
+  // must not yank the cursor to line 1; put the saved view state back.
+  if (editor?.getModel() === model) {
+    const saved = viewStates.get(tab.key)
+    if (saved) editor.restoreViewState(saved)
+  }
 }
 
 /**
@@ -210,7 +232,7 @@ function syncExternalContent(tab: EditorTab) {
  * single-statement runs; multi-statement batches need the statement-index
  * mapping (Phase 2) to point precisely.
  */
-function showErrorMarker(tabKey: string) {
+function syncErrorMarker(tabKey: string, reveal: boolean) {
   const model = models.get(tabKey)
   if (!model) return
   const messages = results.state.byTab[tabKey]?.messages ?? []
@@ -229,7 +251,9 @@ function showErrorMarker(tabKey: string) {
   // Cover the erroneous token when one starts here, else a single character.
   const word = model.getWordAtPosition(pos)
   const end =
-    word && word.startColumn <= pos.column ? { lineNumber: pos.lineNumber, column: word.endColumn } : model.getPositionAt(Math.min(model.getValueLength(), clamped + 1))
+    word && word.startColumn <= pos.column
+      ? { lineNumber: pos.lineNumber, column: word.endColumn }
+      : model.getPositionAt(Math.min(model.getValueLength(), clamped + 1))
   monaco.editor.setModelMarkers(model, 'pgdev-sql', [
     {
       severity: monaco.MarkerSeverity.Error,
@@ -240,14 +264,20 @@ function showErrorMarker(tabKey: string) {
       endColumn: end.column,
     },
   ])
-  if (editor?.getModel() === model) editor.revealPositionInCenter(pos)
+  if (reveal && editor?.getModel() === model) editor.revealPositionInCenter(pos)
+}
+
+function showErrorMarker(tabKey: string) {
+  syncErrorMarker(tabKey, true)
 }
 
 watch(
   () => props.tab,
   (tab) => {
     applyTab(tab)
-    showErrorMarker(tab.key)
+    // No reveal here: a tab switch must restore the saved cursor/scroll, not
+    // jump to a stale error. Reveal only fires on a fresh failure below.
+    syncErrorMarker(tab.key, false)
   },
 )
 
@@ -279,6 +309,7 @@ watch(
       if (!keys.includes(key)) {
         model.dispose()
         models.delete(key)
+        viewStates.delete(key)
       }
     }
   },
@@ -292,6 +323,7 @@ onBeforeUnmount(() => {
   editor?.dispose()
   models.forEach((m) => m.dispose())
   models.clear()
+  viewStates.clear()
 })
 </script>
 

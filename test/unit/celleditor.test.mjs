@@ -163,6 +163,10 @@ test('edited timestamptz keeps its instant via the browser offset', () => {
 // The DST-overlap behavior depends on the process timezone, so the pinned
 // cases run in a child with TZ fixed at Europe/Warsaw (its autumn transition
 // repeats a local hour: 03:00+02 == 02:00+01 on 2024-10-27).
+// The probe path derives from this file's location, not process.cwd():
+// `npm test` runs node --test with cwd=test/, and a cwd-built path would
+// land at test/web/… which does not exist.
+const REPO = new URL('../..', import.meta.url).pathname.replace(/\/+$/, '')
 const tzProbe = `
   import { registerHooks } from 'node:module';
   registerHooks({ resolve(s, c, n) {
@@ -171,7 +175,7 @@ const tzProbe = `
     }
     return n(s, c);
   } });
-  const { toEditorValue, fromEditorValue } = await import('file:///${process.cwd().split(String.fromCharCode(92)).join('/')}/web/src/lib/celleditor.ts');
+  const { toEditorValue, fromEditorValue } = await import('file:///${REPO}/web/src/lib/celleditor.ts');
   const instant = (raw) => new Date(raw.replace(' ', 'T').replace(/[+-][0-9][0-9]$/, (m) => m + ':00')).getTime();
   const out = [];
   for (const raw of [
