@@ -7,6 +7,8 @@
 - When work is ready, summarize what changed and ask; commit and push only
   after the user says so.
 - `git status` / `git diff` / `git log` inspection is fine at any time.
+- never analyze files in `node_modules`, `dist` folder
+- analyze `test` folder only in case task calls explicitly for testing
 
 ## Project facts
 
