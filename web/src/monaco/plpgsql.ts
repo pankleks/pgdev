@@ -58,24 +58,48 @@ function lexTokens(text: string): LexToken[] {
   return tokens
 }
 
-/** The dollar-quoted body containing `offset`, or null when outside one. */
+/** The statement text ending at `before`'s end, excluding earlier ones. */
+function lastStatement(before: string): string {
+  const tokens = lexTokens(before)
+  let start = 0
+  for (const t of tokens) {
+    if (t.kind === 'punct' && t.raw === ';') start = t.end
+  }
+  return before.slice(start)
+}
+
+/** True when a statement opens a routine body: FUNCTION, PROCEDURE or DO. */
+function opensRoutineBody(statement: string): boolean {
+  const first = lexTokens(statement)[0]
+  if (first?.kind === 'ident' && !first.quoted && first.name.toUpperCase() === 'DO') return true
+  return parseRoutineHeader(statement) !== null
+}
+
+/**
+ * The dollar-quoted routine body containing `offset`, or null when outside one
+ * or when the dollar literal belongs to a non-routine statement. An unclosed
+ * body runs to EOF, so the cursor at EOF is still inside it.
+ */
 export function enclosingRoutineBody(text: string, offset: number): RoutineBody | null {
   let found: RoutineBody | null = null
   scanSqlLexemes(text, (lex) => {
     if (lex.start >= offset) return false
-    if (lex.kind === 'dollar' && lex.start < offset && offset < lex.end) {
-      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
-      const tagLen = tag ? tag[0].length : 2
-      const closed = lex.raw.length > tagLen * 2 && lex.raw.endsWith(tag ? tag[0] : '$$')
-      found = {
-        before: text.slice(0, lex.start),
-        inner: closed ? lex.raw.slice(tagLen, lex.raw.length - tagLen) : lex.raw.slice(tagLen),
-        innerStart: lex.start + tagLen,
-        open: lex.start,
-        close: lex.end,
-      }
-      return false
+    if (lex.kind !== 'dollar') return true
+    const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
+    const tagLen = tag ? tag[0].length : 2
+    const closed = lex.raw.length > tagLen * 2 && lex.raw.endsWith(tag ? tag[0] : '$$')
+    // A closed body excludes its end; an unclosed one reaches EOF.
+    if (!(lex.start < offset && offset < (closed ? lex.end : lex.end + 1))) return true
+    const before = text.slice(0, lex.start)
+    if (!opensRoutineBody(lastStatement(before))) return true
+    found = {
+      before,
+      inner: closed ? lex.raw.slice(tagLen, lex.raw.length - tagLen) : lex.raw.slice(tagLen),
+      innerStart: lex.start + tagLen,
+      open: lex.start,
+      close: lex.end,
     }
+    return false
   })
   return found
 }
@@ -86,7 +110,10 @@ export function enclosingRoutineBody(text: string, offset: number): RoutineBody 
  * name, so `RETURNS TABLE(…)` cannot be mistaken for it.
  */
 export function parseRoutineHeader(before: string): RoutineHeader | null {
-  const tokens = lexTokens(before)
+  // Bound to the statement the body belongs to: scanning the whole prefix
+  // would find a FUNCTION keyword from an earlier, unrelated statement.
+  const statement = lastStatement(before)
+  const tokens = lexTokens(statement)
   let keyword = -1
   for (let i = tokens.length - 1; i >= 0; i--) {
     const t = tokens[i] as LexToken
@@ -131,7 +158,7 @@ export function parseRoutineHeader(before: string): RoutineHeader | null {
       }
     }
     if (k < tokens.length) {
-      params = parseFunctionArgs(before.slice((tokens[open] as LexToken).end, (tokens[k] as LexToken).start))
+      params = parseFunctionArgs(statement.slice((tokens[open] as LexToken).end, (tokens[k] as LexToken).start))
     }
   }
   return { kind, chain, params }
@@ -186,6 +213,20 @@ export function parseDeclareVariables(inner: string): { name: string; type: stri
     }
   }
   return out
+}
+
+/**
+ * The text and offset to scan for the identifier at `offset`: the routine body
+ * when the cursor is inside one, otherwise the document unchanged. `shift` maps
+ * offsets found in the returned text back into the original document.
+ */
+export function routineSource(
+  text: string,
+  offset: number,
+): { text: string; offset: number; shift: number } {
+  const body = enclosingRoutineBody(text, offset)
+  if (!body) return { text, offset, shift: 0 }
+  return { text: body.inner, offset: offset - body.innerStart, shift: body.innerStart }
 }
 
 /** Parameters and DECLARE variables in scope at `offset`, or none. */

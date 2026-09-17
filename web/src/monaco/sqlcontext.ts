@@ -93,6 +93,49 @@ export function identifierAt(text: string, offset: number): IdentifierAt | null 
   }
 }
 
+/** The dollar-quoted token whose interior contains `offset`, or null. */
+function dollarTokenAt(text: string, offset: number): { raw: string; start: number } | null {
+  let found: { raw: string; start: number } | null = null
+  scanSqlLexemes(text, (lex) => {
+    if (lex.start >= offset) return false
+    if (lex.kind === 'dollar' && lex.start < offset && offset < lex.end) {
+      found = { raw: lex.raw, start: lex.start }
+      return false
+    }
+  })
+  return found
+}
+
+/**
+ * Span of the identifier the cursor is inside or immediately after, or null
+ * when no identifier character precedes it. Quoted identifiers include their
+ * quotes, so accepting a suggestion replaces `"My` rather than leaving a
+ * dangling quote. The cursor strictly after a token's first character counts,
+ * but sitting just before an identifier (e.g. `SELECT |FROM`) does not.
+ */
+export function identifierRangeAt(text: string, offset: number): { start: number; end: number } | null {
+  // The lexer folds a whole dollar-quoted body into one token; rebase into it
+  // so completion inside a routine body still replaces the typed symbol.
+  const dollar = dollarTokenAt(text, offset)
+  if (dollar) {
+    const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(dollar.raw)?.[0] ?? '$$'
+    const closed = dollar.raw.length >= tag.length * 2 && dollar.raw.endsWith(tag)
+    const inner = dollar.raw.slice(tag.length, closed ? dollar.raw.length - tag.length : undefined)
+    const innerOffset = offset - dollar.start - tag.length
+    if (innerOffset >= 0 && innerOffset <= inner.length) {
+      const range = identifierRangeAt(inner, innerOffset)
+      const shift = dollar.start + tag.length
+      return range ? { start: range.start + shift, end: range.end + shift } : null
+    }
+  }
+  for (const token of tokenize(text)) {
+    if (token.kind === 'ident' && token.start < offset && offset <= token.end) {
+      return { start: token.start, end: token.end }
+    }
+  }
+  return null
+}
+
 /** True when the first token at or after `offset` is `(`. */
 export function callSite(text: string, offset: number): boolean {
   for (const token of tokenize(text)) {

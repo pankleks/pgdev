@@ -4,8 +4,9 @@ import type { TableInfo, ViewInfo } from '../types'
 import { formatColumnHover, formatFunctionHover, type HoverColumn } from '../lib/hovertext'
 import { findFunctions } from '../lib/sqlobjects'
 import { callSite, identifierAt } from './sqlcontext'
-import { findRelation, normIdent, resolveQualifier } from './sqlrefs'
-import { resolveQueryScope, type QueryScope } from './sqlscope'
+import { routineSource } from './plpgsql'
+import { findRelation, normIdent, relationLabel, resolveQualifier } from './sqlrefs'
+import { resolveQueryScope, type QueryScope, type ScopeRelation } from './sqlscope'
 
 // SQL hover: the identifier under the cursor is resolved against the loaded
 // schema. At a call site (`name(`) the function/procedure is what the user is
@@ -14,7 +15,7 @@ import { resolveQueryScope, type QueryScope } from './sqlscope'
 // in DDL). All overloads of a name are listed with their signature, kind,
 // schema and catalog comment.
 
-type Relation = TableInfo | ViewInfo
+type Relation = TableInfo | ViewInfo | ScopeRelation
 
 let registered = false
 
@@ -51,7 +52,7 @@ function columnHover(
     return {
       name: column.name,
       type: column.type,
-      relation: rel.schema === 'public' ? rel.name : `${rel.schema}.${rel.name}`,
+      relation: relationLabel(rel),
       nullable: column.nullable,
       defaultValue: column.defaultValue,
     }
@@ -69,14 +70,19 @@ export function registerSqlHover(monaco: typeof Monaco): void {
       const data = state.data
       if (!data) return null
       const text = model.getValue()
-      const ident = identifierAt(text, model.getOffsetAt(position))
+      const cursor = model.getOffsetAt(position)
+      // Inside a routine's dollar body the lexer sees one opaque token; rebase
+      // onto the body so a column or call there still resolves.
+      const source = routineSource(text, cursor)
+      const ident = identifierAt(source.text, source.offset)
       if (!ident) return null
       const name = normIdent(ident.raw)
       if (!name) return null
 
-      const relations: Relation[] = [...data.tables, ...data.views]
-      const scope = resolveQueryScope(text, model.getOffsetAt(position))
-      const isCall = callSite(text, ident.end)
+      const scope = resolveQueryScope(text, cursor)
+      // CTE and derived-table columns are not in the catalog; append them.
+      const relations: Relation[] = [...data.tables, ...data.views, ...scope.relations]
+      const isCall = callSite(source.text, ident.end)
       const functions = findFunctions(data, ident.chain, name)
       const column = columnHover(relations, scope, ident.chain, name)
 
@@ -90,8 +96,8 @@ export function registerSqlHover(monaco: typeof Monaco): void {
               : null
       if (!markdown) return null
 
-      const start = model.getPositionAt(ident.start)
-      const end = model.getPositionAt(ident.end)
+      const start = model.getPositionAt(ident.start + source.shift)
+      const end = model.getPositionAt(ident.end + source.shift)
       return {
         contents: [{ value: markdown }],
         range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),

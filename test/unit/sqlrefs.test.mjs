@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { unquoteIdent, normIdent, quoteIdent, splitChain, matchDotChain, parseAliases, findRelation, resolveQualifier, findSchema } =
+const { unquoteIdent, normIdent, quoteIdent, escapeSnippet, splitChain, matchDotChain, parseAliases, findRelation, resolveQualifier, findSchema } =
   await load('web/monaco/sqlrefs.ts')
 
 test('unquoteIdent strips surrounding quotes and unescapes doubled ones', () => {
@@ -24,6 +24,27 @@ test('quoteIdent quotes only when required', () => {
   assert.equal(quoteIdent('a b'), '"a b"')
   assert.equal(quoteIdent('a"b'), '"a""b"')
   assert.equal(quoteIdent('_x9'), '_x9')
+})
+
+test('quoteIdent also quotes reserved words so inserted SQL stays valid', () => {
+  assert.equal(quoteIdent('order'), '"order"')
+  assert.equal(quoteIdent('SELECT'), '"SELECT"')
+  assert.equal(quoteIdent('user'), '"user"')
+  assert.equal(quoteIdent('window'), '"window"')
+  // Non-reserved words that merely appear in clauses stay unquoted.
+  assert.equal(quoteIdent('items'), 'items')
+  assert.equal(quoteIdent('name'), 'name')
+  assert.equal(quoteIdent('label'), 'label')
+  assert.equal(quoteIdent('user_account'), 'user_account')
+})
+
+test('escapeSnippet protects snippet control characters in insert text', () => {
+  assert.equal(escapeSnippet('plain'), 'plain')
+  assert.equal(escapeSnippet('a$b'), 'a\\$b')
+  assert.equal(escapeSnippet('a}b'), 'a\\}b')
+  assert.equal(escapeSnippet('a\\b'), 'a\\\\b')
+  // The `${...}` placeholder syntax is neutralised by escaping the `$`.
+  assert.equal(escapeSnippet('${x}'), '\\${x\\}')
 })
 
 test('splitChain keeps quoted segments intact', () => {

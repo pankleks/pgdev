@@ -124,3 +124,67 @@ test('routine body statements are isolated and unfinished bodies work at EOF', (
   assert.deepEqual(refs('CREATE FUNCTION f() RETURNS void AS $$ BEGIN SELECT * FROM old o; SELECT u.| FROM users u; END $$ LANGUAGE plpgsql;'), { u: ref('users') })
   assert.deepEqual(refs('DO $$ BEGIN SELECT * FROM users u WHERE u.|'), { u: ref('users') })
 })
+
+test('DML targets are visible in SET, ON CONFLICT and RETURNING', () => {
+  assert.deepEqual(refs('UPDATE accounts SET |'), { accounts: ref('accounts') })
+  assert.deepEqual(refs('UPDATE accounts a SET a.|'), { a: ref('accounts') })
+  assert.deepEqual(refs('INSERT INTO things AS t (a, b) VALUES (1, 2) RETURNING t.|'), { t: ref('things') })
+  assert.deepEqual(
+    refs('INSERT INTO things (a, b) VALUES (1, 2) ON CONFLICT (a) DO UPDATE SET a = |'),
+    { things: ref('things') },
+  )
+  assert.deepEqual(refs('DELETE FROM a USING b WHERE b.|'), { a: ref('a'), b: ref('b') })
+})
+
+function columnsAt(marked, qualifier) {
+  const offset = marked.indexOf('|')
+  const scope = resolveQueryScope(marked.replace('|', ''), offset)
+  const relation = resolveQualifier([...scope.relations], [qualifier], scope.aliases)
+  return relation ? relation.columns.map((c) => c.name) : null
+}
+
+test('CTE output columns come from its SELECT list', () => {
+  assert.deepEqual(
+    columnsAt('WITH recent AS (SELECT id, label FROM events) SELECT r.| FROM recent r', 'r'),
+    ['id', 'label'],
+  )
+  assert.deepEqual(
+    columnsAt('WITH recent AS (SELECT e.id item_id FROM events e) SELECT r.| FROM recent r', 'r'),
+    ['item_id'],
+  )
+})
+
+test('an explicit CTE column list overrides inference', () => {
+  assert.deepEqual(
+    columnsAt('WITH recent (a, b) AS (SELECT id, label FROM events) SELECT r.| FROM recent r', 'r'),
+    ['a', 'b'],
+  )
+})
+
+test('derived-table columns are inferred, including function results', () => {
+  assert.deepEqual(
+    columnsAt('SELECT d.| FROM (SELECT id AS item_id, count(*) FROM events GROUP BY 1) d', 'd'),
+    ['item_id', 'count'],
+  )
+})
+
+test('an uninferable SELECT list yields no synthetic columns', () => {
+  assert.equal(columnsAt('SELECT d.| FROM (SELECT id + 1 FROM events) d', 'd'), null)
+  assert.equal(columnsAt('SELECT d.| FROM (SELECT * FROM events) d', 'd'), null)
+})
+
+test('a CTE shadows a catalog table of the same name', () => {
+  const marked = 'WITH events (x) AS (SELECT 1) SELECT e.| FROM events e'
+  const offset = marked.indexOf('|')
+  const scope = resolveQueryScope(marked.replace('|', ''), offset)
+  const catalog = [{ schema: 'public', name: 'events', columns: [{ name: 'id', type: 'int' }] }]
+  const relation = resolveQualifier([...catalog, ...scope.relations], ['e'], scope.aliases)
+  assert.deepEqual(relation.columns.map((c) => c.name), ['x'])
+})
+
+test('synthetic columns are visible unqualified through the alias', () => {
+  const marked = 'WITH recent AS (SELECT id, label FROM events) SELECT | FROM recent r'
+  const offset = marked.indexOf('|')
+  const scope = resolveQueryScope(marked.replace('|', ''), offset)
+  assert.deepEqual(scope.aliases.get('r').columns.map((c) => c.name), ['id', 'label'])
+})

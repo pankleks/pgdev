@@ -65,12 +65,16 @@ function dollarInner(text: string, offset: number): { text: string; offset: numb
   let found: { text: string; offset: number } | null = null
   scanSqlLexemes(text, (lex) => {
     if (lex.start >= offset) return false
-    if (lex.kind === 'dollar' && lex.start < offset && offset < lex.end) {
-      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
-      const tagLen = tag ? tag[0].length : 2
+    if (lex.kind !== 'dollar') return true
+    const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(lex.raw)
+    const tagLen = tag ? tag[0].length : 2
+    const closed = lex.raw.length > tagLen * 2 && lex.raw.endsWith(tag ? tag[0] : '$$')
+    // An unclosed body ends at EOF, so a call typed at the end is still inside.
+    if (lex.start < offset && offset < (closed ? lex.end : lex.end + 1)) {
       found = { text: lex.raw.slice(tagLen), offset: offset - lex.start - tagLen }
       return false
     }
+    return true
   })
   return found
 }
@@ -133,6 +137,9 @@ export function findCall(text: string, offset: number): OpenCall | null {
 /** Number of top-level commas between the call's `(` and `offset`. */
 export function activeParameter(text: string, open: number, offset: number): number {
   let depth = 1
+  // Square brackets do not open an argument list, but a comma inside
+  // `ARRAY[1, 2]` is not a parameter separator either.
+  let brackets = 0
   let count = 0
   for (const token of tokensUpTo(text, offset)) {
     if (token.start <= open || token.kind !== 'punct') continue
@@ -140,7 +147,10 @@ export function activeParameter(text: string, open: number, offset: number): num
     else if (token.raw === ')') {
       depth--
       if (depth === 0) break
-    } else if (token.raw === ',' && depth === 1) count++
+    } else if (token.raw === '[') brackets++
+    else if (token.raw === ']') {
+      if (brackets > 0) brackets--
+    } else if (token.raw === ',' && depth === 1 && brackets === 0) count++
   }
   return count
 }
@@ -172,13 +182,34 @@ export function computeSignatureHelp(
   if (!functions.length) return null
 
   const signatures = functions.map((f) => signatureFor(name, f))
-  const maxArgs = signatures[0]?.parameters.length ?? 0
   const active = activeParameter(source.text, call.open, source.offset)
+  // Prefer the overload that still has the active parameter; among those the
+  // tightest fit, so `f(1,` does not jump to a three-argument variant when a
+  // two-argument one exists. With no such overload, the widest one, clamped.
+  let activeSignature = 0
+  let best = -1
+  for (let i = 0; i < signatures.length; i++) {
+    const count = (signatures[i] as SignatureItem).parameters.length
+    if (count > active && (best === -1 || count < (signatures[best] as SignatureItem).parameters.length)) {
+      best = i
+    }
+  }
+  if (best !== -1) {
+    activeSignature = best
+  } else {
+    for (let i = 0; i < signatures.length; i++) {
+      if ((signatures[i] as SignatureItem).parameters.length >
+          (signatures[activeSignature] as SignatureItem).parameters.length) {
+        activeSignature = i
+      }
+    }
+  }
+  const argCount = (signatures[activeSignature] as SignatureItem).parameters.length
   return {
     signatures,
-    activeSignature: 0,
+    activeSignature,
     // Beyond the last parameter (a trailing comma, say) the last one stays
     // highlighted, matching most editors.
-    activeParameter: maxArgs > 0 ? Math.min(active, maxArgs - 1) : 0,
+    activeParameter: argCount > 0 ? Math.min(active, argCount - 1) : 0,
   }
 }

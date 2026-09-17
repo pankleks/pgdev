@@ -1,8 +1,8 @@
 import type * as Monaco from 'monaco-editor'
 import { useSchema } from '../composables/schema'
-import type { FunctionInfo, SchemaData, TableInfo, TypeInfo, ViewInfo } from '../types'
+import type { FunctionInfo, SchemaData, SequenceInfo, TableInfo, TypeInfo, ViewInfo } from '../types'
 import { functionSignatureDetail } from '../lib/hovertext'
-import { callSite } from './sqlcontext'
+import { callSite, identifierRangeAt } from './sqlcontext'
 import { bodySymbols } from './plpgsql'
 import { resolveQueryScope } from './sqlscope'
 import {
@@ -10,17 +10,27 @@ import {
   findRelation,
   findSchema,
   quoteIdent,
+  escapeSnippet,
   splitChain,
   resolveQualifier,
   unquoteIdent,
   normIdent,
+  relationLabel,
 } from './sqlrefs'
+import type { ScopeRelation } from './sqlscope'
 
 const KEYWORDS =
-  'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK CALL FUNCTION PROCEDURE RETURNS LANGUAGE REPLACE'
+  'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK CALL FUNCTION PROCEDURE RETURNS LANGUAGE REPLACE ON CONFLICT DO NOTHING EXCLUDED RECURSIVE LATERAL TABLESAMPLE ROLLUP CUBE GROUPING SETS ORDINALITY OVERRIDING GENERATED ALWAYS IDENTITY INCLUDE RANGE HASH ATTACH DETACH REFRESH CONCURRENTLY VALIDATE RENAME OWNER SCHEMA DATABASE EXTENSION SERIALIZABLE DEFERRABLE DEFERRED IMMEDIATE SAVEPOINT RELEASE ABORT VACUUM REINDEX CLUSTER COPY STDIN LOCK SHARE NOWAIT SKIP LOCKED'
 
 // Deduplicated (the old list contained AND twice).
 const KEYWORD_LIST = [...new Set(KEYWORDS.split(' '))]
+
+// Common built-in types offered after a `::` cast. User-defined types still
+// come from the catalog; this list covers the scalar types people reach for.
+const BUILTIN_TYPES =
+  'bigint bigserial bit boolean box bytea char character cidr circle date decimal double precision inet integer interval json jsonb line lseg macaddr macaddr8 money numeric oid path pg_lsn point polygon real serial smallint smallserial text time timetz timestamp timestamptz tsquery tsvector uuid varbit varchar xml'.split(
+    ' ',
+  )
 
 function qualified(schema: string, name: string): string {
   return schema === 'public' ? quoteIdent(name) : `${quoteIdent(schema)}.${quoteIdent(name)}`
@@ -39,7 +49,8 @@ function functionDetail(f: FunctionInfo): string {
 
 // The provider runs on every keystroke; the relations array only changes when
 // a new schema load replaces the data object, so derive it once per load.
-type Relation = TableInfo | ViewInfo
+// Synthetic CTE/derived relations join it per request.
+type Relation = TableInfo | ViewInfo | ScopeRelation
 let relationsCache: { data: SchemaData; relations: Relation[] } | null = null
 
 function relationsFor(data: SchemaData): Relation[] {
@@ -69,18 +80,25 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       const { state } = useSchema()
       const data = state.data
       const word = model.getWordUntilPosition(position)
+      const text = model.getValue()
+      const offset = model.getOffsetAt(position)
+      // Replace the whole SQL identifier, quotes included, rather than Monaco's
+      // word: accepting a suggestion for `"My` must not leave the quote behind.
+      const span = identifierRangeAt(text, offset)
+      const start = span ? model.getPositionAt(span.start) : position
+      const end = span ? model.getPositionAt(span.end) : position
       const range: Monaco.IRange = {
-        startLineNumber: position.lineNumber,
-        endLineNumber: position.lineNumber,
-        startColumn: word.startColumn,
-        endColumn: word.endColumn,
+        startLineNumber: start.lineNumber,
+        startColumn: start.column,
+        endLineNumber: end.lineNumber,
+        endColumn: end.column,
       }
-      const lineBefore = model.getValueInRange({
-        startLineNumber: position.lineNumber,
-        startColumn: 1,
-        endLineNumber: position.lineNumber,
-        endColumn: word.startColumn,
-      })
+      // The qualifier sits immediately before the identifier, so a partially
+      // typed quoted name (`app."My`) still resolves the `app` prefix.
+      const beforeStart = span ? span.start : offset
+      const lineStart = text.lastIndexOf('\n', beforeStart - 1) + 1
+      const lineBefore = text.slice(lineStart, beforeStart)
+      const identEnd = span ? span.end : offset
       const K = monaco.languages.CompletionItemKind
       const suggestions: Monaco.languages.CompletionItem[] = []
       // Priority when the same label is produced twice: a real schema object
@@ -134,18 +152,15 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         }
         return true
       }
-      const relations = data ? relationsFor(data) : []
-      const text = model.getValue()
-      const offset = model.getOffsetAt(position)
       const scope = resolveQueryScope(text, offset)
       const { aliases } = scope
+      const catalog = data ? relationsFor(data) : []
+      // CTE and derived-table columns are not in the catalog; append them.
+      const relations: Relation[] = scope.relations.length ? [...catalog, ...scope.relations] : catalog
       // A word directly followed by `(` is being called: rank functions above
       // same-named columns there, and describe both inline so the identical
       // labels stay distinguishable.
-      const atCall = callSite(
-        text,
-        model.getOffsetAt({ lineNumber: position.lineNumber, column: word.endColumn }),
-      )
+      const atCall = callSite(text, identEnd)
       const callSort = atCall ? '0' : undefined
 
       // Inside a dollar-quoted routine body the function's parameters and its
@@ -170,35 +185,62 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // One emitter per catalog object kind, shared between the generic list
       // and the schema-qualifier list. `inSchema` suppresses re-qualification
       // when the user already typed `schema.`.
+      // Relations and types are keyed by kind and schema as well as name, so
+      // `public.orders` and `sales.orders` both stay suggested instead of one
+      // silently replacing the other.
+      const objectKey = (kind: string, schema: string, name: string): string =>
+        `${kind}\u0000${schema}\u0000${name}`
       const itemForTable = (t: TableInfo, inSchema: boolean): void => {
         if (!matchesPrefix(t.name)) return
-        emit({
-          label: t.name,
-          kind: K.Class,
-          detail: `table · ${t.schema}`,
-          insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
-          range,
-        })
+        emit(
+          {
+            label: t.name,
+            kind: K.Class,
+            detail: `table · ${t.schema}`,
+            insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
+            range,
+          },
+          objectKey('table', t.schema, t.name),
+        )
       }
       const itemForView = (v: ViewInfo, inSchema: boolean): void => {
         if (!matchesPrefix(v.name)) return
-        emit({
-          label: v.name,
-          kind: K.Class,
-          detail: `${v.materialized ? 'materialized ' : ''}view · ${v.schema}`,
-          insertText: inSchema ? quoteIdent(v.name) : qualified(v.schema, v.name),
-          range,
-        })
+        emit(
+          {
+            label: v.name,
+            kind: K.Class,
+            detail: `${v.materialized ? 'materialized ' : ''}view · ${v.schema}`,
+            insertText: inSchema ? quoteIdent(v.name) : qualified(v.schema, v.name),
+            range,
+          },
+          objectKey(v.materialized ? 'matview' : 'view', v.schema, v.name),
+        )
       }
       const itemForType = (t: TypeInfo, inSchema: boolean): void => {
         if (!matchesPrefix(t.name)) return
-        emit({
-          label: t.name,
-          kind: K.Class,
-          detail: `type (${t.kind}) · ${t.schema}`,
-          insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
-          range,
-        })
+        emit(
+          {
+            label: t.name,
+            kind: K.Class,
+            detail: `type (${t.kind}) · ${t.schema}`,
+            insertText: inSchema ? quoteIdent(t.name) : qualified(t.schema, t.name),
+            range,
+          },
+          objectKey('type', t.schema, t.name),
+        )
+      }
+      const itemForSequence = (s: SequenceInfo, inSchema: boolean): void => {
+        if (!matchesPrefix(s.name)) return
+        emit(
+          {
+            label: s.name,
+            kind: K.Class,
+            detail: `sequence · ${s.schema}`,
+            insertText: inSchema ? quoteIdent(s.name) : qualified(s.schema, s.name),
+            range,
+          },
+          objectKey('sequence', s.schema, s.name),
+        )
       }
       const itemForFunction = (f: FunctionInfo, inSchema: boolean): void => {
         if (!matchesPrefix(f.name)) return
@@ -209,7 +251,8 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             label: { label: f.name, description: functionSignatureDetail(f) },
             kind: f.kind === 'procedure' ? K.Method : K.Function,
             detail,
-            insertText: `${name}($0)`,
+            // A name containing `$` must not be read as snippet syntax.
+            insertText: `${escapeSnippet(name)}($0)`,
             insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
             range,
             sortText: callSort,
@@ -222,7 +265,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       const itemForBuiltin = (f: FunctionInfo): void => {
         if (!matchesPrefix(f.name)) return
         const detail = functionDetail(f)
-        const insertText = `${quoteIdent(f.name)}($0)`
+        const insertText = `${escapeSnippet(quoteIdent(f.name))}($0)`
         emit(
           {
             label: { label: f.name, description: functionSignatureDetail(f) },
@@ -243,7 +286,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         const match = resolveQualifier(relations, parts, aliases)
 
         if (match) {
-          const relationName = match.schema === 'public' ? match.name : `${match.schema}.${match.name}`
+          const relationName = relationLabel(match)
           for (const c of match.columns) {
             if (!matchesPrefix(c.name)) continue
             const description = `${c.type} · ${relationName}`
@@ -267,6 +310,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
               ...data.views.map((o) => o.schema),
               ...data.types.map((o) => o.schema),
               ...data.functions.map((o) => o.schema),
+              ...data.sequences.map((o) => o.schema),
             ]),
           ]
           const schema = findSchema(schemas, parts[0])
@@ -274,8 +318,25 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             for (const t of data.tables) if (t.schema === schema) itemForTable(t, true)
             for (const v of data.views) if (v.schema === schema) itemForView(v, true)
             for (const t of data.types) if (t.schema === schema) itemForType(t, true)
+            for (const s of data.sequences) if (s.schema === schema) itemForSequence(s, true)
             for (const f of data.functions) if (f.schema === schema) itemForFunction(f, true)
           }
+        }
+        return { suggestions }
+      }
+
+      // After `::` the user is naming a type; offer the common built-ins and
+      // stop there rather than mixing in tables, columns and functions.
+      if (/::\s*[A-Za-z_]*$/.test(lineBefore)) {
+        for (const name of BUILTIN_TYPES) {
+          if (!matchesPrefix(name)) continue
+          emit({
+            label: name,
+            kind: K.Class,
+            detail: 'built-in type',
+            insertText: name,
+            range,
+          })
         }
         return { suggestions }
       }
@@ -302,7 +363,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // to make common column names quadratic.
       const columnSources = new Map<string, { type: string; relations: string[] }>()
       for (const relation of visibleRelations) {
-        const relationName = relation.schema === 'public' ? relation.name : `${relation.schema}.${relation.name}`
+        const relationName = relationLabel(relation)
         for (const c of relation.columns) {
           if (!matchesPrefix(c.name)) continue
           const hit = columnSources.get(c.name)
@@ -338,6 +399,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const t of data?.tables ?? []) itemForTable(t, false)
       for (const v of data?.views ?? []) itemForView(v, false)
       for (const t of data?.types ?? []) itemForType(t, false)
+      for (const s of data?.sequences ?? []) itemForSequence(s, false)
       for (const f of data?.functions ?? []) itemForFunction(f, false)
       // Built-ins run into the thousands; only offer the ones the user has
       // already started to type, so the list stays focused and cheap.

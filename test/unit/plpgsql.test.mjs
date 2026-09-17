@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { bodySymbols, parseRoutineHeader, parseDeclareVariables, enclosingRoutineBody } =
+const { bodySymbols, parseRoutineHeader, parseDeclareVariables, enclosingRoutineBody, routineSource } =
   await load('web/monaco/plpgsql.ts')
 
 const FUNCTION_SQL = `CREATE OR REPLACE FUNCTION public.calc(
@@ -78,4 +78,45 @@ test('a SQL-language body still offers header parameters', () => {
   const sql = 'CREATE FUNCTION f(mult integer) RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$;'
   const symbols = bodySymbols(sql, sql.indexOf('SELECT'))
   assert.deepEqual(symbols.map((s) => ({ name: s.name, kind: s.kind })), [{ name: 'mult', kind: 'param' }])
+})
+
+test('an unfinished body still offers parameters at EOF', () => {
+  const sql = 'CREATE FUNCTION f(p integer) RETURNS integer LANGUAGE sql AS $$ SELECT p'
+  assert.deepEqual(bodySymbols(sql, sql.length).map((s) => s.name), ['p'])
+})
+
+test('an earlier routine never leaks into a later dollar literal', () => {
+  const sql = 'CREATE FUNCTION f(p integer) RETURNS integer AS $$ SELECT p $$; SELECT $$ p $$;'
+  const at = sql.indexOf('$$ p $$') + 3
+  assert.deepEqual(bodySymbols(sql, at), [])
+})
+
+test('a DO block after a function does not inherit its parameters', () => {
+  const sql =
+    'CREATE FUNCTION f(p integer) RETURNS integer AS $$ SELECT p $$; ' +
+    'DO $$ DECLARE n integer; BEGIN PERFORM n; END $$;'
+  assert.deepEqual(bodySymbols(sql, sql.indexOf('PERFORM')).map((s) => s.name), ['n'])
+})
+
+test('parseRoutineHeader only reads the statement the body belongs to', () => {
+  const before =
+    'CREATE FUNCTION old(a integer) RETURNS integer AS $$ SELECT a $$; ' +
+    'CREATE FUNCTION fresh(b text) RETURNS text AS '
+  const header = parseRoutineHeader(before)
+  assert.deepEqual(header.chain, ['fresh'])
+  assert.deepEqual(header.params.map((p) => p.name), ['b'])
+})
+
+test('routineSource rebases into a routine body and is identity outside', () => {
+  const at = FUNCTION_SQL.indexOf('RETURN;')
+  const src = routineSource(FUNCTION_SQL, at)
+  assert.equal(src.shift, FUNCTION_SQL.indexOf('$func$') + '$func$'.length)
+  assert.equal(src.text[src.offset], 'R')
+  assert.deepEqual(routineSource('SELECT 1', 3), { text: 'SELECT 1', offset: 3, shift: 0 })
+  const literal = 'SELECT $$ p $$'
+  assert.deepEqual(routineSource(literal, literal.indexOf('p')), {
+    text: literal,
+    offset: literal.indexOf('p'),
+    shift: 0,
+  })
 })

@@ -2,11 +2,25 @@
 // Dependency-free (no monaco / vue imports) so the parsing logic can be
 // unit-tested in plain Node.
 
+import type { ColumnInfo } from '../types'
 import { resolveQueryScope } from './sqlscope'
 
 export interface RelRef {
   schema: string
   name: string
+  /** Output columns inferred for a CTE or derived table; absent for catalog refs. */
+  columns?: ColumnInfo[]
+  /** Display label for a synthetic (CTE/derived) relation. */
+  label?: string
+}
+
+/**
+ * Label for detail lines: a synthetic CTE/derived relation carries its own
+ * label; a public catalog relation stays unqualified.
+ */
+export function relationLabel(r: { schema: string; name: string; label?: string }): string {
+  if (r.label) return r.label
+  return r.schema === 'public' ? r.name : `${r.schema}.${r.name}`
 }
 
 /** Remove surrounding double quotes and unescape `""`. */
@@ -57,10 +71,32 @@ export function resolveQualifier<T extends { schema: string; name: string }>(
   return aliases.size ? undefined : findRelation(relations, { schema: '', name })
 }
 
+// PostgreSQL reserved words (Appendix C, category "reserved"). A name that is
+// otherwise a valid unquoted identifier still has to be quoted when it is one
+// of these, or the inserted SQL would be a syntax error.
+const RESERVED = new Set(
+  ('ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC BOTH CASE CAST CHECK COLLATE COLUMN CONSTRAINT ' +
+    'CREATE CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER DEFAULT ' +
+    'DEFERRABLE DESC DISTINCT DO ELSE END EXCEPT FALSE FETCH FOR FOREIGN FROM GRANT GROUP HAVING IN ' +
+    'INITIALLY INTERSECT INTO LATERAL LEADING LIMIT LOCALTIME LOCALTIMESTAMP NOT NULL OFFSET ON ONLY OR ' +
+    'ORDER PLACING PRIMARY REFERENCES RETURNING SELECT SESSION_USER SOME SYMMETRIC TABLE THEN TO TRAILING ' +
+    'TRUE UNION UNIQUE USER USING VARIADIC WHEN WHERE WINDOW WITH')
+    .split(' '),
+)
+
 /** Quote an identifier for insert text only when required. */
 export function quoteIdent(name: string): string {
-  if (/^[a-z_][a-z0-9_]*$/.test(name)) return name
+  if (/^[a-z_][a-z0-9_]*$/.test(name) && !RESERVED.has(name.toUpperCase())) return name
   return `"${name.replace(/"/g, '""')}"`
+}
+
+/**
+ * Escape text that will be placed inside a Monaco snippet (function call
+ * insert text). A literal `$`, `}` or `\` would otherwise be read as snippet
+ * syntax, so an object named `a$b` must not turn into a snippet variable.
+ */
+export function escapeSnippet(text: string): string {
+  return text.replace(/[\\$}]/g, '\\$&')
 }
 
 /**
