@@ -433,6 +433,46 @@ try {
     eq('double-clicking the empty strip adds a query tab', after, before + 1)
   }
 
+  console.log('\n== F5 and Ctrl+Enter run the query ==')
+  {
+    const pressKey = async (key, code, vk, modifiers = 0) => {
+      const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers }
+      await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base })
+      await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+    }
+    const resultShown = (value) => page.waitFor(
+      `[...document.querySelectorAll('.grid-cell')].some((c) => c.textContent.trim() === ${JSON.stringify(value)})`,
+      { timeout: 15000 },
+    ).then(() => true).catch(() => false)
+
+    // The double-click above left a fresh, editable query tab active.
+    await page.evaluate(`
+      window.__f5Sentinel = 'alive'
+      window.__f5DefaultPrevented = null
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'F5') window.__f5DefaultPrevented = e.defaultPrevented
+      })
+      window.__pgdev.setValue('SELECT 11 AS f5_probe')
+      window.__pgdev.editor.focus()
+    `)
+    await pressKey('F5', 'F5', 116)
+    ok('F5 runs the query', await resultShown('11'))
+    eq('F5 does not reach the browser (no refresh)', await page.evaluate(`return window.__f5Sentinel`), 'alive')
+    // A handled keybinding either stops propagation before the window listener
+    // (null) or reaches it already prevented (true). `false` means it was let
+    // through, which is what lets the browser reload.
+    ok('F5 is consumed by the editor',
+      (await page.evaluate(`return window.__f5DefaultPrevented`)) !== false,
+      String(await page.evaluate(`return window.__f5DefaultPrevented`)))
+
+    await page.evaluate(`
+      window.__pgdev.setValue('SELECT 22 AS ctrl_probe')
+      window.__pgdev.editor.focus()
+    `)
+    await pressKey('Enter', 'Enter', 13, 2)
+    ok('Ctrl+Enter still runs the query', await resultShown('22'))
+  }
+
   console.log('\n== agent tabs are visually distinct ==')
   {
     const colors = await page.evaluate(`

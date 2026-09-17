@@ -58,6 +58,11 @@ onMounted(() => {
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
     run?.()
   })
+  // F5 runs too. Monaco handles the keydown and cancels its default action, so
+  // the browser's reload does not fire while the editor has focus.
+  editor.addCommand(monaco.KeyCode.F5, () => {
+    run?.()
+  })
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, () => {
     formatActive()
   })

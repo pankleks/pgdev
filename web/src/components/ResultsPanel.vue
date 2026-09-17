@@ -407,7 +407,7 @@ async function exportCsv() {
         v-else
         class="primary run-btn"
         :disabled="!conn.state.id || result?.loadingMore || tabs.state.tabs.find((t) => t.key === tabs.state.activeKey)?.readOnly"
-        title="Ctrl+Enter"
+        title="Run (F5 or Ctrl+Enter)"
         @click="run?.()"
       >
         <Play :size="13" /> Run
@@ -416,7 +416,7 @@ async function exportCsv() {
 
     <div v-if="!result || result.showMessages || !result.grid" class="messages">
       <div v-if="!result || !result.messages.length" class="msg dim">
-        Run a query to see results (Ctrl+Enter in the editor).
+        Run a query to see results (F5 or Ctrl+Enter in the editor).
       </div>
       <div v-for="(m, i) in result?.messages ?? []" :key="i" class="msg" :class="m.level">
         {{ m.text }}
