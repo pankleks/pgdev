@@ -111,6 +111,7 @@ onMounted(() => {
         return completionSuggestions(model, position as never).map((s) => ({
           label: typeof s.label === 'string' ? s.label : s.label.label,
           description: typeof s.label === 'string' ? undefined : s.label.description,
+          labelDetail: typeof s.label === 'string' ? undefined : s.label.detail,
           kind: s.kind,
           detail: s.detail,
           // Snippet insert text (functions) is a plain string here; the

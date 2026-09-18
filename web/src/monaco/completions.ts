@@ -271,6 +271,19 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
         )
       }
 
+      // Three inline columns: name | type | relation. Monaco renders the
+      // label detail flush against the description, so the relation carries
+      // its own leading separator (the outer detail keeps the combined
+      // string for the focused-row detail pane).
+      const columnLabel = (
+        name: string,
+        type: string,
+        relations: string,
+      ): Pick<Monaco.languages.CompletionItem, 'label' | 'detail'> => ({
+        label: { label: name, description: type, detail: ` · ${relations}` },
+        detail: `${type} · ${relations}`,
+      })
+
       const chain = matchDotChain(lineBefore)
       if (chain) {
         const parts = splitChain(chain)
@@ -280,11 +293,9 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
           const relationName = relationLabel(match)
           for (const c of match.columns) {
             if (!matchesPrefix(c.name)) continue
-            const description = `${c.type} · ${relationName}`
             suggestions.push({
-              label: { label: c.name, description },
+              ...columnLabel(c.name, c.type, relationName),
               kind: K.Field,
-              detail: description,
               insertText: quoteIdent(c.name),
               range,
             })
@@ -335,9 +346,9 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       // The same column name commonly exists in several relations (`id` in
       // both employees and departments). Monaco would list one row per
       // occurrence, so keep the first and name the other relations in the
-      // detail line instead of repeating the entry. Occurrences accumulate
-      // into per-column sets, and each merged description is formatted once
-      // afterwards — re-splitting a growing description per occurrence used
+      // relation column instead of repeating the entry. Occurrences accumulate
+      // into per-column sets, and each merged row is formatted once
+      // afterwards — re-splitting a growing label per occurrence used
       // to make common column names quadratic.
       const columnSources = new Map<string, { type: string; relations: string[] }>()
       for (const relation of visible) {
@@ -348,9 +359,8 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
           if (!hit) {
             columnSources.set(c.name, { type: c.type, relations: [relationName] })
             emit({
-              label: { label: c.name, detail: `${c.type} · ${relationName}` },
+              ...columnLabel(c.name, c.type, relationName),
               kind: K.Field,
-              detail: `${c.type} · ${relationName}`,
               insertText: quoteIdent(c.name),
               range,
             })
@@ -359,19 +369,20 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
           }
         }
       }
-      // Format each merged description once, after the accumulation pass: the
+      // Format each merged row once, after the accumulation pass: the
       // survivor comes from `emit` (the map's surviving entry), so an entry a
       // same-named table took over is left alone.
       for (const [key, hit] of columnSources) {
         if (hit.relations.length <= 1) continue
         const survivor = emitted.get(key)?.item
         if (!survivor || survivor.kind !== K.Field) continue
-        const description = `${hit.type} · ${hit.relations.join(', ')}`
-        survivor.detail = description
-        survivor.label = {
-          label: typeof survivor.label === 'string' ? survivor.label : survivor.label.label,
-          description,
-        }
+        const cols = columnLabel(
+          typeof survivor.label === 'string' ? survivor.label : survivor.label.label,
+          hit.type,
+          hit.relations.join(', '),
+        )
+        survivor.detail = cols.detail
+        survivor.label = cols.label
       }
 
       for (const t of data?.tables ?? []) itemForTable(t, false)

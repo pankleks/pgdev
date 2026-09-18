@@ -496,7 +496,7 @@ try {
     await page.evaluate(`window.__pgdev.setValue('SELECT ')`)
     const result = await page.evaluate(`
       const items = window.__pgdev.suggestions()
-      const keys = items.map((i) => [i.label, i.detail ?? '', i.insertText ?? ''].join('|'))
+      const keys = items.map((i) => [i.label, i.description ?? '', i.labelDetail ?? '', i.detail ?? '', i.insertText ?? ''].join('|'))
       const counts = {}
       for (const k of keys) counts[k] = (counts[k] ?? 0) + 1
       return {
@@ -546,9 +546,12 @@ try {
       JSON.stringify([callFn, callCol]))
     ok('function description carries the parameter list', /\(p integer\)/.test(String(callFn?.description)))
     // `label` exists in items and v_items: the merged entry names both.
-    ok('column description carries type and relation', /text · /.test(String(callCol?.description)))
-    eq('duplicate columns merge into one informative row',
-      String(callCol?.description), 'text · items, v_items')
+    // Columns render as three inline columns: name | type | relation(s),
+    // with the relation carrying its own leading separator.
+    eq('column type sits in its own inline column', String(callCol?.description), 'text')
+    eq('column relation is separated from the type', String(callCol?.labelDetail), ' · items, v_items')
+    eq('column focus detail still combines type and relation',
+      String(callCol?.detail), 'text · items, v_items')
   }
 
   console.log('\n== IntelliSense offers built-in functions while typing ==')
