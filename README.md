@@ -92,10 +92,6 @@ case-insensitive and matches are highlighted:
   `parameter` (`param`), `type`, `sequence` (`seq`).
   Examples: `fn count` lists functions only, `col id` lists columns only,
   `p_emp` finds the function by its parameter name.
-* Argument *types* are intentionally ignored: searching `integer` matches
-  nothing (use the parameter's name instead).
-* While filtering, sections auto-expand and group collapse is disabled;
-  with no hits the tree reports `No objects match "…"`.
 
 ## 6. DDL tabs
 
