@@ -274,7 +274,7 @@ provide('pgdev:run', runActive)
         title="Connection details, disconnect, or switch"
         @click="conn.state.dialog = true"
       >{{ conn.state.label }}</button>
-      <button v-else class="conn-badge off" title="Open the connection dialog" @click="conn.state.dialog = true">not connected</button>
+      <button v-else class="conn-badge off" title="Open the connection dialog" @click="conn.state.dialog = true">Not connected</button>
       <span class="spacer" />
       <button
         class="icon"
@@ -284,7 +284,7 @@ provide('pgdev:run', runActive)
       ><Wand2 :size="15" /></button>
       <button
         class="icon"
-        title="Build a PREPARE / EXECUTE template from $N parameters"
+        title="Generate call of parameterized query."
         :disabled="!activeTab || activeTab.readOnly"
         @click="toggleParamBar()"
       ><SlidersHorizontal :size="15" /></button>
