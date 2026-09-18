@@ -10,26 +10,24 @@ const { formatSql } = await load('web/lib/sqlformat.ts')
 // collects the names the query calls and keeps them tight, while clause
 // keywords and quoted text must not be touched.
 
-test('user function calls keep their name tight to the parenthesis', () => {
-  assert.equal(
-    formatSql('select employee_has_any_role($5::INTEGER, role_id_list) from employee'),
-    'SELECT\n\temployee_has_any_role($5::INTEGER, role_id_list)\nFROM\n\temployee',
-  )
-  assert.equal(
-    formatSql('select foo(a, b) from t'),
-    'SELECT\n\tfoo(a, b)\nFROM\n\tt',
-  )
-})
-
-test('schema-qualified calls are tightened too', () => {
-  assert.equal(
-    formatSql('select pg_catalog.entry_has_role($1, $2) from t'),
-    'SELECT\n\tpg_catalog.entry_has_role($1, $2)\nFROM\n\tt',
-  )
-  assert.equal(
-    formatSql('select pg_catalog.count(*) from t'),
-    'SELECT\n\tpg_catalog.count(*)\nFROM\n\tt',
-  )
+test('calls stay tight to the parenthesis', () => {
+  // sql-formatter only knows its own function list; user-defined,
+  // schema-qualified and keyword-named calls used to gain a space (`fn ($1)`).
+  const tight = [
+    ['select employee_has_any_role($5::INTEGER, role_id_list) from employee', /employee_has_any_role\(\$5::INTEGER, role_id_list\)/],
+    ['select foo(a, b) from t', /foo\(a, b\)/],
+    ['select pg_catalog.entry_has_role($1, $2) from t', /pg_catalog\.entry_has_role\(\$1, \$2\)/],
+    ['select pg_catalog.count(*) from t', /pg_catalog\.count\(\*\)/],
+    ['select * from t where id = any($6)', /ANY\(\$6\)/],
+    ['select * from t where id = all($6)', /ALL\(\$6\)/],
+    ['select any(array[1, 2])', /ANY\(ARRAY\[1, 2\]\)/],
+    ['select * from t where id in($6)', /IN\(\$6\)/],
+    ['select my_schema.my_func (a) from t', /my_schema\.my_func\(a\)/],
+    ['select employee_has_any_role (a) from t', /employee_has_any_role\(a\)/],
+    ['select * from t where id = any ($6)', /ANY\(\$6\)/],
+    ['select * from t where id in ($6)', /IN\(\$6\)/],
+  ]
+  for (const [sql, want] of tight) assert.match(formatSql(sql), want, sql)
 })
 
 test('built-in functions are unchanged', () => {
@@ -64,11 +62,6 @@ test('strings and comments are never rewritten', () => {
   assert.match(out, /-- foo\( comment/)
 })
 
-test('calls already written with a space are normalised', () => {
-  assert.match(formatSql('select my_schema.my_func (a) from t'), /my_schema\.my_func\(a\)/)
-  assert.match(formatSql('select employee_has_any_role (a) from t'), /employee_has_any_role\(a\)/)
-})
-
 test('JSON arrows keep no space around them', () => {
   assert.equal(
     formatSql("select dr.field_bag ->> 'level' from dr_table dr"),
@@ -90,33 +83,6 @@ test('arrows inside strings and comments are never rewritten', () => {
   const out = formatSql("select 'a -> b' as s from t -- x ->> y")
   assert.match(out, /'a -> b'/)
   assert.match(out, /-- x ->> y/)
-})
-
-test('a call written tight stays tight, keyword-named calls included', () => {
-  assert.equal(
-    formatSql('select * from t where id = any($6)'),
-    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ANY($6)',
-  )
-  assert.equal(
-    formatSql('select * from t where id = all($6)'),
-    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ALL($6)',
-  )
-  assert.equal(formatSql('select any(array[1, 2])'), 'SELECT\n\tANY(ARRAY[1, 2])')
-  assert.equal(
-    formatSql('select * from t where id in($6)'),
-    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid IN($6)',
-  )
-})
-
-test('a call written with a space is tightened too', () => {
-  assert.equal(
-    formatSql('select * from t where id = any ($6)'),
-    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid = ANY($6)',
-  )
-  assert.equal(
-    formatSql('select * from t where id in ($6)'),
-    'SELECT\n\t*\nFROM\n\tt\nWHERE\n\tid IN($6)',
-  )
 })
 
 test('routine bodies are tightened while plain dollar literals survive', () => {

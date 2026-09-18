@@ -186,6 +186,45 @@ console.log('\n== foreign key variants ==')
   }
 }
 
+console.log('\n== exclusion constraint and trigger round-trips ==')
+await pool.query(`CREATE TABLE excl_tbl (id integer PRIMARY KEY, during tstzrange NOT NULL,
+  CONSTRAINT excl_no_overlap EXCLUDE USING gist (during WITH &&))`)
+await roundTrip({
+  pool, eq, ok, params: ['excl_tbl'], create: [], drop: `DROP TABLE excl_tbl`,
+  label: 'exclusion constraint round-trips (gist on tstzrange, no extension)',
+  fingerprint: `SELECT con.conname, pg_get_constraintdef(con.oid) AS def
+    FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid
+    WHERE c.relname = $1 AND con.contype = 'x'`,
+  ddl: async () => ddl.tableDdl(pool, await oidOfRel('excl_tbl'), 'public', 'excl_tbl'),
+})
+{
+  const text = await ddl.tableDdl(pool, await oidOfRel('excl_tbl'), 'public', 'excl_tbl')
+  ok('emits the EXCLUDE clause', /EXCLUDE USING gist/.test(text),
+    text.split('\n').find((l) => /EXCLUDE/.test(l))?.trim())
+}
+await pool.query(`CREATE FUNCTION trg_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.label := upper(NEW.label); RETURN NEW; END $$`)
+await pool.query(`CREATE TABLE trg_tbl (id integer PRIMARY KEY, label text)`)
+await pool.query(`CREATE TRIGGER trg_when BEFORE INSERT OR UPDATE OF label ON trg_tbl FOR EACH ROW WHEN (NEW.label IS DISTINCT FROM 'untouched') EXECUTE FUNCTION trg_fn()`)
+await roundTrip({
+  pool, eq, ok, params: ['trg_when'], create: [],
+  drop: `DROP TRIGGER trg_when ON trg_tbl`,
+  label: 'trigger with UPDATE OF column list and WHEN round-trips',
+  fingerprint: `SELECT t.tgname, pg_get_triggerdef(t.oid) AS def
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE t.tgname = $1 AND NOT t.tgisinternal`,
+  ddl: async () => ddl.triggerDdl(pool, 'public', 'trg_tbl', 'trg_when'),
+})
+{
+  const text = await ddl.triggerDdl(pool, 'public', 'trg_tbl', 'trg_when')
+  ok('trigger DDL keeps the column list', /UPDATE OF "?label"?/.test(text),
+    text.split('\n').find((l) => /UPDATE OF/.test(l))?.trim())
+  ok('trigger DDL keeps the WHEN condition', /WHEN \(\(/.test(text),
+    text.split('\n').find((l) => /WHEN/.test(l))?.trim())
+}
+await pool.query(`DROP TABLE excl_tbl`)
+await pool.query(`DROP TABLE trg_tbl CASCADE`)
+await pool.query(`DROP FUNCTION trg_fn()`)
+
 console.log('\n== column collation ==')
 await pool.query(`CREATE TABLE collated (id integer, name text COLLATE "C", label text COLLATE "C" NOT NULL)`)
 await roundTrip({

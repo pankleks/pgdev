@@ -108,6 +108,10 @@ test('get-context reports the active connection and tabs', async () => {
     { key: 'query-1', title: 'Query 1', readOnly: false },
     { key: 'ddl-1', title: 'items', readOnly: true },
   ])
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '2', action: 'drop-database' }),
+    /Unknown bridge action/,
+  )
 })
 
 test('get-active-query returns the active tab content and its read-only flag', async () => {
@@ -160,7 +164,7 @@ test('authored DDL is staged in the active tab, never run', async () => {
 })
 
 test('get-active-result reports the tab and nothing ran yet', async () => {
-  const { deps } = setup()
+  const { deps, state } = setup()
   const result = await applyBridgeAction(deps, { id: '1', action: 'get-active-result' })
   assert.equal(result.tab.key, 'query-1')
   assert.equal(result.tab.title, 'Query 1')
@@ -170,6 +174,12 @@ test('get-active-result reports the tab and nothing ran yet', async () => {
   assert.equal(result.selected, null)
   assert.deepEqual(result.messages, [])
   assert.deepEqual(result.results, [])
+
+  state.activeKey = 'gone'
+  await assert.rejects(
+    applyBridgeAction(deps, { id: '2', action: 'get-active-result' }),
+    /No tab is open/,
+  )
 })
 
 test('get-active-result returns every result set with its messages', async () => {
@@ -222,15 +232,6 @@ test('get-active-result trims to the cap the server asked for', async () => {
   assert.equal(tight.results[0].truncated, true)
 })
 
-test('get-active-result needs a tab', async () => {
-  const { deps, state } = setup()
-  state.activeKey = 'gone'
-  await assert.rejects(
-    applyBridgeAction(deps, { id: '1', action: 'get-active-result' }),
-    /No tab is open/,
-  )
-})
-
 test('open-query-tab creates a tab and returns its key', async () => {
   const { deps, state } = setup()
   const opened = await applyBridgeAction(deps, {
@@ -245,6 +246,14 @@ test('open-query-tab creates a tab and returns its key', async () => {
     content: 'CREATE VIEW v AS SELECT 1',
     connectionId: 'conn-1',
   })
+
+  // Without a title the tab still opens but never joins the mirror pool.
+  const untitled = await applyBridgeAction(deps, {
+    id: '2',
+    action: 'open-query-tab',
+    args: { sql: 'SELECT 1' },
+  })
+  assert.notEqual(untitled.title, AI_TAB_TITLE)
 })
 
 test('list-tabs shows only agent tabs, with dirty flags', async () => {
@@ -367,71 +376,19 @@ test('show-result appends to one read-only AI log and renders the grid', async (
   assert.equal(log.content, `${grid.sql}\n\n${grid.sql}`)
 })
 
-test('the AI log is not connection bound', async () => {
-  const { deps, state, tabs } = setup()
-  tabs.push({
-    key: 'ai-other',
-    kind: 'query',
-    title: AI_TAB_TITLE,
-    readOnly: true,
-    content: 'SELECT from_other_connection',
-    connectionId: 'conn-2',
-    aiMirror: true,
-  })
-  const shown = await applyBridgeAction(deps, {
-    id: '1',
-    action: 'show-result',
-    args: {
-      connectionId: 'conn-1',
-      sql: 'SELECT from_conn_1',
-      columns: ['id'],
-      columnTypes: ['integer'],
-      rows: [[1]],
-      rowCount: 1,
-      truncated: false,
-    },
-  })
-  assert.equal(shown.key, 'ai-other')
-  assert.equal(state.opened.length, 0, 'an existing log is reused across connections')
-  const log = tabs.find((t) => t.key === 'ai-other')
-  assert.equal(log.connectionId, 'conn-2', 'reuse does not rebind it')
-  assert.ok(log.content.includes('SELECT from_conn_1'), 'the new SQL joins the log')
-})
-
-test('show-result refuses when the AI log grid cannot be shown', async () => {
-  const { deps } = setup({ showGrid: () => false })
-  await assert.rejects(
-    applyBridgeAction(deps, {
-      id: '1',
-      action: 'show-result',
-      args: {
-        connectionId: 'conn-1',
-        sql: 'SELECT replacement',
-        columns: ['id'],
-        columnTypes: ['integer'],
-        rows: [[1]],
-        rowCount: 1,
-        truncated: false,
-      },
-    }),
-    /AI log tab is busy/,
-  )
-})
-
-test('open-query-tab without a title never joins the mirror pool', async () => {
-  const { deps, state } = setup()
-  const opened = await applyBridgeAction(deps, {
-    id: '1',
-    action: 'open-query-tab',
-    args: { sql: 'SELECT 1' },
-  })
-  assert.notEqual(opened.title, AI_TAB_TITLE)
-  assert.equal(state.opened[0].title, opened.title)
-})
-
-test('show-result ignores query tabs and DDL previews merely titled AI', async () => {
+test('the AI log is reused across connections and never confused with user tabs', async () => {
   const { deps, state, tabs } = setup()
   tabs.push(
+    {
+      key: 'ai-other',
+      kind: 'query',
+      title: AI_TAB_TITLE,
+      readOnly: true,
+      content: 'SELECT from_other_connection',
+      connectionId: 'conn-2',
+      aiMirror: true,
+    },
+    // User tabs merely titled AI are invisible to the mirror lookup.
     {
       key: 'query-ai',
       kind: 'query',
@@ -454,7 +411,7 @@ test('show-result ignores query tabs and DDL previews merely titled AI', async (
     action: 'show-result',
     args: {
       connectionId: 'conn-1',
-      sql: 'SELECT agent',
+      sql: 'SELECT from_conn_1',
       columns: ['id'],
       columnTypes: ['integer'],
       rows: [[1]],
@@ -462,47 +419,32 @@ test('show-result ignores query tabs and DDL previews merely titled AI', async (
       truncated: false,
     },
   })
-  assert.equal(state.opened.length, 1)
-  assert.equal(state.opened[0].aiMirror, true)
-  assert.equal(shown.key, 'ai-log')
-  assert.notEqual(shown.key, 'query-ai')
-  assert.notEqual(shown.key, 'ddl-ai')
-  const staged = tabs.find((t) => t.key === 'query-ai')
-  assert.equal(staged.content, 'SELECT user_staged')
+  assert.equal(shown.key, 'ai-other')
+  assert.equal(state.opened.length, 0, 'an existing log is reused across connections')
+  assert.equal(tabs.filter((t) => t.aiMirror === true).length, 1, 'never a second AI tab')
+  const log = tabs.find((t) => t.key === 'ai-other')
+  assert.equal(log.connectionId, 'conn-2', 'reuse does not rebind it')
+  assert.ok(log.content.includes('SELECT from_conn_1'), 'the new SQL joins the log')
+  assert.equal(tabs.find((t) => t.key === 'query-ai').content, 'SELECT user_staged')
 })
 
-test('show-result reuses the existing AI log rather than adding another', async () => {
-  const { deps, state, tabs } = setup()
-  tabs.push({
-    key: 'ai-existing',
-    kind: 'query',
-    title: AI_TAB_TITLE,
-    readOnly: true,
-    content: 'SELECT earlier',
-    aiMirror: true,
-  })
-  const shown = await applyBridgeAction(deps, {
-    id: '1',
-    action: 'show-result',
-    args: {
-      connectionId: 'conn-1',
-      sql: 'SELECT agent',
-      columns: ['id'],
-      columnTypes: ['integer'],
-      rows: [[1]],
-      rowCount: 1,
-      truncated: false,
-    },
-  })
-  assert.equal(shown.key, 'ai-existing')
-  assert.equal(state.opened.length, 0)
-  assert.equal(tabs.filter((t) => t.aiMirror === true).length, 1)
-})
-
-test('unknown actions are rejected', async () => {
-  const { deps } = setup()
+test('show-result refuses when the AI log grid cannot be shown', async () => {
+  const { deps } = setup({ showGrid: () => false })
   await assert.rejects(
-    applyBridgeAction(deps, { id: '1', action: 'drop-database' }),
-    /Unknown bridge action/,
+    applyBridgeAction(deps, {
+      id: '1',
+      action: 'show-result',
+      args: {
+        connectionId: 'conn-1',
+        sql: 'SELECT replacement',
+        columns: ['id'],
+        columnTypes: ['integer'],
+        rows: [[1]],
+        rowCount: 1,
+        truncated: false,
+      },
+    }),
+    /AI log tab is busy/,
   )
 })
+

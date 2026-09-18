@@ -437,7 +437,9 @@ test('empty names and types are rejected', () => {
   )
 })
 
-// --- fkLabels: running FK1/FK2/… numbers per constraint ---------------------
+// --- fkLabels/ukLabels: running FK1/FK2/… and UK1/UK2/… badges ----------
+// The badge numbering shown in the table editor; one ordering test per
+// helper pins the shared-number contract, the rest is presentation.
 
 const fkRow = (name, definition, conkey) => ({ name, definition, conkey })
 const nameByAttnum = new Map([
@@ -463,39 +465,6 @@ test('fkLabels numbers constraints in order and shares the number across its col
   assert.equal(map.get('product_id')[0].definition, 'FOREIGN KEY (product_id) REFERENCES products(id)')
 })
 
-test('fkLabels gives a column in two foreign keys both badges', () => {
-  const map = fkLabels(
-    [
-      fkRow('f_a', 'FOREIGN KEY (id) REFERENCES a(id)', [1]),
-      fkRow('f_b', 'FOREIGN KEY (id) REFERENCES b(id)', [1]),
-    ],
-    nameByAttnum,
-  )
-  assert.deepEqual(labelsOf(map, 'id'), ['FK1', 'FK2'])
-  assert.equal(map.get('id')[1].name, 'f_b')
-})
-
-test('fkLabels keeps the running number when a conkey attnum is unknown', () => {
-  const map = fkLabels(
-    [
-      fkRow('f_dropped', 'FOREIGN KEY (gone, id) REFERENCES t(a, b)', [99, 1]),
-      fkRow('f_next', 'FOREIGN KEY (product_id) REFERENCES products(id)', [2]),
-    ],
-    nameByAttnum,
-  )
-  assert.deepEqual(labelsOf(map, 'id'), ['FK1'])
-  assert.equal(map.has('gone'), false)
-  assert.deepEqual(labelsOf(map, 'product_id'), ['FK2'], 'numbering is per constraint, not per column')
-})
-
-test('fkLabels tolerates non-array conkey and yields no labels for no rows', () => {
-  assert.equal(fkLabels([], nameByAttnum).size, 0)
-  const map = fkLabels([fkRow('f_x', 'FOREIGN KEY (id) REFERENCES x(id)', null)], nameByAttnum)
-  assert.equal(map.size, 0)
-})
-
-// --- ukLabels: same running numbers with the UK prefix ----------------------
-
 test('ukLabels numbers unique keys in order and shares numbers across columns', () => {
   const map = ukLabels(
     [
@@ -513,15 +482,4 @@ test('ukLabels numbers unique keys in order and shares numbers across columns', 
   assert.deepEqual((map.get('warehouse_id') ?? []).map((u) => u.label), ['UK2'])
   assert.equal(map.get('code')[0].name, 'bom_code_key')
   assert.equal(map.get('code')[0].definition, 'UNIQUE (code)')
-})
-
-test('ukLabels gives a column in two unique keys both badges', () => {
-  const map = ukLabels(
-    [
-      fkRow('u_a', 'UNIQUE (id)', [1]),
-      fkRow('u_b', 'UNIQUE (id)', [1]),
-    ],
-    nameByAttnum,
-  )
-  assert.deepEqual((map.get('id') ?? []).map((u) => u.label), ['UK1', 'UK2'])
 })

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { allLexemes, allTokens } = await load('web/lib/sqlcache.ts')
+const { allTokens } = await load('web/lib/sqlcache.ts')
 const sqllex = await load('server/sqllex.ts')
 const { scanSqlLexemes } = sqllex
 
@@ -22,16 +22,9 @@ test('allTokens contains exactly the identifier and punctuation lexemes', () => 
   assert.equal(quoted.name, 'My Col')
 })
 
-test('the lexeme and token lists are memoized by content', () => {
+test('an edited text is re-lexed instead of serving the stale list', () => {
   const text = 'SELECT 1 FROM t'
-  assert.equal(allLexemes(text), allLexemes(text))
-  assert.equal(allTokens(text), allTokens(text))
-  // A different text is a different list.
-  assert.notEqual(allTokens(text), allTokens(`${text} `))
-})
-
-test('an unchanged text hits the cache across calls', () => {
-  const first = allTokens('SELECT id FROM items')
-  const again = allTokens('SELECT id FROM items')
-  assert.equal(first, again)
+  const first = allTokens(text)
+  assert.equal(allTokens(text), first)
+  assert.notEqual(allTokens(`${text} `), first)
 })

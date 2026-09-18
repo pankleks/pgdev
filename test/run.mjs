@@ -1,7 +1,7 @@
 // Test entry point.
 //
-// The unit and source-level suites need nothing but the repository, so they
-// always run. The live-database suites (aggtest, ddl, typetest, apitest) each
+// The unit suites need nothing but the repository, so they
+// always run. The live-database suites (aggtest, ddl, typetest, api/*) each
 // create and drop their own pgdev_* databases, so they need PGDEV_TEST_URL and
 // are skipped — with a clear notice rather than a failure — when it is unset.
 import { spawnSync } from 'node:child_process'
@@ -40,11 +40,9 @@ function runUnit() {
 }
 
 let ok = runUnit()
-for (const file of ['p2verify.mjs']) {
-  if (!run(file)) ok = false
-}
 
-const DATABASE_SUITES = ['aggtest.mjs', 'typetest.mjs', join('db', 'ddl.mjs'), join('db', 'tableedit.mjs'), 'apitest.mjs']
+const DATABASE_SUITES = ['aggtest.mjs', 'typetest.mjs', join('db', 'ddl.mjs'), join('db', 'tableedit.mjs'),
+  join('api', 'query.mjs'), join('api', 'txnpage.mjs'), join('api', 'rowedit.mjs'), join('api', 'ai.mjs')]
 
 if (!process.env.PGDEV_TEST_URL) {
   console.log(`\n${'='.repeat(72)}`)

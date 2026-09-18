@@ -7,7 +7,7 @@ const { isReadOnlySql, wrapReadOnly } = await load('server/ai/readonly.ts')
 
 // The agent may only run reads; the classifier exists so the common refusal is
 // a clear message instead of a PostgreSQL error (the read-only transaction is
-// the real guarantee, covered in apitest).
+// the real guarantee, covered in api/ai.mjs).
 
 test('plain reads pass', () => {
   for (const sql of [
@@ -54,7 +54,7 @@ test('writes and DDL are refused with a readable message', () => {
 
 test('a data-modifying CTE passes the classifier and is left to the database', () => {
   // Masking keywords inside a CTE is not worth it: the statement starts with
-  // WITH, and `BEGIN READ ONLY` refuses the write (apitest proves it).
+  // WITH, and `BEGIN READ ONLY` refuses the write (api/ai.mjs proves it).
   assert.deepEqual(isReadOnlySql('WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x'), { ok: true })
 })
 

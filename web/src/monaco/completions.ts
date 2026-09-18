@@ -16,6 +16,13 @@ import {
   normIdent,
   relationLabel,
 } from './sqlrefs'
+import {
+  builtinActive,
+  completionMatchesPrefix,
+  functionDetail,
+  functionSuggestionKey,
+  objectKey,
+} from './completekeys'
 
 const KEYWORDS =
   'SELECT FROM WHERE JOIN INNER LEFT RIGHT FULL OUTER CROSS ON AS AND OR NOT NULL IS IN BETWEEN LIKE ILIKE GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE RETURNING CREATE TABLE VIEW MATERIALIZED INDEX DROP ALTER ADD COLUMN DISTINCT CASE WHEN THEN ELSE END UNION INTERSECT EXCEPT ALL EXISTS ASC DESC WITH OVER PARTITION WINDOW FILTER FETCH FOR TRUE FALSE PRIMARY KEY FOREIGN REFERENCES CHECK DEFAULT CONSTRAINT UNIQUE CASCADE GRANT COMMENT ANALYZE EXPLAIN TRUNCATE BEGIN COMMIT ROLLBACK CALL FUNCTION PROCEDURE RETURNS LANGUAGE REPLACE ON CONFLICT DO NOTHING EXCLUDED RECURSIVE LATERAL TABLESAMPLE ROLLUP CUBE GROUPING SETS ORDINALITY OVERRIDING GENERATED ALWAYS IDENTITY INCLUDE RANGE HASH ATTACH DETACH REFRESH CONCURRENTLY VALIDATE RENAME OWNER SCHEMA DATABASE EXTENSION SERIALIZABLE DEFERRABLE DEFERRED IMMEDIATE SAVEPOINT RELEASE ABORT VACUUM REINDEX CLUSTER COPY STDIN LOCK SHARE NOWAIT SKIP LOCKED'
@@ -35,17 +42,6 @@ const EMPTY_SCHEMA: SchemaData = { tables: [], views: [], types: [], functions: 
 
 function qualified(schema: string, name: string): string {
   return schema === 'public' ? quoteIdent(name) : `${quoteIdent(schema)}.${quoteIdent(name)}`
-}
-
-/** Signature line for a function-like object; procedures have no result. */
-function functionDetail(f: FunctionInfo): string {
-  // public and pg_catalog objects are callable unqualified; a non-public
-  // schema is named so same-named functions stay distinguishable.
-  const schema = f.schema === 'public' || f.schema === 'pg_catalog' ? '' : ` · ${f.schema}`
-  if (f.kind === 'procedure') return `(${f.args}) · procedure${schema}`
-  const returns = f.returns ? ` → ${f.returns}` : ''
-  const suffix = f.kind === 'aggregate' ? ' · aggregate' : f.kind === 'window' ? ' · window' : ''
-  return `(${f.args})${returns}${suffix}${schema}`
 }
 
 // Schema lookups come from the shared catalog index (lib/catalog.ts), rebuilt
@@ -129,21 +125,10 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       }
       // Monaco fuzzy-filters every suggestion against the word being typed,
       // so allocating items that could never pass is pure per-keystroke cost
-      // on a large schema. Gate candidates with the same rule Monaco applies:
-      // every prefix character must appear in the label in order (case
-      // ignored); an empty prefix passes everything.
+      // on a large schema. Gate candidates with the same rule Monaco applies
+      // (see completekeys.ts); an empty prefix passes everything.
       const prefix = word.word.toLowerCase()
-      const matchesPrefix = (label: string): boolean => {
-        if (!prefix) return true
-        let at = 0
-        const hay = label.toLowerCase()
-        for (const ch of prefix) {
-          at = hay.indexOf(ch, at)
-          if (at === -1) return false
-          at++
-        }
-        return true
-      }
+      const matchesPrefix = (label: string): boolean => completionMatchesPrefix(prefix, label)
       const scope = resolveQueryScope(text, offset)
       const { aliases } = scope
       const synthetic = scope.relations
@@ -175,12 +160,8 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
 
       // One emitter per catalog object kind, shared between the generic list
       // and the schema-qualifier list. `inSchema` suppresses re-qualification
-      // when the user already typed `schema.`.
-      // Relations and types are keyed by kind and schema as well as name, so
-      // `public.orders` and `sales.orders` both stay suggested instead of one
-      // silently replacing the other.
-      const objectKey = (kind: string, schema: string, name: string): string =>
-        `${kind}\u0000${schema}\u0000${name}`
+      // when the user already typed `schema.` (dedup keys live in
+      // completekeys.ts so same-named objects in other schemas survive).
       const itemForTable = (t: TableInfo, inSchema: boolean): void => {
         if (!matchesPrefix(t.name)) return
         emit(
@@ -248,7 +229,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             range,
             sortText: callSort,
           },
-          `${f.name}\u0000${name}\u0000${detail}`,
+          functionSuggestionKey(f.name, name, detail),
         )
       }
       // Built-ins are always callable unqualified (pg_catalog is implicitly in
@@ -267,7 +248,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
             range,
             sortText: callSort,
           },
-          `${f.name}\u0000${insertText}\u0000${detail}`,
+          functionSuggestionKey(f.name, insertText, detail),
         )
       }
 
@@ -392,7 +373,7 @@ export function registerSqlCompletion(monaco: typeof Monaco): void {
       for (const f of data?.functions ?? []) itemForFunction(f, false)
       // Built-ins run into the thousands; only offer the ones the user has
       // already started to type, so the list stays focused and cheap.
-      if (data && prefix.length >= 2) {
+      if (data && builtinActive(prefix)) {
         for (const f of data.builtins ?? []) {
           if (f.name.toLowerCase().startsWith(prefix)) itemForBuiltin(f)
         }

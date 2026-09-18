@@ -16,12 +16,13 @@ function stubFetch(status, body = {}) {
   })
 }
 
-test('disconnect resolves when the server closes the pool', async () => {
-  stubFetch(200, {})
-  await api.disconnect('conn-1')
-})
-
-test('disconnect throws when the server reports failure', async () => {
-  stubFetch(500, { error: 'boom' })
-  await assert.rejects(api.disconnect('conn-1'), /boom/)
+test('disconnect surfaces the server result', async () => {
+  for (const [status, body, wantThrow] of [
+    [200, {}, false],
+    [500, { error: 'boom' }, true],
+  ]) {
+    stubFetch(status, body)
+    if (wantThrow) await assert.rejects(api.disconnect('conn-1'), /boom/)
+    else await api.disconnect('conn-1')
+  }
 })

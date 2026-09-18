@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { sourceLoader } from '../lib/load.mjs'
 
 const load = sourceLoader()
-const { withoutLeadingComments, canUseCursor, requiresAutocommit, parseMaxRows } =
+const { withoutLeadingComments, canUseCursor, requiresAutocommit, parseMaxRows, transactionControl } =
   await load('server/queryshape.ts')
 
 // These decide whether a batch runs inside a transaction and whether results
@@ -128,4 +128,29 @@ test('parseMaxRows enforces the documented 1–10000 range and default', () => {
   for (const bad of [0, -1, 10001, 1.5, NaN, Infinity, '500', null, {}, []]) {
     assert.equal(parseMaxRows(bad), null, JSON.stringify(bad))
   }
+})
+
+test('transactionControl: savepoint rollback preserves the transaction', () => {
+  for (const sql of [
+    'ROLLBACK TO s', 'ROLLBACK TO SAVEPOINT s',
+    'ROLLBACK WORK TO SAVEPOINT s', 'ROLLBACK TRANSACTION TO s',
+    '/* before */ ROLLBACK /* nested /* comment */ */ TO "AND CHAIN"',
+  ]) assert.equal(transactionControl(sql), 'unchanged', sql)
+})
+
+test('transactionControl: chained endings and plain endings', () => {
+  for (const verb of ['COMMIT', 'ROLLBACK', 'END', 'ABORT']) {
+    for (const optional of ['', 'WORK ', 'TRANSACTION ']) {
+      assert.equal(transactionControl(`${verb} ${optional}AND CHAIN`), 'chain')
+      assert.equal(transactionControl(`${verb} ${optional}AND NO CHAIN`), 'end')
+      assert.equal(transactionControl(`${verb} ${optional}`), 'end')
+    }
+  }
+  assert.equal(transactionControl('COMMIT /* x */ AND -- x\n CHAIN'), 'chain')
+  for (const sql of ['SELECT 1', 'SAVEPOINT s', 'RELEASE SAVEPOINT s',
+    "COMMIT PREPARED 'x'", "ROLLBACK PREPARED 'x'", "SELECT 'ROLLBACK'"]) {
+    assert.equal(transactionControl(sql), 'unchanged', sql)
+  }
+  assert.equal(transactionControl('BEGIN'), 'start')
+  assert.equal(transactionControl('START /* x */ TRANSACTION'), 'start')
 })
