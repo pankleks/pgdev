@@ -11,33 +11,50 @@ const GUC = 'standard_conforming_strings'
  * the string mode; the buffer is capped accordingly. */
 const SCS_WINDOW = 10
 
+export interface StatementWithOffset {
+  /** Trimmed statement text (same as `splitStatements()` returns). */
+  text: string
+  /** 0-based offset of the trimmed statement's first char in the original SQL. */
+  start: number
+}
+
 export function splitStatements(sql: string): string[] {
-  const out: string[] = []
+  return splitStatementsWithOffsets(sql).map((s) => s.text)
+}
+
+export function splitStatementsWithOffsets(sql: string): StatementWithOffset[] {
+  const out: StatementWithOffset[] = []
   const state: SqlLexState = { standardConformingStrings: true }
-  let cur = ''
   /** Real (non-whitespace, non-comment) lexemes of the statement being
    * assembled, capped. Comments never matter for the SET pattern, so they
    * must not consume the window. */
   let tokens: SqlLexeme[] = []
+  /** Original offset just past the previous top-level `;` (start of the
+   * current segment). */
+  let segStart = 0
 
-  const finish = () => {
-    const statement = cur.trim()
-    if (statement) {
-      out.push(statement)
+  const finish = (segEnd: number) => {
+    const segment = sql.slice(segStart, segEnd)
+    const text = segment.trim()
+    if (text) {
+      // `trim()` strips whitespace only, so the first surviving char is the
+      // first non-whitespace char of the segment (comments are preserved).
+      const leading = segment.search(/\S/)
+      const start = leading === -1 ? segEnd : segStart + leading
+      out.push({ text, start })
       const setting = trackStandardConformingStrings(tokens)
       if (setting) state.standardConformingStrings = setting === 'on'
     }
-    cur = ''
     tokens = []
   }
 
   scanSqlLexemes(sql,
     (lex) => {
       if (lex.kind === 'punct' && lex.raw === ';') {
-        finish()
+        finish(lex.start)
+        segStart = lex.end
         return
       }
-      cur += lex.raw
       // The SET that flips the mode must start its own statement, so only a
       // few leading tokens can ever matter (a spelling of the GUC name inside
       // a string literal, comment or deep expression is data, not a setting).
@@ -48,7 +65,7 @@ export function splitStatements(sql: string): string[] {
     },
     state,
   )
-  finish()
+  finish(sql.length)
   return out
 }
 

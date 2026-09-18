@@ -3,7 +3,7 @@ import { getPool, setRunning, getRunning, deleteRunning, runningKeysForConnectio
 import { rawTextTypes } from './pgtypes.js'
 import { cancelClientQuery } from './pgcancel.js'
 import { guardCheckedOutClient } from './checkout.js'
-import { splitStatements } from './sqlsplit.js'
+import { splitStatementsWithOffsets } from './sqlsplit.js'
 import { boundedQuery } from './boundedquery.js'
 import { pgErrorMessage } from './pgerror.js'
 import { plainSelectTable } from './selectshape.js'
@@ -163,14 +163,59 @@ async function typeNamesFor(
   return typeNames
 }
 
-const sqlError = (err: unknown): BatchError => {
+const sqlError = (err: unknown, baseOffset = 0): BatchError => {
   const e = err as Error & { position?: string; code?: string }
   return {
     kind: 'sql',
     message: pgErrorMessage(err, 'Query failed'),
-    position: e.position ?? null,
+    position: toGlobalPosition(e.position, baseOffset),
     code: e.code ?? null,
   }
+}
+
+/**
+ * Map a PostgreSQL 1-based statement-local error offset to a 1-based offset
+ * in the submitted batch. `baseOffset` is the 0-based start of the trimmed
+ * statement within the batch, so global = base + local. Returns null when
+ * there is nothing meaningful to point at (no position, non-numeric, FETCH
+ * failures whose position is relative to internal FETCH text).
+ */
+function toGlobalPosition(
+  position: string | null | undefined,
+  baseOffset: number,
+): string | null {
+  if (position == null) return null
+  const local = Number(position)
+  if (!Number.isFinite(local)) return null
+  const floored = Math.floor(local)
+  if (floored < 1) return null
+  if (!Number.isFinite(baseOffset) || baseOffset < 0) return null
+  return String(Math.floor(baseOffset) + floored)
+}
+
+/** A per-statement failure already mapped to batch-relative coordinates. */
+interface MappedStatementError {
+  __pgdevMapped: true
+  error: BatchError
+}
+
+function mappedStatementError(err: unknown, baseOffset: number | null): MappedStatementError {
+  return {
+    __pgdevMapped: true,
+    error:
+      baseOffset === null
+        ? { kind: 'sql', message: pgErrorMessage(err, 'Query failed'), position: null, code: (err as { code?: string })?.code ?? null }
+        : sqlError(err, baseOffset),
+  }
+}
+
+function isMappedStatementError(err: unknown): err is MappedStatementError {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as MappedStatementError).__pgdevMapped === true &&
+    !!(err as MappedStatementError).error
+  )
 }
 
 /** Transaction state shared with the statement loop, so a failure mid-batch
@@ -191,6 +236,7 @@ async function executeStatements(
   cap: number,
   useCursors: boolean,
   txn: TxnState,
+  starts: number[] = [],
 ): Promise<{ mapped: MappedResult[]; openCursor: string | null; pendingRow: unknown[] | null }> {
   const results: (
     | { kind: 'command'; command: string; rowCount: number }
@@ -239,8 +285,13 @@ async function executeStatements(
   for (const [index, stmt] of statements.entries()) {
     const cursor = `pgdev_cur_${++seq}`
     const cursorForThisStatement = useCursors && index === statements.length - 1
+    const base = starts[index] ?? 0
     if (!txn.inTxn || !cursorForThisStatement) {
-      await execDirect(stmt)
+      try {
+        await execDirect(stmt)
+      } catch (err) {
+        throw mappedStatementError(err, base)
+      }
       continue
     }
     await client.query('SAVEPOINT pgdev_sp')
@@ -249,18 +300,29 @@ async function executeStatements(
     } catch (declareError) {
       // Not a cursor-compatible statement (DDL, writes, EXPLAIN, …):
       // roll back to the savepoint so the failed DECLARE doesn't poison
-      // the transaction, then run it directly.
+      // the transaction, then run it directly. The retried error is
+      // statement-relative (no DECLARE prefix to subtract), so map that one.
       try {
         await client.query('ROLLBACK TO SAVEPOINT pgdev_sp')
       } catch {
-        throw declareError
+        throw mappedStatementError(declareError, base)
       }
-      await execDirect(stmt)
+      try {
+        await execDirect(stmt)
+      } catch (err) {
+        throw mappedStatementError(err, base)
+      }
       continue
     }
     // A FETCH failure is a query failure, not evidence that the statement
-    // should be executed again without a cursor.
-    const page = await fetchPage(client, cursor, cap)
+    // should be executed again without a cursor. Its position (if any) is
+    // relative to the internal FETCH text, so it maps to null.
+    let page: DataPage
+    try {
+      page = await fetchPage(client, cursor, cap)
+    } catch (err) {
+      throw mappedStatementError(err, null)
+    }
     if (page.hasMore) {
       // Only the last result set is pageable in the UI; earlier
       // truncated cursors are closed (their counts stay in Messages).
@@ -338,6 +400,7 @@ async function runOnTransactionSession(
   runKey: string,
   statements: string[],
   cap: number,
+  starts: number[] = [],
 ): Promise<BatchOutcome> {
   if (getRunning(runKey)) return { kind: 'error', error: { kind: 'running' } }
   const sess = beginSession(runKey)
@@ -346,7 +409,7 @@ async function runOnTransactionSession(
   const start = performance.now()
   const txn: TxnState = { inTxn: true }
   try {
-    const { mapped } = await executeStatements(sess.client, statements, cap, false, txn)
+    const { mapped } = await executeStatements(sess.client, statements, cap, false, txn, starts)
     if (txn.inTxn) {
       await finishSession(runKey, sess, 'keep')
       return { kind: 'ok', results: mapped, durationMs: Math.round(performance.now() - start), transactionOpen: true }
@@ -360,6 +423,7 @@ async function runOnTransactionSession(
     // batch already ended it, there is nothing to keep.
     if (txn.inTxn) await finishSession(runKey, sess, 'keep')
     else await finishSession(runKey, sess, 'none')
+    if (isMappedStatementError(err)) return { kind: 'error', error: err.error }
     return { kind: 'error', error: sqlError(err) }
   } finally {
     deleteRunning(runKey, sess.client)
@@ -386,7 +450,9 @@ export async function runBatch(
 ): Promise<BatchOutcome> {
   const transactionId = options.transactionId
   const pageable = options.pageable !== false
-  const statements = splitStatements(sql)
+  const parts = splitStatementsWithOffsets(sql)
+  const statements = parts.map((p) => p.text)
+  const starts = parts.map((p) => p.start)
   if (!statements.length) return { kind: 'error', error: { kind: 'empty' } }
   const pool = getPool(connId)
   const runKey = sessionKey(connId, tabKey)
@@ -399,7 +465,7 @@ export async function runBatch(
   // instead of checking out a new one.
   const active = getSession(runKey)
   if (active?.kind === 'transaction') {
-    return runOnTransactionSession(connId, runKey, statements, cap)
+    return runOnTransactionSession(connId, runKey, statements, cap, starts)
   }
 
   // Drop any idle-open cursor from a previous truncated query on this tab.
@@ -453,7 +519,7 @@ export async function runBatch(
     // transaction, not a cursor. One-shot batches (agent reads) never page:
     // their rows are mirrored to a tab whose key cannot reach this session.
     const useCursors = pageable && !autocommit && !manual && statements.every(canUseCursor)
-    const { mapped, openCursor, pendingRow } = await executeStatements(client, statements, cap, useCursors, txn)
+    const { mapped, openCursor, pendingRow } = await executeStatements(client, statements, cap, useCursors, txn, starts)
     // A close that landed while this batch ran abandons the tab: nothing may
     // be kept, and the (possibly empty) transaction is rolled back instead of
     // committed. Consumed so a later run on the same tab retains normally.
@@ -517,6 +583,7 @@ export async function runBatch(
         // Already released.
       }
     }
+    if (isMappedStatementError(err)) return { kind: 'error', error: err.error }
     return { kind: 'error', error: sqlError(err) }
   } finally {
     deleteRunning(runKey, client)

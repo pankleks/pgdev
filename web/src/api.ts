@@ -21,9 +21,8 @@ async function unwrap<T>(res: Response): Promise<T> {
     const errBody = body as Partial<TransactionState> & { error?: string; code?: string | null; position?: string | null }
     const err: ApiError = new Error(errBody.error || `Request failed (${res.status})`)
     ;(err as Error & { code?: string | null }).code = errBody.code ?? null
-    // PostgreSQL 1-based error offset within the sent statement (null when
-    // the server has none). Carried for editor markers; Phase 1 treats it as
-    // relative to the sent SQL of a single-statement run.
+    // PostgreSQL 1-based error offset relative to the submitted batch (null
+    // when the server has none). Carried for editor markers.
     ;(err as Error & { position?: string | null }).position = errBody.position ?? null
     if (errBody.transactionId !== undefined) {
       err.transactionId = errBody.transactionId

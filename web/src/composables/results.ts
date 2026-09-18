@@ -23,7 +23,7 @@ export interface GridResult extends DataResult {
 export interface Message {
   text: string
   level: 'info' | 'error'
-  /** PostgreSQL 1-based error offset within the sent SQL, when known. */
+  /** PostgreSQL 1-based error offset relative to the submitted batch, when known. */
   position?: string | null
 }
 
@@ -67,6 +67,10 @@ export interface TabResult {
   /** A user-managed transaction is open for this tab (BEGIN without COMMIT yet). */
   transactionOpen: boolean
   transactionId: string | null
+  /** Exact SQL payload of the last run: the server reports error offsets
+   * relative to this text. When it differs from the editor model (a
+   * selection run), the offset is not model-relative and no marker is shown. */
+  sentSql: string | null
 }
 
 /**
@@ -94,6 +98,7 @@ export function createResults(api: ResultsApi) {
         showMessages: false,
         transactionOpen: false,
         transactionId: null,
+        sentSql: null,
       })
       state.byTab[key] = r
     }
@@ -168,6 +173,7 @@ export function createResults(api: ResultsApi) {
     r.grids = []
     r.showMessages = false
     r.messages = [{ text: 'Running query…', level: 'info' }]
+    r.sentSql = sql
     try {
       const res = await api.query(connectionId, sql, tabKey, r.transactionId)
       if (!isCurrent(tabKey, r, operation)) return

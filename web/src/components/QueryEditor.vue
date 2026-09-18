@@ -243,18 +243,25 @@ function syncExternalContent(tab: EditorTab) {
 }
 
 /**
- * SQL syntax-error squiggle (Phase 1): the server returns PostgreSQL's
- * 1-based error offset within the sent statement, which `results` keeps on
- * the tab's error message. Treat it as relative to the sent SQL — exact for
- * single-statement runs; multi-statement batches need the statement-index
- * mapping (Phase 2) to point precisely.
+ * SQL error squiggle: the server returns PostgreSQL's 1-based error offset
+ * relative to the submitted batch (statement-local offsets are mapped to
+ * batch-global in queryexec), which `results` keeps on the tab's error
+ * message alongside the exact submitted text (`sentSql`).
  */
 function syncErrorMarker(tabKey: string, reveal: boolean) {
   const model = models.get(tabKey)
   if (!model) return
-  const messages = results.state.byTab[tabKey]?.messages ?? []
+  const tabResult = results.state.byTab[tabKey]
+  const messages = tabResult?.messages ?? []
   const failure = [...messages].reverse().find((m) => m.level === 'error' && m.position)
   if (!failure?.position) {
+    monaco.editor.setModelMarkers(model, 'pgdev-sql', [])
+    return
+  }
+  // A selection run submits only the selected text: the offset is relative
+  // to that payload, not the full model. A wrong squiggle is worse than
+  // none, so only mark when the submitted text matches the model.
+  if (tabResult?.sentSql != null && tabResult.sentSql !== model.getValue()) {
     monaco.editor.setModelMarkers(model, 'pgdev-sql', [])
     return
   }
