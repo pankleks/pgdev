@@ -1,6 +1,6 @@
 # pgDEV
 
-A PostgreSQL IDE that runs on your own machine and opens in your browser.
+A PostgreSQL AI powered IDE that runs on your own machine and opens in your browser.
 
 ## Install
 
