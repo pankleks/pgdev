@@ -1,12 +1,13 @@
 # Tests
 
-`npm test` runs every suite. `test/run.mjs` is the entry point: it always runs
-the suite that needs no database, and runs the live-database suites only when
-`PGDEV_TEST_URL` is set — skipping them with a notice rather than failing when
-it is not.
+`npm test` runs every suite. `npm run test:unit` runs only the suites that need
+no database. `test/run.mjs` is the entry point: it always runs the unit suite,
+and runs the live-database suites only when `PGDEV_TEST_URL` is set — skipping
+them with a notice rather than failing when it is not.
 
 ```bash
-npm test                                                          # unit only
+npm run test:unit                                                  # unit only
+npm test                                                          # unit + live suites when PGDEV_TEST_URL is set
 PGDEV_TEST_URL=postgres://user:pass@host:5432/postgres npm test    # + live database
 PGDEV_TEST_URL=... PGDEV_BROWSER=1 npm test                        # + browser
 ```

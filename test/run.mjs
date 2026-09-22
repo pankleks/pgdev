@@ -41,6 +41,11 @@ function runUnit() {
 
 let ok = runUnit()
 
+if (process.argv.includes('--unit')) {
+  console.log(`\n${ok ? 'ALL UNIT SUITES PASSED' : 'SOME UNIT SUITES FAILED'}`)
+  process.exit(ok ? 0 : 1)
+}
+
 const DATABASE_SUITES = ['aggtest.mjs', 'typetest.mjs', join('db', 'ddl.mjs'), join('db', 'tableedit.mjs'),
   join('api', 'query.mjs'), join('api', 'txnpage.mjs'), join('api', 'rowedit.mjs'), join('api', 'ai.mjs')]
 

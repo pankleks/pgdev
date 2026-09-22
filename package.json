@@ -43,6 +43,7 @@
     "build": "npm run build:web && npm run build:server",
     "start": "node bin/pgdev.mjs",
     "test": "npm run build:server && node test/run.mjs",
+    "test:unit": "npm run build:server && node test/run.mjs --unit",
     "start:no-open": "node bin/pgdev.mjs --no-open",
     "build:web": "cd web && vue-tsc --noEmit && vite build",
     "build:server": "cd server && tsc"
