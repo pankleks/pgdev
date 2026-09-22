@@ -37,10 +37,15 @@ test('no window, timeout and disconnect are typed failures', async () => {
   )
 
   const unsubscribe = bridge.subscribe(() => undefined)
-  await assert.rejects(
-    bridge.request('get-context'),
-    (err) => err instanceof BridgeError && err.code === 'timeout',
-  )
+  const keepEventLoopAlive = setTimeout(() => undefined, 100)
+  try {
+    await assert.rejects(
+      bridge.request('get-context'),
+      (err) => err instanceof BridgeError && err.code === 'timeout',
+    )
+  } finally {
+    clearTimeout(keepEventLoopAlive)
+  }
   unsubscribe()
 
   const unsubscribe2 = bridge.subscribe(() => undefined)
