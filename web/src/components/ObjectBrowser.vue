@@ -1168,7 +1168,7 @@ async function refresh() {
         v-for="pin in tabs.state.pinnedFiles"
         :key="pin.id"
         class="pinned-file"
-        :title="`${pin.fileName} · double-click to open in a new tab`"
+        :title="`${pin.fileName} · double-click to focus an unchanged tab or open a new one`"
         @dblclick="openPinnedFile(pin.id)"
         @contextmenu="openPinnedMenu($event, pin.id)"
       >

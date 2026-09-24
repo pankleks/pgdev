@@ -419,10 +419,18 @@ export function useTabs() {
     return !!tab?.pinnedId && state.pinnedFiles.some((pin) => pin.id === tab.pinnedId)
   }
 
-  async function openPinned(id: string): Promise<'handle' | 'snapshot' | 'fallback' | null> {
+  function focusCleanPinnedTab(id: string): boolean {
+    const tab = state.tabs.find((entry) => entry.pinnedId === id && !isDirty(entry))
+    if (!tab) return false
+    state.activeKey = tab.key
+    return true
+  }
+
+  async function openPinned(id: string): Promise<'focused' | 'handle' | 'snapshot' | 'fallback' | null> {
     await pinsReady
     const pin = state.pinnedFiles.find((entry) => entry.id === id)
     if (!pin) return null
+    if (focusCleanPinnedTab(id)) return 'focused'
 
     const handle = pinnedHandles.get(id)
     if (!handle) {
@@ -433,6 +441,7 @@ export function useTabs() {
     try {
       const opened = await readTextFileHandle(handle)
       if (!state.pinnedFiles.some((entry) => entry.id === id)) return null
+      if (focusCleanPinnedTab(id)) return 'focused'
       pin.fileName = opened.fileName
       pin.content = opened.content
       persistPins()
@@ -440,6 +449,7 @@ export function useTabs() {
       return 'handle'
     } catch {
       if (!state.pinnedFiles.some((entry) => entry.id === id)) return null
+      if (focusCleanPinnedTab(id)) return 'focused'
       openFile(pin.fileName, pin.content, handle, id)
       return 'fallback'
     }
